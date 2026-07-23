@@ -4,11 +4,12 @@ import type { MatchItem, MarketType } from "./types";
 export async function recognizeImage(file: File, onProgress: (value: number, status: string) => void): Promise<string> {
   const { createWorker, OEM, PSM } = await import("tesseract.js");
   const isStandaloneFile = typeof window !== "undefined" && window.location.protocol === "file:";
+  const pageBaseUrl = typeof window !== "undefined" ? new URL("./", window.location.href) : null;
   const worker = await createWorker(["chi_sim", "eng"], OEM.LSTM_ONLY, {
-    ...(isStandaloneFile ? {} : {
-      workerPath: "/ocr/worker.min.js",
-      corePath: "/ocr",
-      langPath: "/tessdata",
+    ...(isStandaloneFile || !pageBaseUrl ? {} : {
+      workerPath: new URL("ocr/worker.min.js", pageBaseUrl).href,
+      corePath: new URL("ocr/", pageBaseUrl).href,
+      langPath: new URL("tessdata/", pageBaseUrl).href,
     }),
     gzip: true,
     logger: (message) => {
