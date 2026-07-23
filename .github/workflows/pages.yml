@@ -1,5 +1,6 @@
 name: Deploy Demo
 
+# Publish the committed standalone build whenever main changes.
 on:
   push:
     branches:

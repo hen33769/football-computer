@@ -120,7 +120,7 @@ const INCOME_KEY = "football-simulator-total-income-v1";
 const LOADED_ORDER_KEY = "football-simulator-loaded-order-v1";
 const MATCH_CACHE_KEY = "football-simulator-match-cache-v1";
 const LEGACY_MATCH_RESULTS_KEY = "football-simulator-match-results-v1";
-const REPOSITORY_URL = "https://github.com/hen33769/football-computer";
+const DEMO_URL = "https://hen33769.github.io/football-computer/";
 
 export type AppView = "betting" | "orders" | "settings";
 type DataTransferMode = "orders" | "settings" | "matches" | "full";
@@ -1594,18 +1594,18 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta http-equiv="refresh" content="0; url=${REPOSITORY_URL}" />
+    <meta http-equiv="refresh" content="0; url=${DEMO_URL}" />
     <title>打开竞彩足球模拟工具</title>
   </head>
   <body>
-    <p>正在打开竞彩足球模拟工具 GitHub 仓库……</p>
-    <p><a href="${REPOSITORY_URL}">如果没有自动跳转，请点击这里</a></p>
-    <script>window.location.replace(${JSON.stringify(REPOSITORY_URL)});</script>
+    <p>正在打开竞彩足球模拟工具……</p>
+    <p><a href="${DEMO_URL}">如果没有自动跳转，请点击这里</a></p>
+    <script>window.location.replace(${JSON.stringify(DEMO_URL)});</script>
   </body>
 </html>
 `;
-    downloadBlob(new Blob([html], { type: "text/html;charset=utf-8" }), "竞彩足球模拟工具-GitHub.html");
-    message.success("页面已保存，打开 HTML 文件即可进入 GitHub 仓库");
+    downloadBlob(new Blob([html], { type: "text/html;charset=utf-8" }), "竞彩足球模拟工具.html");
+    message.success("页面已保存，打开 HTML 文件即可进入在线 Demo");
   };
 
   const exportData = (mode: DataTransferMode) => {
