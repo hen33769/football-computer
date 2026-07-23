@@ -1865,8 +1865,8 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
             <Button className={activeView === "betting" ? "view-toggle active" : "view-toggle"} icon={<HomeOutlined />} onClick={() => navigateToView("betting")}>
               <span className="header-button-label">投注</span>
             </Button>
-            <Badge count={unsettledOrderCount} size="small" offset={[-12, 4]}>
-              <Button className={activeView === "orders" ? "view-toggle active" : "view-toggle"} icon={<FileTextOutlined />} onClick={() => navigateToView("orders")}>
+            <Badge className="order-navigation-badge" count={unsettledOrderCount} size="small" offset={[-12, 4]} onClick={() => navigateToView("orders")}>
+              <Button className={activeView === "orders" ? "view-toggle active" : "view-toggle"} icon={<FileTextOutlined />}>
                 <span className="header-button-label">订单</span>
               </Button>
             </Badge>

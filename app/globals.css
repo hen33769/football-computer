@@ -100,6 +100,7 @@ button, input, textarea { font: inherit; }
 .hero-actions .ant-btn { color: #fff; border-color: rgba(255,255,255,.25); background: rgba(255,255,255,.1); backdrop-filter: blur(8px); }
 .hero-actions .ant-btn:hover { color: #fff !important; border-color: rgba(255,255,255,.6) !important; background: rgba(255,255,255,.18) !important; }
 .hero-actions .view-toggle.active { border-color: rgba(255,255,255,.72); background: rgba(255,255,255,.23); }
+.order-navigation-badge .ant-badge-count { cursor: pointer; }
 .header-button-label { display: inline-block; max-width: var(--header-label-width, 84px); overflow: hidden; opacity: var(--header-note-opacity, 1); white-space: nowrap; vertical-align: middle; will-change: max-width, opacity; }
 .data-popover-menu { width: 280px; display: flex; flex-direction: column; gap: 3px; }
 .data-popover-heading { display: flex; flex-direction: column; gap: 2px; padding: 6px 10px 9px; border-bottom: 1px solid var(--line); }
