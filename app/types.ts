@@ -49,6 +49,7 @@ export type SavedSlip = {
   multiple: number;
   oddsLocked?: boolean;
   hits?: CurrentHits;
+  resultValues?: CurrentHits;
   failedMatches?: string[];
   settledAt?: string;
   settledPrize?: number;

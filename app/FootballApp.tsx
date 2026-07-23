@@ -193,6 +193,11 @@ const sortMatchesForDisplay = (items: MatchItem[]) => [...items].sort(compareMat
 
 const isOrderOddsLocked = (slip: Pick<SavedSlip, "oddsLocked" | "settledAt">) => Boolean(slip.settledAt || slip.oddsLocked);
 
+const matchResultOptionLabel = (match: MatchItem, type: MarketType, optionId?: string) => {
+  if (!optionId) return null;
+  return match.markets.find((market) => market.type === type)?.options.find((option) => option.id === optionId)?.label ?? optionId;
+};
+
 const createManualOrderEntry = (): ManualOrderEntry => ({
   key: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
   matchId: null,
@@ -354,6 +359,7 @@ const isExportedOrder = (value: unknown): value is SavedSlip => {
     && order.multiple <= 50
     && (typeof order.oddsLocked === "undefined" || typeof order.oddsLocked === "boolean")
     && (typeof order.hits === "undefined" || isExportedHits(order.hits))
+    && (typeof order.resultValues === "undefined" || isExportedHits(order.resultValues))
     && (typeof order.failedMatches === "undefined" || (Array.isArray(order.failedMatches) && order.failedMatches.every((matchId) => typeof matchId === "string")))
     && (typeof order.settledAt === "undefined" || typeof order.settledAt === "string")
     && (typeof order.settledPrize === "undefined" || (typeof order.settledPrize === "number" && Number.isFinite(order.settledPrize)))
@@ -1054,6 +1060,20 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
     setTemporaryOrder(null);
   };
 
+  const clearPredictionSelections = () => {
+    setMatches((current) => current.map((match) => ({
+      ...match,
+      markets: match.markets.map((market) => ({
+        ...market,
+        options: market.options.map((option) => ({ ...option, selected: false })),
+      })),
+    })));
+    setPasses([]);
+    setHits({});
+    setMoreMatchId(null);
+    setDetailsOpen(false);
+  };
+
   const openManualOrder = () => {
     setManualOrderName("");
     setManualOrderPassText("");
@@ -1180,6 +1200,9 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
       multiple,
       oddsLocked: previousOrder?.oddsLocked ?? false,
       hits: cloneHits(hits),
+      resultValues: previousOrder?.resultValues
+        ? Object.fromEntries(Object.entries(previousOrder.resultValues).filter(([matchId]) => matches.some((match) => match.id === matchId)))
+        : undefined,
       failedMatches: previousOrder?.failedMatches?.filter((matchId) => matches.some((match) => match.id === matchId)) ?? [],
     };
     const all = loadedOrderIndex >= 0
@@ -1190,9 +1213,10 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
     setSavedSlips(all);
     setExpenseTotal((current) => Math.max(0, current + nextStake - previousStake));
     localStorage.setItem(SAVED_KEY, JSON.stringify(all));
-    if (temporaryOrder) setTemporaryOrder({ id: orderId, name: next.name });
     setSaveOpen(false);
     setSaveName("");
+    if (temporaryOrder) restoreSavedMatches();
+    else clearPredictionSelections();
     message.success(loadedOrderIndex >= 0 ? "预测单已更新" : "预测单已保存到本机");
   };
 
@@ -1773,16 +1797,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
 
   const clearCurrentSelections = () => {
     if (pickedCount === 0) return;
-    setMatches((current) => current.map((match) => ({
-      ...match,
-      markets: match.markets.map((market) => ({
-        ...market,
-        options: market.options.map((option) => ({ ...option, selected: false })),
-      })),
-    })));
-    setPasses([]);
-    setHits({});
-    setDetailsOpen(false);
+    clearPredictionSelections();
     message.success("已清空当前选择，比赛数据保留");
   };
 
@@ -2295,10 +2310,11 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
                   const savedHitCount = Object.values(slip.hits ?? {}).reduce((total, values) => total + Object.values(values).filter(Boolean).length, 0);
                   const trackedPrize = calculateCurrentPrize(slip.matches, slip.passes, slip.multiple, slip.hits ?? {});
                   const trackedPrizeText = trackedPrize.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
-                  const orderFailed = isOrderFailed(slip);
+                  const orderStatus = getOrderStatus(slip);
+                  const orderFailed = orderStatus === "failed";
                   const orderSettleable = isOrderSettleable(slip);
                   return (
-                    <Card key={orderKey} className={`order-card ${orderFailed ? "failed" : ""}`}>
+                    <Card key={orderKey} className={`order-card ${orderStatus === "hopeful" ? "" : orderStatus}`}>
                       <div className="order-card-head">
                         <div className="order-card-meta-line">
                           <div className="order-card-tags">
@@ -2324,9 +2340,20 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
                         {orderMatches.map((match) => {
                           const matchFailed = (slip.failedMatches ?? []).includes(match.id);
                           const matchSuccessful = matchHasSelectedHit(match, slip.hits ?? {});
+                          const scoreResult = matchResultOptionLabel(match, "score", slip.resultValues?.[match.id]?.score);
+                          const halfFullResult = matchResultOptionLabel(match, "halfFull", slip.resultValues?.[match.id]?.halfFull);
                           return (
                           <section className={`order-match-entry ${matchFailed ? "failed" : ""}`} key={match.id}>
-                            <div className="order-match-entry-head"><span>{match.weekday}{match.code}</span><b>{match.home} VS {match.away}</b>{matchFailed && <Tag color="error">失败</Tag>}{matchSuccessful && <Tag color="success">成功</Tag>}</div>
+                            <div className="order-match-entry-head">
+                              <span>{match.weekday}{match.code}</span>
+                              <b>{match.home} VS {match.away}</b>
+                              <div className="order-match-result-tags">
+                                {scoreResult && <Tag color="blue">比分 {scoreResult}</Tag>}
+                                {halfFullResult && <Tag color="volcano">半全场 {halfFullResult}</Tag>}
+                                {matchFailed && <Tag color="error">失败</Tag>}
+                                {matchSuccessful && <Tag color="success">成功</Tag>}
+                              </div>
+                            </div>
                             {expanded && (
                               <div className="order-picked-lines">
                                 {match.markets.filter((market) => market.options.some((option) => option.selected)).map((market) => (
@@ -2607,9 +2634,19 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
             <p className="drawer-tip">{orderDetail.settledAt ? "该订单已结账，只能查看保存时的比赛结果与中奖金额。" : "点击已选项可标记玩法命中；勾选“失败”会清除该场命中并将投注项置灰。完成后点击底部保存。"}</p>
             {orderDetailMatches.map((match) => {
               const matchFailed = orderFailedMatches.includes(match.id);
+              const scoreResult = matchResultOptionLabel(match, "score", orderDetail.resultValues?.[match.id]?.score);
+              const halfFullResult = matchResultOptionLabel(match, "halfFull", orderDetail.resultValues?.[match.id]?.halfFull);
               return (
               <section className={`detail-match ${matchFailed ? "failed" : ""}`} key={match.id}>
-                <div className="detail-match-title"><span>{match.weekday}{match.code}</span><b>{match.home} VS {match.away}</b><Checkbox checked={matchFailed} disabled={Boolean(orderDetail.settledAt)} onChange={(event) => toggleOrderMatchFailure(match.id, event.target.checked)}>失败</Checkbox></div>
+                <div className="detail-match-title">
+                  <span>{match.weekday}{match.code}</span>
+                  <b>{match.home} VS {match.away}</b>
+                  <div className="detail-match-result-tags">
+                    {scoreResult && <Tag color="blue">比分 {scoreResult}</Tag>}
+                    {halfFullResult && <Tag color="volcano">半全场 {halfFullResult}</Tag>}
+                  </div>
+                  <Checkbox checked={matchFailed} disabled={Boolean(orderDetail.settledAt)} onChange={(event) => toggleOrderMatchFailure(match.id, event.target.checked)}>失败</Checkbox>
+                </div>
                 <div className="detail-options">
                   {match.markets.flatMap((market) => market.options.filter((item) => item.selected).map((item) => {
                     const active = orderHits[match.id]?.[market.type] === item.id;

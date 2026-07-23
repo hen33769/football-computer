@@ -14,6 +14,7 @@ export function resultForMatch(results: MatchResults, matchId: string) {
 
 export function judgeSlipWithResults(slip: SavedSlip, results: MatchResults): SavedSlip {
   const hits = cloneHits(slip.hits);
+  const resultValues = cloneHits(slip.resultValues);
   const failedMatches = new Set(slip.failedMatches ?? []);
 
   slip.matches.forEach((match) => {
@@ -24,6 +25,7 @@ export function judgeSlipWithResults(slip: SavedSlip, results: MatchResults): Sa
 
     const evaluatedMarkets = selectedMarkets.filter((market) => Boolean(result.values[market.type]));
     if (evaluatedMarkets.length === 0) return;
+    resultValues[match.id] = { ...result.values };
     const nextMatchHits = { ...(hits[match.id] ?? {}) };
     evaluatedMarkets.forEach((market) => {
       const resultOptionId = result.values[market.type];
@@ -40,7 +42,7 @@ export function judgeSlipWithResults(slip: SavedSlip, results: MatchResults): Sa
     }
   });
 
-  return { ...slip, hits, failedMatches: [...failedMatches] };
+  return { ...slip, hits, resultValues, failedMatches: [...failedMatches] };
 }
 
 export function isMatchResult(value: unknown): value is MatchResults[string] {
