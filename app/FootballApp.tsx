@@ -120,6 +120,7 @@ const INCOME_KEY = "football-simulator-total-income-v1";
 const LOADED_ORDER_KEY = "football-simulator-loaded-order-v1";
 const MATCH_CACHE_KEY = "football-simulator-match-cache-v1";
 const LEGACY_MATCH_RESULTS_KEY = "football-simulator-match-results-v1";
+const REPOSITORY_URL = "https://github.com/hen33769/football-computer";
 
 export type AppView = "betting" | "orders" | "settings";
 type DataTransferMode = "orders" | "settings" | "matches" | "full";
@@ -1572,8 +1573,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
     });
   };
 
-  const downloadJson = (payload: object, filename: string) => {
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+  const downloadBlob = (blob: Blob, filename: string) => {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -1582,6 +1582,30 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
     anchor.click();
     anchor.remove();
     URL.revokeObjectURL(url);
+  };
+
+  const downloadJson = (payload: object, filename: string) => {
+    downloadBlob(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" }), filename);
+  };
+
+  const saveRepositoryPage = () => {
+    const html = `<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="refresh" content="0; url=${REPOSITORY_URL}" />
+    <title>打开竞彩足球模拟工具</title>
+  </head>
+  <body>
+    <p>正在打开竞彩足球模拟工具 GitHub 仓库……</p>
+    <p><a href="${REPOSITORY_URL}">如果没有自动跳转，请点击这里</a></p>
+    <script>window.location.replace(${JSON.stringify(REPOSITORY_URL)});</script>
+  </body>
+</html>
+`;
+    downloadBlob(new Blob([html], { type: "text/html;charset=utf-8" }), "竞彩足球模拟工具-GitHub.html");
+    message.success("页面已保存，打开 HTML 文件即可进入 GitHub 仓库");
   };
 
   const exportData = (mode: DataTransferMode) => {
@@ -1874,8 +1898,9 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
           </div>
           <div className="hero-actions">
             {activeView === "orders" && <Button icon={<PlusOutlined />} onClick={openManualOrder}><span className="header-button-label">手动添加订单</span></Button>}
-            <Popover content={importMenu} trigger="click" placement="bottomRight"><Button icon={<UploadOutlined />}><span className="header-button-label">JSON 导入</span></Button></Popover>
-            <Popover content={exportMenu} trigger="click" placement="bottomRight"><Button icon={<DownloadOutlined />}><span className="header-button-label">导出数据</span></Button></Popover>
+            <Button icon={<SaveOutlined />} onClick={saveRepositoryPage}>
+              <span className="header-button-label">保存页面</span>
+            </Button>
             <Button className={activeView === "betting" ? "view-toggle active" : "view-toggle"} icon={<HomeOutlined />} onClick={() => navigateToView("betting")}>
               <span className="header-button-label">投注</span>
             </Button>
@@ -2405,9 +2430,30 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
                 })}
               </div>
             </Card>
-            <Card className="settings-storage-card">
-              <b>设置存储说明</b>
-              <p>当前使用 <code>schemaVersion: 1</code> 和 <code>appearance.leagueTagColors</code>。导出设置或完整数据后，可在其他浏览器恢复。</p>
+            <Card className="settings-card settings-data-card">
+              <div className="settings-card-head">
+                <div><h3>数据管理</h3><p>通过 JSON 文件备份或恢复订单、比赛、应用设置与收支账本。</p></div>
+              </div>
+              <div className="settings-data-grid">
+                <section className="settings-data-item">
+                  <div className="settings-data-item-copy">
+                    <span className="settings-data-icon"><UploadOutlined /></span>
+                    <div><b>JSON 导入</b><p>选择要恢复的数据类型，导入前会校验文件内容。</p></div>
+                  </div>
+                  <Popover content={importMenu} trigger="click" placement="bottomLeft">
+                    <Button type="primary" icon={<UploadOutlined />}>选择导入内容</Button>
+                  </Popover>
+                </section>
+                <section className="settings-data-item">
+                  <div className="settings-data-item-copy">
+                    <span className="settings-data-icon"><DownloadOutlined /></span>
+                    <div><b>导出数据</b><p>分别导出订单、比赛、设置，或生成完整数据备份。</p></div>
+                  </div>
+                  <Popover content={exportMenu} trigger="click" placement="bottomLeft">
+                    <Button icon={<DownloadOutlined />}>选择导出内容</Button>
+                  </Popover>
+                </section>
+              </div>
             </Card>
           </section>
         </main>

@@ -531,7 +531,7 @@ button, input, textarea { font: inherit; }
 .settings-shell { display: block; }
 .settings-page { width: 100%; min-width: 0; }
 .settings-heading { align-items: center; }
-.settings-card, .settings-storage-card { border: 1px solid var(--line); border-radius: 19px; box-shadow: 0 10px 32px rgba(22,54,58,.05); }
+.settings-card { border: 1px solid var(--line); border-radius: 19px; box-shadow: 0 10px 32px rgba(22,54,58,.05); }
 .settings-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
 .settings-card-head h3 { margin: 0 0 5px; font-size: 18px; }
 .settings-card-head p { margin: 0; color: var(--muted); font-size: 12px; }
@@ -541,10 +541,15 @@ button, input, textarea { font: inherit; }
 .league-setting-preview .ant-tag { min-width: 60px; margin: 0; text-align: center; }
 .league-setting-preview span { min-width: 0; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .league-setting-row .ant-color-picker-trigger { min-width: 112px; flex: 0 0 auto; }
-.settings-storage-card { margin-top: 14px; }
-.settings-storage-card b { color: #29464c; font-size: 13px; }
-.settings-storage-card p { margin: 6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.65; }
-.settings-storage-card code { padding: 2px 5px; border-radius: 5px; color: #0d7773; background: #e9f5f3; }
+.settings-data-card { margin-top: 14px; }
+.settings-data-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 16px; }
+.settings-data-item { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: #f8fbfa; }
+.settings-data-item-copy { min-width: 0; display: flex; align-items: center; gap: 12px; }
+.settings-data-item-copy > div { min-width: 0; }
+.settings-data-item-copy b { display: block; margin-bottom: 4px; color: #29464c; font-size: 14px; }
+.settings-data-item-copy p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.settings-data-icon { width: 36px; height: 36px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 11px; color: #0d7773; font-size: 17px; background: #e4f3f1; }
+.settings-data-item > .ant-btn { flex: 0 0 auto; }
 
 @media (max-width: 1180px) {
   .page-shell { grid-template-columns: minmax(0, 1fr) 340px; }
@@ -628,4 +633,10 @@ button, input, textarea { font: inherit; }
   .settings-card-head { align-items: stretch; flex-direction: column; }
   .league-setting-row { align-items: stretch; flex-direction: column; }
   .league-setting-row .ant-color-picker-trigger { width: 100%; }
+  .settings-data-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 600px) {
+  .settings-data-item { align-items: stretch; flex-direction: column; }
+  .settings-data-item > .ant-btn { width: 100%; }
 }
