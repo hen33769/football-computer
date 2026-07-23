@@ -8,8 +8,11 @@ import {
   countBets,
   getOrderStatus,
   getPassLimit,
+  getPassOptions,
   isOrderFailed,
+  isNewMatchSelectionBlocked,
   isOrderSettleable,
+  MAX_SELECTED_MATCHES,
 } from "../app/calculator";
 import { cloneMatches, initialMatches } from "../app/data";
 import { judgeSlipWithResults } from "../app/results";
@@ -83,11 +86,49 @@ test("理论奖金范围排除 0 并保持有序", () => {
   assert.ok(range.max >= range.min);
 });
 
-test("包含比分玩法时最高只能 4 关", () => {
-  const matches = cloneMatches(initialMatches);
-  matches.forEach((match) => { match.markets[0].options[0].selected = true; });
-  matches[0].markets.find((market) => market.type === "score")!.options[0].selected = true;
-  assert.equal(getPassLimit(matches), 4);
+test("各玩法串关上限与混合过关取最小值", () => {
+  const limitFor = (...types: Array<"spf" | "rqspf" | "score" | "goals" | "halfFull">) => {
+    const matches = cloneMatches(initialMatches.slice(0, 1));
+    types.forEach((type) => {
+      matches[0].markets.find((market) => market.type === type)!.options[0].selected = true;
+    });
+    return getPassLimit(matches);
+  };
+  assert.equal(limitFor("spf"), 8);
+  assert.equal(limitFor("rqspf"), 8);
+  assert.equal(limitFor("score"), 4);
+  assert.equal(limitFor("goals"), 6);
+  assert.equal(limitFor("halfFull"), 4);
+  assert.equal(limitFor("spf", "goals"), 6);
+  assert.equal(limitFor("rqspf", "halfFull"), 4);
+  assert.equal(limitFor("spf", "rqspf", "score", "goals", "halfFull"), 4);
+});
+
+test("多场均支持单场时同时提供单场与串关选项", () => {
+  const matches = select();
+  assert.deepEqual(getPassOptions(matches), [1, 2]);
+
+  matches[0].markets[0].singleAvailable = false;
+  assert.deepEqual(getPassOptions(matches), [2]);
+
+  matches[0].markets[0].singleAvailable = true;
+  matches[0].markets[0].passAvailable = false;
+  assert.deepEqual(getPassOptions(matches), [1]);
+
+  matches[0].markets[0].singleAvailable = false;
+  assert.deepEqual(getPassOptions(matches), []);
+});
+
+test("最多选择八场比赛，同场追加选项不受限制", () => {
+  const matches = Array.from({ length: MAX_SELECTED_MATCHES + 1 }, (_, index) => {
+    const match = cloneMatches(initialMatches.slice(0, 1))[0];
+    match.id = `limit-${index}`;
+    match.code = String(index + 1);
+    if (index < MAX_SELECTED_MATCHES) match.markets[0].options[0].selected = true;
+    return match;
+  });
+  assert.equal(isNewMatchSelectionBlocked(matches, matches[MAX_SELECTED_MATCHES].id), true);
+  assert.equal(isNewMatchSelectionBlocked(matches, matches[0].id), false);
 });
 
 test("失败比赛不足以组成任一串关时订单才失败", () => {

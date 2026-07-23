@@ -28,6 +28,17 @@ export function selectedMatches(matches: MatchItem[]): MatchItem[] {
   return matches.filter((match) => selectedOptions(match).length > 0);
 }
 
+export const MAX_SELECTED_MATCHES = 8;
+
+export function isNewMatchSelectionBlocked(matches: MatchItem[], matchId: string): boolean {
+  const target = matches.find((match) => match.id === matchId);
+  return Boolean(
+    target
+    && selectedOptions(target).length === 0
+    && selectedMatches(matches).length >= MAX_SELECTED_MATCHES
+  );
+}
+
 export function getPassLimit(matches: MatchItem[]): number {
   const selectedTypes = new Set<MarketType>();
   selectedMatches(matches).forEach((match) => {
@@ -37,6 +48,21 @@ export function getPassLimit(matches: MatchItem[]): number {
   });
   if (selectedTypes.size === 0) return 8;
   return Math.min(...Array.from(selectedTypes, (type) => MARKET_LIMITS[type]));
+}
+
+export function getPassOptions(matches: MatchItem[]): number[] {
+  const chosenMatches = selectedMatches(matches);
+  if (chosenMatches.length === 0) return [];
+  const chosenMarkets = chosenMatches.flatMap((match) => match.markets.filter((market) => (
+    market.options.some((option) => option.selected)
+  )));
+  const options: number[] = [];
+  if (chosenMarkets.every((market) => market.singleAvailable !== false)) options.push(1);
+  if (chosenMatches.length >= 2 && chosenMarkets.every((market) => market.passAvailable !== false)) {
+    const limit = Math.min(chosenMatches.length, getPassLimit(matches));
+    for (let pass = 2; pass <= limit; pass += 1) options.push(pass);
+  }
+  return options;
 }
 
 export function countBets(matches: MatchItem[], passes: number[]): number {

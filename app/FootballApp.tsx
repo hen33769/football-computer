@@ -63,9 +63,12 @@ import {
   countBets,
   getOrderStatus,
   getPassLimit,
+  getPassOptions,
   isOrderFailed,
   isOrderSettleable,
+  isNewMatchSelectionBlocked,
   matchHasSelectedHit,
+  MAX_SELECTED_MATCHES,
   selectedMatches,
   selectedOptions,
 } from "./calculator";
@@ -341,6 +344,7 @@ const isExportedOrder = (value: unknown): value is SavedSlip => {
     && typeof order.savedAt === "string"
     && Array.isArray(order.matches)
     && order.matches.every(isExportedMatch)
+    && selectedMatches(order.matches).length <= MAX_SELECTED_MATCHES
     && Array.isArray(order.passes)
     && order.passes.every((pass) => Number.isInteger(pass) && pass >= 1 && pass <= 8)
     && typeof order.multiple === "number"
@@ -811,13 +815,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
 
   const chosenMatches = useMemo(() => sortMatchesForDisplay(selectedMatches(matches)), [matches]);
   const pickedCount = useMemo(() => chosenMatches.reduce((total, match) => total + selectedOptions(match).length, 0), [chosenMatches]);
-  const passLimit = useMemo(() => getPassLimit(matches), [matches]);
-  const passOptions = useMemo(() => {
-    const chosenMarkets = chosenMatches.flatMap((match) => match.markets.filter((market) => market.options.some((option) => option.selected)));
-    if (chosenMatches.length === 1) return chosenMarkets.every((market) => market.singleAvailable !== false) ? [1] : [];
-    if (chosenMarkets.some((market) => market.passAvailable === false)) return [];
-    return Array.from({ length: Math.max(0, Math.min(chosenMatches.length, passLimit) - 1) }, (_, index) => index + 2);
-  }, [chosenMatches, passLimit]);
+  const passOptions = useMemo(() => getPassOptions(matches), [matches]);
   const activePasses = useMemo(() => {
     const valid = passes.filter((value) => passOptions.includes(value));
     return valid.length > 0 || passOptions.length === 0 ? valid : [passOptions[passOptions.length - 1]];
@@ -1000,6 +998,10 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
     const targetMatch = matches.find((match) => match.id === matchId);
     const option = targetMatch?.markets.find((market) => market.type === type)?.options.find((item) => item.id === optionId);
     if (!targetMatch || !isMatchSellable(targetMatch) || !option || option.odds <= 0) return;
+    if (!option.selected && isNewMatchSelectionBlocked(matches, matchId)) {
+      message.warning(`最多可选择 ${MAX_SELECTED_MATCHES} 场比赛`);
+      return;
+    }
     setMatches((current) => current.map((match) => match.id !== matchId ? match : {
       ...match,
       markets: match.markets.map((market) => market.type !== type ? market : {
@@ -1065,6 +1067,14 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
     setManualOrderEntries((current) => current.map((entry) => entry.key === key ? { ...entry, ...patch } : entry));
   };
 
+  const addManualOrderEntry = () => {
+    if (manualOrderEntries.length >= MAX_SELECTED_MATCHES) {
+      message.warning(`最多可选择 ${MAX_SELECTED_MATCHES} 场比赛`);
+      return;
+    }
+    setManualOrderEntries((current) => [...current, createManualOrderEntry()]);
+  };
+
   const selectManualOrderMatch = (entryKey: string, matchId: string | null) => {
     const source = matchId ? matches.find((match) => normalizeSportteryMatchId(match.id) === normalizeSportteryMatchId(matchId)) : null;
     if (!source) {
@@ -1124,6 +1134,10 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
   };
 
   const addManualOrder = () => {
+    if (manualOrderEntries.length > MAX_SELECTED_MATCHES) {
+      message.warning(`最多可选择 ${MAX_SELECTED_MATCHES} 场比赛`);
+      return;
+    }
     const parsedEntries = manualOrderEntries.map((entry) => parseRecognizedText(entry.text, { selectOptions: true }));
     const invalidIndex = parsedEntries.findIndex((entryMatches) => entryMatches.length !== 1 || selectedMatches(entryMatches).length !== 1);
     if (invalidIndex >= 0) {
@@ -2063,7 +2077,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
                       setOrderProgressFilter(null);
                       setOrderStatusFilters([]);
                     }}
-                  >清除全部</Button>
+                  >清除过滤</Button>
                 </div>
                 <div className="order-filter-grid">
                   <label className="order-filter-field date-field">
@@ -2620,8 +2634,8 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
             </section>
           ))}
         </div>
-        <Button className="manual-add-match-button" type="dashed" block icon={<PlusOutlined />} onClick={() => setManualOrderEntries((current) => [...current, createManualOrderEntry()])}>添加一场比赛</Button>
-        <p className="modal-help">每场比赛对应一个文本框。优先选择本地比赛并通过“选择投注项”自动生成文本；找不到比赛时可手填，但必须包含 7 位比赛 ID、比赛信息、玩法、选项和倍率。</p>
+        <Button className="manual-add-match-button" type="dashed" block icon={<PlusOutlined />} onClick={addManualOrderEntry}>添加一场比赛</Button>
+        <p className="modal-help">每个订单最多选择 {MAX_SELECTED_MATCHES} 场比赛。每场比赛对应一个文本框；优先选择本地比赛并通过“选择投注项”自动生成文本，找不到比赛时可手填，但必须包含 7 位比赛 ID、比赛信息、玩法、选项和倍率。</p>
       </Modal>
 
       <Modal
