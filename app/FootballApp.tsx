@@ -621,7 +621,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
   const [matchResultsCollapsed, setMatchResultsCollapsed] = useState(true);
   const [orderDateRange, setOrderDateRange] = useState<[string, string] | null>(null);
   const [orderProgressFilter, setOrderProgressFilter] = useState<OrderProgressFilter>("unsettled");
-  const [orderStatusFilters, setOrderStatusFilters] = useState<OrderStatusFilter[]>(["hopeful"]);
+  const [orderStatusFilters, setOrderStatusFilters] = useState<OrderStatusFilter[]>([]);
   const [expenseTotal, setExpenseTotal] = useState(() => {
     const stored = Number(localStorage.getItem(EXPENSE_KEY));
     if (localStorage.getItem(EXPENSE_KEY) !== null && Number.isFinite(stored)) return Math.max(0, stored);
@@ -2319,7 +2319,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
                         <div className="order-card-meta-line">
                           <div className="order-card-tags">
                             <Tag color="geekblue">本地订单</Tag>
-                            {savedHitCount > 0 && <Tag color="orange">已存 {savedHitCount} 个命中</Tag>}
+                            {savedHitCount > 0 && <Tag color="orange">{savedHitCount} 个命中</Tag>}
                             {orderFailed && <Tag color="error">失败</Tag>}
                             {trackedPrize > 0 && <Tag color="green">已中奖 {trackedPrizeText} 元</Tag>}
                             {isOrderOddsLocked(slip) && <Tag color="gold" icon={<LockOutlined />}>倍率锁定</Tag>}
