@@ -76,8 +76,37 @@ export function countBets(matches: MatchItem[], passes: number[]): number {
   }, 0);
 }
 
+export const SINGLE_BET_PRICE = 2;
+
 export function calculateStake(matches: MatchItem[], passes: number[], multiple: number): number {
-  return countBets(matches, passes) * 2 * multiple;
+  return countBets(matches, passes) * SINGLE_BET_PRICE * multiple;
+}
+
+export type PrizeRangeMetrics = {
+  available: boolean;
+  prize: { min: number; max: number };
+  profit: { min: number; max: number };
+  multiplier: { min: number; max: number };
+};
+
+export function calculatePrizeRangeMetrics(range: PrizeRange, stake: number, multiple: number): PrizeRangeMetrics {
+  const available = range.max > 0;
+  const perBetStake = SINGLE_BET_PRICE * multiple;
+  return {
+    available,
+    prize: {
+      min: available ? range.min : 0,
+      max: available ? range.max : 0,
+    },
+    profit: {
+      min: available ? range.min - stake : 0,
+      max: available ? range.max - stake : 0,
+    },
+    multiplier: {
+      min: available && perBetStake > 0 ? range.min / perBetStake : 0,
+      max: available && perBetStake > 0 ? range.max / perBetStake : 0,
+    },
+  };
 }
 
 function bankersRound(value: number): number {

@@ -4,6 +4,7 @@ import {
   calculateCurrentPrize,
   calculatePassMultipliers,
   calculatePrizeRange,
+  calculatePrizeRangeMetrics,
   calculateStake,
   countBets,
   getOrderStatus,
@@ -84,6 +85,17 @@ test("理论奖金范围排除 0 并保持有序", () => {
   const range = calculatePrizeRange(matches, [2], 1);
   assert.ok(range.min > 0);
   assert.ok(range.max >= range.min);
+});
+
+test("中奖倍率范围按单注价格乘以倍数计算，不使用订单总投入", () => {
+  const metrics = calculatePrizeRangeMetrics(
+    { min: 24, max: 60, uncappedMax: 60 },
+    24,
+    3,
+  );
+  assert.deepEqual(metrics.prize, { min: 24, max: 60 });
+  assert.deepEqual(metrics.profit, { min: 0, max: 36 });
+  assert.deepEqual(metrics.multiplier, { min: 4, max: 10 });
 });
 
 test("各玩法串关上限与混合过关取最小值", () => {

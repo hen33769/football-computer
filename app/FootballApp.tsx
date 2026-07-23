@@ -59,6 +59,7 @@ import {
   calculateCurrentPrize,
   calculatePassMultipliers,
   calculatePrizeRange,
+  calculatePrizeRangeMetrics,
   calculateStake,
   countBets,
   getOrderStatus,
@@ -71,6 +72,7 @@ import {
   MAX_SELECTED_MATCHES,
   selectedMatches,
   selectedOptions,
+  type PrizeRangeMetrics,
 } from "./calculator";
 import {
   cloneMatches,
@@ -240,31 +242,30 @@ function OddsTrendIndicator({ trend }: { trend?: -1 | 0 | 1 }) {
   );
 }
 
-const winningMultiplierRange = (range: PrizeRange, stake: number) => {
-  if (range.max <= 0 || stake <= 0) return "—";
+const winningMultiplierRange = (range: PrizeRangeMetrics["multiplier"]) => {
+  if (range.max <= 0) return "—";
   const format = (value: number) => value.toLocaleString("zh-CN", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
-  return `${format(range.min / stake)} – ${format(range.max / stake)} 倍`;
+  return `${format(range.min)} – ${format(range.max)} 倍`;
 };
 
-function DetailPrizeRange({ range, stake }: { range: PrizeRange; stake: number }) {
-  const available = range.max > 0;
+function DetailPrizeRange({ range, metrics }: { range: PrizeRange; metrics: PrizeRangeMetrics }) {
   return (
     <div className="detail-range-card">
       <div className="detail-range-prize">
         <span>中奖奖金范围</span>
-        <strong>{available ? `¥${currency(range.min)} – ¥${currency(range.max)}` : "—"}</strong>
+        <strong>{metrics.available ? `¥${currency(metrics.prize.min)} – ¥${currency(metrics.prize.max)}` : "—"}</strong>
         <small>最低值排除未中奖的 0 元结果</small>
         <div className="detail-range-metrics">
           <div>
             <span>中奖时利润范围</span>
-            <b>{available ? `¥${currency(range.min - stake)} – ¥${currency(range.max - stake)}` : "—"}</b>
+            <b>{metrics.available ? `¥${currency(metrics.profit.min)} – ¥${currency(metrics.profit.max)}` : "—"}</b>
           </div>
           <div>
             <span>中奖倍率范围</span>
-            <b>{winningMultiplierRange(range, stake)}</b>
+            <b>{winningMultiplierRange(metrics.multiplier)}</b>
           </div>
         </div>
       </div>
@@ -926,6 +927,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
   const betCount = useMemo(() => countBets(matches, activePasses), [matches, activePasses]);
   const stake = useMemo(() => calculateStake(matches, activePasses, multiple), [matches, activePasses, multiple]);
   const prizeRange = useMemo(() => calculatePrizeRange(matches, activePasses, multiple), [matches, activePasses, multiple]);
+  const prizeRangeMetrics = useMemo(() => calculatePrizeRangeMetrics(prizeRange, stake, multiple), [prizeRange, stake, multiple]);
   const currentPrize = useMemo(() => calculateCurrentPrize(matches, activePasses, multiple, hits), [matches, activePasses, multiple, hits]);
   const currentProfit = currentPrize - stake;
   const netProfit = incomeTotal - expenseTotal;
@@ -933,6 +935,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
   const orderDetailPrize = orderDetail ? calculateCurrentPrize(orderDetail.matches, orderDetail.passes, orderDetail.multiple, orderHits) : 0;
   const orderDetailProfit = orderDetailPrize - orderDetailStake;
   const orderDetailRange = orderDetail ? calculatePrizeRange(orderDetail.matches, orderDetail.passes, orderDetail.multiple) : { min: 0, max: 0, uncappedMax: 0 };
+  const orderDetailRangeMetrics = calculatePrizeRangeMetrics(orderDetailRange, orderDetailStake, orderDetail?.multiple ?? 0);
   const orderDetailMatches = orderDetail ? sortMatchesForDisplay(selectedMatches(orderDetail.matches)) : [];
   const orderDetailPickedCount = orderDetailMatches.reduce((total, match) => total + selectedOptions(match).length, 0);
   const filteredSavedSlips = useMemo(() => savedSlips
@@ -2078,11 +2081,11 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
           </div>
           <div className="prize-card">
             <span>中奖奖金范围</span>
-            <strong>{prizeRange.max ? `¥${currency(prizeRange.min)} – ¥${currency(prizeRange.max)}` : "—"}</strong>
+            <strong>{prizeRangeMetrics.available ? `¥${currency(prizeRangeMetrics.prize.min)} – ¥${currency(prizeRangeMetrics.prize.max)}` : "—"}</strong>
             <small>最低值排除未中奖的 0 元结果</small>
           </div>
-          <div className="profit-row"><span>中奖时利润范围</span><b>{prizeRange.max ? `¥${currency(prizeRange.min - stake)} – ¥${currency(prizeRange.max - stake)}` : "—"}</b></div>
-          <div className="profit-row multiplier-row"><span>中奖倍率范围</span><b>{winningMultiplierRange(prizeRange, stake)}</b></div>
+          <div className="profit-row"><span>中奖时利润范围</span><b>{prizeRangeMetrics.available ? `¥${currency(prizeRangeMetrics.profit.min)} – ¥${currency(prizeRangeMetrics.profit.max)}` : "—"}</b></div>
+          <div className="profit-row multiplier-row"><span>中奖倍率范围</span><b>{winningMultiplierRange(prizeRangeMetrics.multiplier)}</b></div>
           {prizeRange.uncappedMax > prizeRange.max && <div className="cap-note">未封顶理论最高 ¥{currency(prizeRange.uncappedMax)}，已按官方单注上限修正。</div>}
           <div className="panel-actions">
             <Button icon={<SaveOutlined />} disabled={!pickedCount} onClick={openSaveSlip}>{temporaryOrder ? "更新预测单" : "保存预测单"}</Button>
@@ -2578,7 +2581,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
           <span>当前命中奖金</span><strong>¥{currency(currentPrize)}</strong>
           <small className={currentProfit >= 0 ? "profit-positive" : "profit-negative"}>当前利润 {currentProfit >= 0 ? "+" : ""}¥{currency(currentProfit)}</small>
         </div>
-        <DetailPrizeRange range={prizeRange} stake={stake} />
+        <DetailPrizeRange range={prizeRange} metrics={prizeRangeMetrics} />
         <div className="detail-pass-summary">
           <span>当前订单串关</span>
           <div>{activePasses.length ? activePasses.map((value) => <Tag color="cyan" key={value}>{value === 1 ? "单场" : `${value} 串 1`}</Tag>) : <Tag>未选择</Tag>}</div>
@@ -2626,7 +2629,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
               <span>当前命中奖金</span><strong>¥{currency(orderDetailPrize)}</strong>
               <small className={orderDetailProfit >= 0 ? "profit-positive" : "profit-negative"}>当前利润 {orderDetailProfit >= 0 ? "+" : ""}¥{currency(orderDetailProfit)}</small>
             </div>
-            <DetailPrizeRange range={orderDetailRange} stake={orderDetailStake} />
+            <DetailPrizeRange range={orderDetailRange} metrics={orderDetailRangeMetrics} />
             <div className="detail-pass-summary">
               <span>订单串关</span>
               <div>{orderDetail.passes.length ? orderDetail.passes.map((value) => <Tag color="cyan" key={value}>{value === 1 ? "单场" : `${value} 串 1`}</Tag>) : <Tag>未选择</Tag>}</div>
