@@ -2,13 +2,9 @@
 
 set -euo pipefail
 
-repository_root="$(git rev-parse --show-toplevel)"
+script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repository_root="$(git -C "$script_directory" rev-parse --show-toplevel)"
 cd "$repository_root"
-
-if [[ -n "$(git status --porcelain)" ]]; then
-  echo "部署已取消：请先提交或清理当前工作区变更。" >&2
-  exit 1
-fi
 
 branch_name="$(git symbolic-ref --quiet --short HEAD)" || {
   echo "部署已取消：当前处于 detached HEAD 状态。" >&2
@@ -21,10 +17,10 @@ if ! git remote get-url "$remote_name" >/dev/null 2>&1; then
   exit 1
 fi
 
-npm version patch --no-git-tag-version
+npm version patch --no-git-tag-version --force
 next_version="$(node -p "require('./package.json').version")"
 
-git add package.json package-lock.json
+git add -A
 git commit -m "chore: release v${next_version}"
 git push "$remote_name" "$branch_name"
 

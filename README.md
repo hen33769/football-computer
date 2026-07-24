@@ -38,15 +38,13 @@ npm test
 
 ## 发布
 
-确认工作区没有未提交变更后运行：
-
 ```bash
 make deploy
 ```
 
-该命令会自动递增补丁版本（例如 `v0.1.0` → `v0.1.1`），提交 `package.json` 与
-`package-lock.json` 的版本变更，并推送当前分支到 `origin`。如需使用其它远程仓库，
-可通过 `DEPLOY_REMOTE` 指定。
+该命令会自动递增补丁版本（例如 `v0.1.0` → `v0.1.1`），暂存并提交当前全部代码
+及版本变更，然后推送当前分支到 `origin`。如需使用其它远程仓库，可通过
+`DEPLOY_REMOTE` 指定。
 
 OCR 的 Worker、WASM 和中英文语言模型已经放在 `public/ocr` 与 `public/tessdata`，正常本地运行时不会把上传图片发送到外部服务。
 
