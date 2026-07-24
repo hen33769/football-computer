@@ -87,6 +87,7 @@ import {
   fetchSportteryMatchHandicap,
   fetchSportteryMatchScore,
   fetchSportteryMatchSnapshot,
+  getMatchSaleState,
   getNextSportteryAutoRefreshDelay,
   getSportteryRefreshPolicy,
   hasMatchStarted,
@@ -131,6 +132,14 @@ export type AppView = "betting" | "orders" | "settings";
 type DataTransferMode = "orders" | "settings" | "matches" | "full";
 type OrderProgressFilter = "settled" | "unsettled" | null;
 type OrderStatusFilter = "success" | "hopeful" | "failed";
+type MatchSaleFilter = "all" | "non-stopped" | "stopped" | "selling" | "pending";
+const MATCH_SALE_FILTER_OPTIONS: Array<{ value: MatchSaleFilter; label: string }> = [
+  { value: "all", label: "不限" },
+  { value: "non-stopped", label: "非停售" },
+  { value: "stopped", label: "已停售" },
+  { value: "selling", label: "可售" },
+  { value: "pending", label: "待开售" },
+];
 const MATCH_PHASE_ROWS = [
   [1, "上半场"],
   [2, "下半场"],
@@ -195,6 +204,13 @@ const compareMatchDisplayOrder = (left: MatchItem, right: MatchItem) => (
 );
 
 const sortMatchesForDisplay = (items: MatchItem[]) => [...items].sort(compareMatchDisplayOrder);
+
+const matchesSaleFilter = (match: MatchItem, filter: MatchSaleFilter, now: Date) => {
+  const state = getMatchSaleState(match, now);
+  if (filter === "all") return true;
+  if (filter === "non-stopped") return state !== "stopped";
+  return state === filter;
+};
 
 const isOrderOddsLocked = (slip: Pick<SavedSlip, "oddsLocked" | "settledAt">) => Boolean(slip.settledAt || slip.oddsLocked);
 
@@ -545,28 +561,32 @@ function EditableLeagueTag({
 
 function MatchCard({
   match,
+  now,
   onToggle,
   onMore,
   leagueColor,
   onLeagueColorSave,
 }: {
   match: MatchItem;
+  now: Date;
   onToggle: (matchId: string, type: MarketType, optionId: string) => void;
   onMore: (matchId: string) => void;
   leagueColor: string;
   onLeagueColorSave: (league: string, color: string) => void;
 }) {
   const picked = selectedOptions(match).length;
-  const sellable = isMatchSellable(match);
+  const saleState = getMatchSaleState(match, now);
+  const sellable = saleState === "selling";
   const spf = match.markets.find((market) => market.type === "spf")!;
   const rqspf = match.markets.find((market) => market.type === "rqspf")!;
   return (
-    <article className={`match-card ${picked ? "has-selection" : ""} ${sellable ? "" : "stopped"}`}>
+    <article className={`match-card ${picked ? "has-selection" : ""} ${saleState}`}>
       <div className="match-meta">
         <div>
           <span className="match-code">{match.weekday}{match.code}</span>
           <EditableLeagueTag league={match.league} color={leagueColor} onSave={onLeagueColorSave} />
-          {!sellable && <Tag color="default">已停售</Tag>}
+          {saleState === "pending" && <Tag color="warning">待开售</Tag>}
+          {saleState === "stopped" && <Tag color="default">已停售</Tag>}
         </div>
         <div className="match-time">{formatMatchCardTime(match)}</div>
       </div>
@@ -668,7 +688,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
   const [matchDates, setMatchDates] = useState<SportteryMatchDate[]>(() => cachedMatchDates(matches));
   const [leagueOptions, setLeagueOptions] = useState<SportteryLeague[]>(() => cachedLeagueOptions(matches));
   const [selectedMatchDate, setSelectedMatchDate] = useState<string | null>(null);
-  const [onlySellableMatches, setOnlySellableMatches] = useState(true);
+  const [matchSaleFilter, setMatchSaleFilter] = useState<MatchSaleFilter>("non-stopped");
   const [visibleLeagueNames, setVisibleLeagueNames] = useState<string[] | null>(null);
   const [collapsedMatchDates, setCollapsedMatchDates] = useState<string[]>([]);
   const initializedMatchDateCollapseRef = useRef(new Set<string>());
@@ -747,7 +767,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
   useEffect(() => {
     if (temporaryOrder) return;
     const dateAvailability = new Map<string, boolean>();
-    matches.forEach((match) => dateAvailability.set(match.date, (dateAvailability.get(match.date) ?? false) || isMatchSellable(match, saleNow)));
+    matches.forEach((match) => dateAvailability.set(match.date, (dateAvailability.get(match.date) ?? false) || getMatchSaleState(match, saleNow) !== "stopped"));
     const newlyUnavailableDates: string[] = [];
     const newlySellableDates: string[] = [];
     dateAvailability.forEach((hasSellableMatch, date) => {
@@ -993,8 +1013,8 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
   }, [filteredSavedSlips, matches]);
 
   const availableMatchDateSet = useMemo(() => new Set(matchDates
-    .filter((date) => matches.some((match) => match.date === date.businessDate && (!onlySellableMatches || isMatchSellable(match, saleNow))))
-    .map((item) => item.businessDate)), [matchDates, matches, onlySellableMatches, saleNow]);
+    .filter((date) => matches.some((match) => match.date === date.businessDate && matchesSaleFilter(match, matchSaleFilter, saleNow)))
+    .map((item) => item.businessDate)), [matchDates, matches, matchSaleFilter, saleNow]);
   const visibleLeagueSet = useMemo(
     () => new Set(visibleLeagueNames ?? leagueOptions.map((item) => item.leagueNameAbbr)),
     [leagueOptions, visibleLeagueNames],
@@ -1006,9 +1026,9 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
   ])], [appSettings.appearance.leagueTagColors, leagueOptions]);
   const filteredMatches = useMemo(() => matches
     .filter((match) => !selectedMatchDate || match.date === selectedMatchDate)
-    .filter((match) => !onlySellableMatches || isMatchSellable(match, saleNow))
+    .filter((match) => matchesSaleFilter(match, matchSaleFilter, saleNow))
     .filter((match) => leagueOptions.length === 0 || visibleLeagueSet.has(match.league))
-    .sort(compareMatchDisplayOrder), [leagueOptions.length, matches, onlySellableMatches, saleNow, selectedMatchDate, visibleLeagueSet]);
+    .sort(compareMatchDisplayOrder), [leagueOptions.length, matches, matchSaleFilter, saleNow, selectedMatchDate, visibleLeagueSet]);
 
   const groupedMatches = useMemo(() => {
     const groups = new Map<string, MatchItem[]>();
@@ -1021,7 +1041,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
   const toggleOption = (matchId: string, type: MarketType, optionId: string) => {
     const targetMatch = matches.find((match) => match.id === matchId);
     const option = targetMatch?.markets.find((market) => market.type === type)?.options.find((item) => item.id === optionId);
-    if (!targetMatch || !isMatchSellable(targetMatch) || !option || option.odds <= 0) return;
+    if (!targetMatch || !isMatchSellable(targetMatch, saleNow) || !option || option.odds <= 0) return;
     if (!option.selected && isNewMatchSelectionBlocked(matches, matchId)) {
       message.warning(`最多可选择 ${MAX_SELECTED_MATCHES} 场比赛`);
       return;
@@ -1898,7 +1918,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
   const clearMatchFilters = () => {
     setSelectedMatchDate(null);
     setVisibleLeagueNames(null);
-    setOnlySellableMatches(false);
+    setMatchSaleFilter("all");
   };
 
   const toggleMatchDateCollapsed = (date: string) => {
@@ -2020,7 +2040,14 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
                 disabledDate={(date) => !availableMatchDateSet.has(date.format("YYYY-MM-DD"))}
                 onChange={(date) => setSelectedMatchDate(date?.format("YYYY-MM-DD") ?? null)}
               />
-              <Checkbox checked={onlySellableMatches} disabled={Boolean(temporaryOrder)} onChange={(event) => setOnlySellableMatches(event.target.checked)}>仅可售</Checkbox>
+              <Select
+                className="match-sale-filter"
+                aria-label="比赛销售状态"
+                value={matchSaleFilter}
+                options={MATCH_SALE_FILTER_OPTIONS}
+                disabled={Boolean(temporaryOrder)}
+                onChange={setMatchSaleFilter}
+              />
               <Button
                 className="match-refresh-button"
                 icon={<ReloadOutlined />}
@@ -2091,6 +2118,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
                     <MatchCard
                       key={match.id}
                       match={match}
+                      now={saleNow}
                       onToggle={toggleOption}
                       onMore={setMoreMatchId}
                       leagueColor={getLeagueTagColor(appSettings, match.league)}
@@ -2560,7 +2588,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
         onCancel={() => setMoreMatchId(null)}
         footer={<Button type="primary" onClick={() => setMoreMatchId(null)}>完成选择</Button>}
         width={980}
-        title={moreMatch ? <Space>{`${moreMatch.weekday}${moreMatch.code} · ${moreMatch.home} VS ${moreMatch.away}`}{!isMatchSellable(moreMatch) && <Tag color="default">已停售 · 仅供查看</Tag>}</Space> : "更多玩法"}
+        title={moreMatch ? <Space>{`${moreMatch.weekday}${moreMatch.code} · ${moreMatch.home} VS ${moreMatch.away}`}{getMatchSaleState(moreMatch, saleNow) === "pending" && <Tag color="warning">待开售 · 仅供查看</Tag>}{getMatchSaleState(moreMatch, saleNow) === "stopped" && <Tag color="default">已停售 · 仅供查看</Tag>}</Space> : "更多玩法"}
         className="more-modal"
       >
         {moreMatch?.markets.map((market) => (
@@ -2570,7 +2598,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
               {marketEditorGroups(market).map((group) => (
                 <div className="more-options-row" key={group.key}>
                   {group.options.map((item) => (
-                    <button type="button" disabled={!isMatchSellable(moreMatch) || item.odds <= 0} className={`more-odds-option ${isMatchSellable(moreMatch) && item.odds > 0 && item.selected ? "selected" : ""}`} key={item.id} onClick={() => toggleOption(moreMatch.id, market.type, item.id)} aria-pressed={isMatchSellable(moreMatch) && item.odds > 0 && item.selected}>
+                    <button type="button" disabled={!isMatchSellable(moreMatch, saleNow) || item.odds <= 0} className={`more-odds-option ${isMatchSellable(moreMatch, saleNow) && item.odds > 0 && item.selected ? "selected" : ""}`} key={item.id} onClick={() => toggleOption(moreMatch.id, market.type, item.id)} aria-pressed={isMatchSellable(moreMatch, saleNow) && item.odds > 0 && item.selected}>
                       <span>{item.label}</span><strong>{item.odds > 0 ? <><OddsTrendIndicator trend={item.oddsTrend} />@{item.odds.toFixed(2)}</> : "--"}</strong>
                     </button>
                   ))}
@@ -2771,7 +2799,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
                   value={entry.matchId}
                   options={sortMatchesForDisplay(matches).map((match) => ({
                     value: normalizeSportteryMatchId(match.id),
-                    label: `${match.date} · ${match.weekday}${match.code} · ${match.home} VS ${match.away}${isMatchSellable(match) ? "" : " · 已停售"}`,
+                    label: `${match.date} · ${match.weekday}${match.code} · ${match.home} VS ${match.away}${getMatchSaleState(match, saleNow) === "pending" ? " · 待开售" : getMatchSaleState(match, saleNow) === "stopped" ? " · 已停售" : ""}`,
                   }))}
                   onChange={(value) => selectManualOrderMatch(entry.key, value ?? null)}
                 />

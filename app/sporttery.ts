@@ -181,9 +181,25 @@ export const hasMatchStarted = (match: Pick<MatchItem, "date" | "time">, now = n
   return !Number.isNaN(kickoff.getTime()) && now.getTime() >= kickoff.getTime();
 };
 
-export const isMatchSellable = (match: MatchItem, now = new Date()) => match.saleStatus !== "stopped"
-  && !hasMatchStarted(match, now)
-  && match.markets.some((market) => market.options.some((option) => option.odds > 0));
+export type MatchSaleState = "pending" | "selling" | "stopped";
+
+const matchSaleStartTime = (match: Pick<MatchItem, "date">) => {
+  const saleStart = new Date(`${match.date}T11:00:00`);
+  return Number.isNaN(saleStart.getTime()) ? null : saleStart;
+};
+
+/** 每个比赛日 11:00 前统一视为待开售，之后再根据接口销售状态判断。 */
+export const getMatchSaleState = (match: MatchItem, now = new Date()): MatchSaleState => {
+  const saleStart = matchSaleStartTime(match);
+  if (saleStart && now.getTime() < saleStart.getTime()) return "pending";
+  return match.saleStatus !== "stopped"
+    && !hasMatchStarted(match, now)
+    && match.markets.some((market) => market.options.some((option) => option.odds > 0))
+    ? "selling"
+    : "stopped";
+};
+
+export const isMatchSellable = (match: MatchItem, now = new Date()) => getMatchSaleState(match, now) === "selling";
 
 export function convertSportteryMatches(payload: SportteryMatchCalculatorResponse, now = new Date()): MatchItem[] {
   const groups = payload.value?.matchInfoList;

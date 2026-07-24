@@ -159,7 +159,7 @@ button, input, textarea { font: inherit; }
 .match-filter-row > span { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .match-date-control { grid-template-columns: 72px minmax(0, 1fr) auto auto; }
 .match-date-control .ant-picker { width: 220px; }
-.match-date-control .ant-checkbox-wrapper { color: #526a70; font-size: 12px; white-space: nowrap; }
+.match-sale-filter { width: 120px; }
 .match-refresh-button { justify-self: end; }
 .league-filter-control { grid-template-columns: 72px minmax(0, 1fr) auto; }
 .match-update-time { color: #8b9a9e; font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -617,6 +617,7 @@ button, input, textarea { font: inherit; }
   .temporary-order-banner .ant-btn { width: 100%; }
   .match-filter-row, .match-date-control, .league-filter-control { grid-template-columns: 1fr; gap: 7px; }
   .match-date-control .ant-picker { width: 100%; min-width: 0; }
+  .match-sale-filter { width: 100%; }
   .match-refresh-button { width: 100%; justify-self: stretch; }
   .match-update-time { text-align: right; }
   .match-card { padding: 14px 12px; }

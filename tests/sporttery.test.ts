@@ -5,6 +5,7 @@ import {
   convertSportteryMorningMatches,
   convertSportteryMatches,
   getNextSportteryAutoRefreshDelay,
+  getMatchSaleState,
   getSportteryRefreshPolicy,
   getSportteryMatchPhaseTc,
   hasMatchStarted,
@@ -88,6 +89,19 @@ test("体彩接口五类玩法完整转换为投注页比赛结构", () => {
   assert.equal(market(match, "halfFull").options.find((item) => item.id === "WW")?.odds, 5.1);
   assert.equal(market(match, "halfFull").options.find((item) => item.id === "DL")?.odds, 5.4);
   assert.equal(market(match, "halfFull").options.find((item) => item.id === "LL")?.odds, 4);
+});
+
+test("比赛日 11 点前为待开售，11 点起再按接口状态判断", () => {
+  const [match] = convertSportteryMatches(payload, new Date("2026-07-22T10:59:59"));
+  assert.equal(match.saleStatus, "selling");
+  assert.equal(getMatchSaleState(match, new Date("2026-07-22T10:59:59")), "pending");
+  assert.equal(isMatchSellable(match, new Date("2026-07-22T10:59:59")), false);
+  assert.equal(getMatchSaleState(match, new Date("2026-07-22T11:00:00")), "selling");
+  assert.equal(isMatchSellable(match, new Date("2026-07-22T11:00:00")), true);
+
+  const stopped = { ...match, saleStatus: "stopped" as const };
+  assert.equal(getMatchSaleState(stopped, new Date("2026-07-22T10:59:59")), "pending");
+  assert.equal(getMatchSaleState(stopped, new Date("2026-07-22T11:00:00")), "stopped");
 });
 
 test("订单只更新匹配且仍可售的已选项倍率", () => {
