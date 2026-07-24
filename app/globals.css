@@ -25,6 +25,24 @@ body {
 button, input, textarea { font: inherit; }
 
 .football-app { min-height: 100vh; padding-bottom: 64px; }
+.app-version {
+  position: fixed;
+  right: max(10px, env(safe-area-inset-right));
+  bottom: max(10px, env(safe-area-inset-bottom));
+  z-index: 50;
+  padding: 3px 7px;
+  border: 1px solid rgba(15, 80, 85, .14);
+  border-radius: 999px;
+  color: rgba(21, 41, 47, .55);
+  background: rgba(255, 255, 255, .78);
+  box-shadow: 0 3px 12px rgba(7, 53, 59, .08);
+  backdrop-filter: blur(8px);
+  font-size: 10px;
+  line-height: 1.2;
+  letter-spacing: .03em;
+  pointer-events: none;
+  user-select: none;
+}
 .app-loading-shell {
   min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
   color: #fff; background: radial-gradient(circle at 50% 35%, #14716e, #07353b 58%, #05272d);

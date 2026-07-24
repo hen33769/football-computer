@@ -36,6 +36,18 @@ npm run build
 npm test
 ```
 
+## 发布
+
+确认工作区没有未提交变更后运行：
+
+```bash
+make deploy
+```
+
+该命令会自动递增补丁版本（例如 `v0.1.0` → `v0.1.1`），提交 `package.json` 与
+`package-lock.json` 的版本变更，并推送当前分支到 `origin`。如需使用其它远程仓库，
+可通过 `DEPLOY_REMOTE` 指定。
+
 OCR 的 Worker、WASM 和中英文语言模型已经放在 `public/ocr` 与 `public/tessdata`，正常本地运行时不会把上传图片发送到外部服务。
 
 由于 OCR 需要 Web Worker 和 WASM，浏览器通常不允许它们从 `file://` 直接加载，因此本项目应通过 `npm run dev` 或本地静态服务器打开，不建议直接双击 HTML。

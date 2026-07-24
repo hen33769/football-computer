@@ -79,6 +79,7 @@ import {
   cloneMatches,
   MARKET_LABELS,
 } from "./data";
+import AppVersion from "./AppVersion";
 import { parseRecognizedText } from "./ocr";
 import {
   convertSportteryMatches,
@@ -2828,19 +2829,25 @@ export default function FootballApp({ initialView = "betting", onNavigate }: { i
   }, []);
   if (!mounted) {
     return (
-      <div className="app-loading-shell">
-        <div className="app-loading-mark">★</div>
-        <b>竞彩足球模拟工具</b>
-        <span>正在载入官方比赛…</span>
-      </div>
+      <>
+        <div className="app-loading-shell">
+          <div className="app-loading-mark">★</div>
+          <b>竞彩足球模拟工具</b>
+          <span>正在载入官方比赛…</span>
+        </div>
+        <AppVersion />
+      </>
     );
   }
   return (
-    <ConfigProvider theme={{
-      token: { colorPrimary: "#f04e55", borderRadius: 12, colorText: "#172a32", fontFamily: 'Inter, "PingFang SC", "Microsoft YaHei", sans-serif' },
-      components: { Button: { controlHeight: 40 }, Modal: { borderRadiusLG: 18 } },
-    }}>
-      <App notification={{ placement: "bottomRight", showProgress: true, pauseOnHover: true }}><InnerFootballApp initialView={initialView} onNavigate={onNavigate} /></App>
-    </ConfigProvider>
+    <>
+      <ConfigProvider theme={{
+        token: { colorPrimary: "#f04e55", borderRadius: 12, colorText: "#172a32", fontFamily: 'Inter, "PingFang SC", "Microsoft YaHei", sans-serif' },
+        components: { Button: { controlHeight: 40 }, Modal: { borderRadiusLG: 18 } },
+      }}>
+        <App notification={{ placement: "bottomRight", showProgress: true, pauseOnHover: true }}><InnerFootballApp initialView={initialView} onNavigate={onNavigate} /></App>
+      </ConfigProvider>
+      <AppVersion />
+    </>
   );
 }
