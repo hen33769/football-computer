@@ -93,7 +93,7 @@ import {
   hasMatchStarted,
   getSportteryMatchPhaseTc,
   isSportteryRegularTimeFinished,
-  isMatchSellable,
+  isMatchSelectable,
   mergeSportteryMatchCache,
   normalizeSportteryMatchId,
   parseSportteryMatchScoreDetails,
@@ -171,13 +171,6 @@ const currency = (value: number) => value.toLocaleString("zh-CN", {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
 });
-
-const dateKeyFromToday = (offsetDays: number) => {
-  const date = new Date();
-  date.setHours(12, 0, 0, 0);
-  date.setDate(date.getDate() + offsetDays);
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-};
 
 const savedSlipDateKey = (savedAt: string) => {
   const date = new Date(savedAt);
@@ -335,7 +328,7 @@ const isExportedMatch = (value: unknown): value is MatchItem => {
   if (!value || typeof value !== "object") return false;
   const match = value as Partial<MatchItem>;
   if (![match.id, match.date, match.weekday, match.code, match.league, match.time, match.home, match.away].every((item) => typeof item === "string")) return false;
-  if (typeof match.saleStatus !== "undefined" && match.saleStatus !== "selling" && match.saleStatus !== "stopped") return false;
+  if (typeof match.saleStatus !== "undefined" && !["pending", "selling", "stopped"].includes(match.saleStatus)) return false;
   if (!Array.isArray(match.markets)) return false;
   return match.markets.every((market) => (
     Boolean(market)
@@ -414,7 +407,7 @@ const loadCachedMatches = () => {
     const raw = localStorage.getItem(MATCH_CACHE_KEY);
     const parsed = raw ? JSON.parse(raw) as unknown : [];
     if (!Array.isArray(parsed)) return [];
-    const cleaned = mergeSportteryMatchCache([], parsed.filter(isExportedMatch), dateKeyFromToday(0));
+    const cleaned = mergeSportteryMatchCache([], parsed.filter(isExportedMatch), new Date());
     localStorage.setItem(MATCH_CACHE_KEY, JSON.stringify(cleaned.map(matchWithClearedSelections)));
     return cleaned;
   } catch {
@@ -576,7 +569,7 @@ function MatchCard({
 }) {
   const picked = selectedOptions(match).length;
   const saleState = getMatchSaleState(match, now);
-  const sellable = saleState === "selling";
+  const selectable = saleState !== "stopped";
   const spf = match.markets.find((market) => market.type === "spf")!;
   const rqspf = match.markets.find((market) => market.type === "rqspf")!;
   return (
@@ -593,8 +586,8 @@ function MatchCard({
       <div className="teams-row">
         <div className="teams"><b>{match.home}</b><span>VS</span><b>{match.away}</b></div>
       </div>
-      <MarketRow market={spf} matchId={match.id} onToggle={onToggle} disabled={!sellable} />
-      <MarketRow market={rqspf} matchId={match.id} onToggle={onToggle} disabled={!sellable} />
+      <MarketRow market={spf} matchId={match.id} onToggle={onToggle} disabled={!selectable} />
+      <MarketRow market={rqspf} matchId={match.id} onToggle={onToggle} disabled={!selectable} />
       <Button className="more-play-button" type={picked ? "primary" : "default"} ghost={Boolean(picked)} onClick={() => onMore(match.id)}>
         更多玩法{picked ? ` · 已选 ${picked} 项` : ""}
       </Button>
@@ -699,7 +692,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
   const applySportterySnapshot = useCallback((snapshot: SportteryMatchSnapshot) => {
     const updateVisibleMatches = activeView === "betting" && !temporaryOrder;
     const currentCache = updateVisibleMatches ? matchesRef.current : loadCachedMatches();
-    const mergedMatches = mergeSportteryMatchCache(currentCache, snapshot.matches, dateKeyFromToday(0));
+    const mergedMatches = mergeSportteryMatchCache(currentCache, snapshot.matches, new Date());
     saveCachedMatches(mergedMatches);
     if (updateVisibleMatches) {
       const nextDates = cachedMatchDates(mergedMatches, snapshot.matchDates);
@@ -838,7 +831,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
       applySportterySnapshot(snapshot);
       notification.success({
         title: "比赛数据已刷新",
-        description: `${mode === "morning" ? "早间逐场最新赔率" : "常规比赛接口"} · 共 ${snapshot.matches.length} 场${snapshot.fixedBonusFailureCount ? ` · ${snapshot.fixedBonusFailureCount} 场投注情况获取失败` : ""}${snapshot.lastUpdateTime ? ` · 接口更新 ${snapshot.lastUpdateTime}` : ""}`,
+        description: `${mode === "morning" ? "早间逐场最新赔率" : "常规接口 + 缺失比赛补充"} · 共 ${snapshot.matches.length} 场${snapshot.fixedBonusFailureCount ? ` · ${snapshot.fixedBonusFailureCount} 场投注情况获取失败` : ""}${snapshot.lastUpdateTime ? ` · 接口更新 ${snapshot.lastUpdateTime}` : ""}`,
         placement: "bottomRight",
       });
     } catch (error) {
@@ -1007,8 +1000,6 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
         const matchId = normalizeSportteryMatchId(match.id);
         if (!unique.has(matchId)) unique.set(matchId, officialById.get(matchId) ?? match);
         }));
-    console.log(filteredSavedSlips)
-    console.log(sortMatchesForDisplay([...unique.values()]))
     return sortMatchesForDisplay([...unique.values()]);
   }, [filteredSavedSlips, matches]);
 
@@ -1041,7 +1032,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
   const toggleOption = (matchId: string, type: MarketType, optionId: string) => {
     const targetMatch = matches.find((match) => match.id === matchId);
     const option = targetMatch?.markets.find((market) => market.type === type)?.options.find((item) => item.id === optionId);
-    if (!targetMatch || !isMatchSellable(targetMatch, saleNow) || !option || option.odds <= 0) return;
+    if (!targetMatch || !isMatchSelectable(targetMatch, saleNow) || !option || option.odds <= 0) return;
     if (!option.selected && isNewMatchSelectionBlocked(matches, matchId)) {
       message.warning(`最多可选择 ${MAX_SELECTED_MATCHES} 场比赛`);
       return;
@@ -1792,7 +1783,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
         const rawMatches = data.matches;
         if (!Array.isArray(rawMatches)) throw new Error("文件中缺少 matches 数组");
         if (!rawMatches.every(isExportedMatch)) throw new Error("比赛数据结构与导出格式不一致");
-        const restoredMatches = mergeSportteryMatchCache([], JSON.parse(JSON.stringify(rawMatches)) as MatchItem[], dateKeyFromToday(0));
+        const restoredMatches = mergeSportteryMatchCache([], JSON.parse(JSON.stringify(rawMatches)) as MatchItem[], new Date());
         saveCachedMatches(restoredMatches);
         matchesRef.current = restoredMatches;
         if (!temporaryOrder) setMatches(restoredMatches);
@@ -1825,7 +1816,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
         const restoredSettings = normalizeAppSettings(data.settings);
         const rawMatches = data.matches;
         if (!Array.isArray(rawMatches) || !rawMatches.every(isExportedMatch)) throw new Error("完整数据中的 matches 比赛数据无效");
-        const restoredMatches = mergeSportteryMatchCache([], JSON.parse(JSON.stringify(rawMatches)) as MatchItem[], dateKeyFromToday(0));
+        const restoredMatches = mergeSportteryMatchCache([], JSON.parse(JSON.stringify(rawMatches)) as MatchItem[], new Date());
         modal.confirm({
           title: "恢复完整数据？",
           content: `将覆盖当前本地订单、比赛、设置和账本，恢复 ${restoredOrders.length} 个订单与 ${restoredMatches.length} 场比赛。`,
@@ -2032,22 +2023,24 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
           <div className="match-toolbar">
             <div className="match-filter-row match-date-control">
               <span>比赛日期</span>
-              <DatePicker
-                allowClear
-                format="YYYY-MM-DD"
-                placeholder="全部日期"
-                value={selectedMatchDate ? dayjs(selectedMatchDate) : null}
-                disabledDate={(date) => !availableMatchDateSet.has(date.format("YYYY-MM-DD"))}
-                onChange={(date) => setSelectedMatchDate(date?.format("YYYY-MM-DD") ?? null)}
-              />
-              <Select
-                className="match-sale-filter"
-                aria-label="比赛销售状态"
-                value={matchSaleFilter}
-                options={MATCH_SALE_FILTER_OPTIONS}
-                disabled={Boolean(temporaryOrder)}
-                onChange={setMatchSaleFilter}
-              />
+              <div className="match-date-filters">
+                <DatePicker
+                  allowClear
+                  format="YYYY-MM-DD"
+                  placeholder="全部日期"
+                  value={selectedMatchDate ? dayjs(selectedMatchDate) : null}
+                  disabledDate={(date) => !availableMatchDateSet.has(date.format("YYYY-MM-DD"))}
+                  onChange={(date) => setSelectedMatchDate(date?.format("YYYY-MM-DD") ?? null)}
+                />
+                <Select
+                  className="match-sale-filter"
+                  aria-label="比赛销售状态"
+                  value={matchSaleFilter}
+                  options={MATCH_SALE_FILTER_OPTIONS}
+                  disabled={Boolean(temporaryOrder)}
+                  onChange={setMatchSaleFilter}
+                />
+              </div>
               <Button
                 className="match-refresh-button"
                 icon={<ReloadOutlined />}
@@ -2084,7 +2077,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
                   );
                 })}
               </div>
-              <small className="match-update-time">数据源：{sportteryFetchMode === "morning" ? "早间逐场最新赔率" : "常规比赛接口"} · 接口更新：{sportteryLastUpdateTime || "--"}</small>
+              <small className="match-update-time">数据源：{sportteryFetchMode === "morning" ? "早间逐场最新赔率" : "常规接口 + 缺失比赛补充"} · 接口更新：{sportteryLastUpdateTime || "--"}</small>
             </div>
           </div>
           {filteredMatches.length === 0 ? (
@@ -2588,7 +2581,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
         onCancel={() => setMoreMatchId(null)}
         footer={<Button type="primary" onClick={() => setMoreMatchId(null)}>完成选择</Button>}
         width={980}
-        title={moreMatch ? <Space>{`${moreMatch.weekday}${moreMatch.code} · ${moreMatch.home} VS ${moreMatch.away}`}{getMatchSaleState(moreMatch, saleNow) === "pending" && <Tag color="warning">待开售 · 仅供查看</Tag>}{getMatchSaleState(moreMatch, saleNow) === "stopped" && <Tag color="default">已停售 · 仅供查看</Tag>}</Space> : "更多玩法"}
+        title={moreMatch ? <Space>{`${moreMatch.weekday}${moreMatch.code} · ${moreMatch.home} VS ${moreMatch.away}`}{getMatchSaleState(moreMatch, saleNow) === "pending" && <Tag color="warning">待开售</Tag>}{getMatchSaleState(moreMatch, saleNow) === "stopped" && <Tag color="default">已停售 · 仅供查看</Tag>}</Space> : "更多玩法"}
         className="more-modal"
       >
         {moreMatch?.markets.map((market) => (
@@ -2598,7 +2591,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
               {marketEditorGroups(market).map((group) => (
                 <div className="more-options-row" key={group.key}>
                   {group.options.map((item) => (
-                    <button type="button" disabled={!isMatchSellable(moreMatch, saleNow) || item.odds <= 0} className={`more-odds-option ${isMatchSellable(moreMatch, saleNow) && item.odds > 0 && item.selected ? "selected" : ""}`} key={item.id} onClick={() => toggleOption(moreMatch.id, market.type, item.id)} aria-pressed={isMatchSellable(moreMatch, saleNow) && item.odds > 0 && item.selected}>
+                    <button type="button" disabled={!isMatchSelectable(moreMatch, saleNow) || item.odds <= 0} className={`more-odds-option ${isMatchSelectable(moreMatch, saleNow) && item.odds > 0 && item.selected ? "selected" : ""}`} key={item.id} onClick={() => toggleOption(moreMatch.id, market.type, item.id)} aria-pressed={isMatchSelectable(moreMatch, saleNow) && item.odds > 0 && item.selected}>
                       <span>{item.label}</span><strong>{item.odds > 0 ? <><OddsTrendIndicator trend={item.oddsTrend} />@{item.odds.toFixed(2)}</> : "--"}</strong>
                     </button>
                   ))}

@@ -4,12 +4,14 @@ import { cloneMatches, createEmptyMatch } from "../app/data";
 import {
   convertSportteryMorningMatches,
   convertSportteryMatches,
+  fetchSportteryMatchSnapshot,
   getNextSportteryAutoRefreshDelay,
   getMatchSaleState,
   getSportteryRefreshPolicy,
   getSportteryMatchPhaseTc,
   hasMatchStarted,
   isSportteryRegularTimeFinished,
+  isMatchSelectable,
   isMatchSellable,
   mergeSportteryMatchCache,
   parseSportteryMatchScore,
@@ -91,17 +93,29 @@ test("体彩接口五类玩法完整转换为投注页比赛结构", () => {
   assert.equal(market(match, "halfFull").options.find((item) => item.id === "LL")?.odds, 4);
 });
 
-test("比赛日 11 点前为待开售，11 点起再按接口状态判断", () => {
-  const [match] = convertSportteryMatches(payload, new Date("2026-07-22T10:59:59"));
+test("开赛时间是停售边界，开赛前非可售比赛均为待开售", () => {
+  const [match] = convertSportteryMatches(payload, new Date("2026-07-22T10:00:00"));
   assert.equal(match.saleStatus, "selling");
-  assert.equal(getMatchSaleState(match, new Date("2026-07-22T10:59:59")), "pending");
-  assert.equal(isMatchSellable(match, new Date("2026-07-22T10:59:59")), false);
-  assert.equal(getMatchSaleState(match, new Date("2026-07-22T11:00:00")), "selling");
-  assert.equal(isMatchSellable(match, new Date("2026-07-22T11:00:00")), true);
+  assert.equal(getMatchSaleState(match, new Date("2026-07-22T10:00:00")), "selling");
+  assert.equal(getMatchSaleState(match, new Date("2026-07-23T01:29:59")), "selling");
+  assert.equal(getMatchSaleState(match, new Date("2026-07-23T01:30:00")), "stopped");
 
-  const stopped = { ...match, saleStatus: "stopped" as const };
-  assert.equal(getMatchSaleState(stopped, new Date("2026-07-22T10:59:59")), "pending");
-  assert.equal(getMatchSaleState(stopped, new Date("2026-07-22T11:00:00")), "stopped");
+  const pending = {
+    ...match,
+    saleStatus: "pending" as const,
+    date: "2026-07-30",
+    time: "2026-07-31 20:00",
+  };
+  assert.equal(getMatchSaleState(pending, new Date("2026-07-22T10:00:00")), "pending");
+  assert.equal(getMatchSaleState(pending, new Date("2026-07-31T19:59:59")), "pending");
+  assert.equal(isMatchSellable(pending, new Date("2026-07-31T19:59:59")), false);
+  assert.equal(isMatchSelectable(pending, new Date("2026-07-31T19:59:59")), true);
+
+  const stopped = { ...pending, saleStatus: "stopped" as const };
+  assert.equal(getMatchSaleState(stopped, new Date("2026-07-22T10:00:00")), "pending");
+  assert.equal(isMatchSelectable(stopped, new Date("2026-07-22T10:00:00")), true);
+  assert.equal(getMatchSaleState(stopped, new Date("2026-07-31T20:00:00")), "stopped");
+  assert.equal(isMatchSelectable(stopped, new Date("2026-07-31T20:00:00")), false);
 });
 
 test("订单只更新匹配且仍可售的已选项倍率", () => {
@@ -144,11 +158,20 @@ test("比赛缓存覆盖最新数据、停售旧比赛并清除五天前数据",
   market(previous, "spf").options[0].selected = true;
   market(previous, "spf").options[0].odds = 9.99;
   const stale = { ...createEmptyMatch(2), id: "2040001", date: "2026-07-20", saleStatus: "selling" as const };
+  stale.time = "2026-07-20 20:00";
   market(stale, "spf").options[0].selected = true;
   const expired = { ...createEmptyMatch(3), id: "2039999", date: "2026-07-17", saleStatus: "selling" as const };
+  expired.time = "2026-07-17 20:00";
+  const future = { ...createEmptyMatch(4), id: "2040002", date: "2026-07-24", saleStatus: "selling" as const };
+  future.time = "2026-07-24 20:00";
+  market(future, "spf").options[0].selected = true;
 
-  const cached = mergeSportteryMatchCache([previous, stale, expired], incoming, "2026-07-23");
-  assert.equal(cached.length, 2);
+  const cached = mergeSportteryMatchCache(
+    [previous, stale, expired, future],
+    incoming,
+    new Date("2026-07-23T12:00:00"),
+  );
+  assert.equal(cached.length, 3);
   assert.equal(cached[0].id, "2040001");
   assert.equal(cached[0].saleStatus, "stopped");
   assert.equal(isMatchSellable(cached[0]), false);
@@ -156,6 +179,9 @@ test("比赛缓存覆盖最新数据、停售旧比赛并清除五天前数据",
   assert.equal(cached[1].id, "2040585");
   assert.equal(market(cached[1], "spf").options[0].selected, true);
   assert.equal(market(cached[1], "spf").options[0].odds, 2.94);
+  assert.equal(cached[2].id, "2040002");
+  assert.equal(cached[2].saleStatus, "pending");
+  assert.equal(market(cached[2], "spf").options[0].selected, true);
 });
 
 test("固定奖金接口按比分和半场比分解析五类赛果", () => {
@@ -352,7 +378,9 @@ test("早间比赛使用 oddsHistory 各玩法最后一条记录", () => {
   }]]);
 
   const [match] = convertSportteryMorningMatches(morningPayload, fixedPayloads, beforeKickoff);
-  assert.equal(match.saleStatus, "selling");
+  assert.equal(match.saleStatus, "pending");
+  assert.equal(getMatchSaleState(match, beforeKickoff), "pending");
+  assert.equal(isMatchSelectable(match, beforeKickoff), true);
   assert.equal(market(match, "spf").options.find((option) => option.id === "win")?.odds, 2.25);
   assert.equal(market(match, "spf").options.find((option) => option.id === "win")?.oddsTrend, -1);
   assert.equal(market(match, "spf").options.find((option) => option.id === "draw")?.odds, 3.12);
@@ -362,6 +390,95 @@ test("早间比赛使用 oddsHistory 各玩法最后一条记录", () => {
   assert.equal(market(match, "score").options.find((option) => option.id === "3:1")?.odds, 10.5);
   assert.equal(market(match, "goals").options.find((option) => option.id === "2")?.oddsTrend, -1);
   assert.equal(market(match, "halfFull").options.find((option) => option.id === "WD")?.odds, 19);
+});
+
+test("常规模式按小时为今天及以后的缺失比赛逐场补取倍率", async () => {
+  const now = new Date("2026-07-24T12:00:00");
+  const standardPayload = structuredClone(payload);
+  const standardMatch = standardPayload.value!.matchInfoList![0].subMatchList[0];
+  standardPayload.value!.matchInfoList![0].businessDate = "2026-07-24";
+  standardMatch.businessDate = "2026-07-24";
+  standardMatch.matchDate = "2026-07-24";
+  standardMatch.matchTime = "20:00:00";
+
+  const futureMatch = structuredClone(standardMatch);
+  futureMatch.matchId = 2040999;
+  futureMatch.matchNum = 6201;
+  futureMatch.matchNumStr = "周六201";
+  futureMatch.businessDate = "2026-07-25";
+  futureMatch.matchDate = "2026-07-25";
+  futureMatch.matchTime = "20:00:00";
+  futureMatch.homeTeamAbbName = "未来主队";
+  futureMatch.awayTeamAbbName = "未来客队";
+  delete futureMatch.had;
+  delete futureMatch.hhad;
+  delete futureMatch.crs;
+  delete futureMatch.ttg;
+  delete futureMatch.hafu;
+  futureMatch.poolList = futureMatch.poolList?.map((pool) => ({
+    poolCode: pool.poolCode,
+    poolStatus: "Selling",
+    cbtSingle: 0,
+    cbtAllUp: 1,
+  }));
+
+  const pastMatch = structuredClone(futureMatch);
+  pastMatch.matchId = 2040998;
+  pastMatch.businessDate = "2026-07-23";
+  pastMatch.matchDate = "2026-07-23";
+
+  const matchListPayload: SportteryMatchListResponse = {
+    ...structuredClone(standardPayload),
+    value: {
+      ...structuredClone(standardPayload.value!),
+      matchInfoList: [{
+        businessDate: "2026-07-24",
+        subMatchList: [structuredClone(standardMatch), futureMatch, pastMatch],
+      }],
+    },
+  };
+  const fixedBonusPayload = {
+    success: true,
+    value: {
+      oddsHistory: {
+        hadList: [{ h: "2.25", d: "3.12", a: "2.46" }],
+        hhadList: [{ h: "2.28", d: "3.20", a: "2.88", goalLine: "-1" }],
+        crsList: [{ s03s01: "10.50" }],
+        ttgList: [{ s2: "3.12" }],
+        hafuList: [{ hd: "19.00" }],
+      },
+    },
+  };
+
+  const originalFetch = globalThis.fetch;
+  const fixedBonusMatchIds: string[] = [];
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/getMatchCalculatorV1.qry")) {
+      return Response.json(standardPayload);
+    }
+    if (url.pathname.endsWith("/getMatchListV1.qry")) {
+      return Response.json(matchListPayload);
+    }
+    if (url.pathname.endsWith("/getFixedBonusV1.qry")) {
+      fixedBonusMatchIds.push(url.searchParams.get("matchId") ?? "");
+      return Response.json(fixedBonusPayload);
+    }
+    throw new Error(`未处理的测试请求：${url}`);
+  };
+
+  try {
+    const snapshot = await fetchSportteryMatchSnapshot("standard", now);
+    assert.equal(snapshot.mode, "standard");
+    assert.deepEqual(fixedBonusMatchIds, ["2040999"]);
+    assert.deepEqual(snapshot.matches.map((match) => match.id), ["2040585", "2040999"]);
+    const supplemented = snapshot.matches.find((match) => match.id === "2040999")!;
+    assert.equal(supplemented.saleStatus, "pending");
+    assert.equal(market(supplemented, "spf").options.find((option) => option.id === "win")?.odds, 2.25);
+    assert.equal(market(supplemented, "rqspf").handicap, -1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("自动刷新策略覆盖 09、11、23 点边界", () => {

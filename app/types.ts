@@ -18,7 +18,7 @@ export type Market = {
 
 export type MatchItem = {
   id: string;
-  saleStatus?: "selling" | "stopped";
+  saleStatus?: "pending" | "selling" | "stopped";
   date: string;
   weekday: string;
   code: string;
