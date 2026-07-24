@@ -170,14 +170,14 @@ button, input, textarea { font: inherit; }
 .league-filter-tags .ant-tag:focus-visible { outline: 2px solid rgba(16,138,131,.35); outline-offset: 2px; }
 .date-group { margin-bottom: 28px; }
 .date-divider { width: calc(100% - 8px); display: flex; align-items: center; gap: 6px; margin: 0 4px 10px; }
-.date-divider-main { min-width: 0; flex: 1; display: flex; align-items: center; gap: 10px; padding: 0; color: inherit; border: 0; background: transparent; cursor: pointer; text-align: left; }
+.date-divider-main { min-width: 0; flex: 1; display: flex; align-items: center; gap: 10px; padding: 0; color: inherit; }
 .date-divider-main i { height: 1px; background: var(--line); flex: 1; }
 .date-divider-main span { font-size: 14px; font-weight: 800; }
 .date-divider-main small { color: var(--muted); }
 .date-divider-main strong { padding: 3px 7px; border-radius: 999px; color: #d83d47; background: #fff0f0; font-size: 10px; white-space: nowrap; }
 .date-divider-icon.ant-btn { width: 28px; min-width: 28px; height: 28px; flex: 0 0 28px; padding: 0; border-radius: 9px; color: #587076; background: #e9eeee; transition: color .18s ease, background .18s ease, transform .18s ease; }
 .date-divider-icon.ant-btn:not(:disabled):hover { color: #0d7773; background: #dff1ef; }
-.date-divider-main:focus-visible, .date-divider-icon.ant-btn:focus-visible { outline: 2px solid rgba(16,138,131,.35); outline-offset: 3px; border-radius: 8px; }
+.date-divider-icon.ant-btn:focus-visible { outline: 2px solid rgba(16,138,131,.35); outline-offset: 3px; border-radius: 8px; }
 .match-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .match-card {
   position: relative; overflow: hidden;

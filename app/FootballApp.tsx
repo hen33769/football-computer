@@ -2090,10 +2090,10 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
             return (
               <section className="date-group" key={date}>
                 <div className="date-divider">
-                  <button type="button" className="date-divider-main" aria-expanded={!collapsed} onClick={() => toggleMatchDateCollapsed(date)}>
+                  <div className="date-divider-main">
                     <span>{date}</span><small>{items[0]?.weekday} · {items.length} 场比赛</small><i />
                     {selectedMatchCount > 0 && <strong>已选 {selectedMatchCount} 场</strong>}
-                  </button>
+                  </div>
                   <Tooltip title="复制该日期下的比赛">
                     <Button type="text" className="date-divider-icon" aria-label={`复制 ${date} 的比赛`} icon={<CopyOutlined />} onClick={() => { void copyMatchesForDate(date, items); }} />
                   </Tooltip>
