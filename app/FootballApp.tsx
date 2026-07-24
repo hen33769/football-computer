@@ -2816,6 +2816,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
         ))}
       </Modal>
 
+      <AppVersion />
     </div>
   );
 }
@@ -2829,25 +2830,19 @@ export default function FootballApp({ initialView = "betting", onNavigate }: { i
   }, []);
   if (!mounted) {
     return (
-      <>
-        <div className="app-loading-shell">
-          <div className="app-loading-mark">★</div>
-          <b>竞彩足球模拟工具</b>
-          <span>正在载入官方比赛…</span>
-        </div>
-        <AppVersion />
-      </>
+      <div className="app-loading-shell">
+        <div className="app-loading-mark">★</div>
+        <b>竞彩足球模拟工具</b>
+        <span>正在载入官方比赛…</span>
+      </div>
     );
   }
   return (
-    <>
-      <ConfigProvider theme={{
-        token: { colorPrimary: "#f04e55", borderRadius: 12, colorText: "#172a32", fontFamily: 'Inter, "PingFang SC", "Microsoft YaHei", sans-serif' },
-        components: { Button: { controlHeight: 40 }, Modal: { borderRadiusLG: 18 } },
-      }}>
-        <App notification={{ placement: "bottomRight", showProgress: true, pauseOnHover: true }}><InnerFootballApp initialView={initialView} onNavigate={onNavigate} /></App>
-      </ConfigProvider>
-      <AppVersion />
-    </>
+    <ConfigProvider theme={{
+      token: { colorPrimary: "#f04e55", borderRadius: 12, colorText: "#172a32", fontFamily: 'Inter, "PingFang SC", "Microsoft YaHei", sans-serif' },
+      components: { Button: { controlHeight: 40 }, Modal: { borderRadiusLG: 18 } },
+    }}>
+      <App notification={{ placement: "bottomRight", showProgress: true, pauseOnHover: true }}><InnerFootballApp initialView={initialView} onNavigate={onNavigate} /></App>
+    </ConfigProvider>
   );
 }

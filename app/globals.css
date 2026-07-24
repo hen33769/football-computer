@@ -26,10 +26,9 @@ button, input, textarea { font: inherit; }
 
 .football-app { min-height: 100vh; padding-bottom: 64px; }
 .app-version {
-  position: fixed;
-  right: max(10px, env(safe-area-inset-right));
-  bottom: max(10px, env(safe-area-inset-bottom));
-  z-index: 50;
+  display: block;
+  width: max-content;
+  margin: 24px max(10px, env(safe-area-inset-right)) 0 auto;
   padding: 3px 7px;
   border: 1px solid rgba(15, 80, 85, .14);
   border-radius: 999px;
