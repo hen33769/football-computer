@@ -12,6 +12,8 @@ import {
   isMatchSellable,
   mergeSportteryMatchCache,
   parseSportteryMatchScore,
+  parseSportteryMatchScoreDetails,
+  parseSportteryMatchHandicap,
   parseSportteryFixedBonus,
   refreshSelectedOdds,
   replaceSportteryMatches,
@@ -227,7 +229,7 @@ test("matchPhaseTc 按常规时间规则判断比赛阶段", () => {
 
 test("比分接口从 sectionNo 1 和 2 推导五类常规时间赛果", () => {
   const [match] = convertSportteryMatches(payload, beforeKickoff);
-  const result = parseSportteryMatchScore({
+  const scorePayload = {
     success: true,
     value: {
       matchPhaseTc: "14",
@@ -237,7 +239,8 @@ test("比分接口从 sectionNo 1 和 2 推导五类常规时间赛果", () => {
         { score: "3:0", sectionNo: 2 },
       ],
     },
-  }, match);
+  };
+  const result = parseSportteryMatchScore(scorePayload, match);
   assert.deepEqual(result, {
     spf: "win",
     rqspf: "win",
@@ -245,6 +248,45 @@ test("比分接口从 sectionNo 1 和 2 推导五类常规时间赛果", () => {
     goals: "3",
     halfFull: "WW",
   });
+  assert.deepEqual(parseSportteryMatchScoreDetails(scorePayload, match).fullScore, { home: 3, away: 0 });
+});
+
+test("按 matchId 返回的固定奖金数据提取最新让球数", () => {
+  assert.equal(parseSportteryMatchHandicap({
+    value: {
+      matchResultList: [
+        { code: "HHAD", combination: "D", goalLine: "+1" },
+      ],
+    },
+  }), 1);
+  assert.equal(parseSportteryMatchHandicap({
+    value: {
+      oddsHistory: {
+        hhadList: [
+          { goalLine: "-1" },
+          { goalLine: "+1" },
+        ],
+      },
+    },
+  }), 1);
+  assert.equal(parseSportteryMatchHandicap({ value: { oddsHistory: { hhadList: [] } } }), undefined);
+});
+
+test("比分存在但没有取得让球数时不生成让球胜平负赛果", () => {
+  const [match] = convertSportteryMatches(payload, beforeKickoff);
+  const rqspf = match.markets.find((market) => market.type === "rqspf");
+  if (rqspf) rqspf.handicap = undefined;
+  const result = parseSportteryMatchScore({
+    value: {
+      sectionsNos: [
+        { score: "1:0", sectionNo: 1 },
+        { score: "2:1", sectionNo: 2 },
+      ],
+    },
+  }, match);
+  assert.equal(result.rqspf, undefined);
+  assert.equal(result.score, "2:1");
+  assert.equal(result.halfFull, "WW");
 });
 
 test("进入加时后仍使用 sectionNo 2 的常规时间比分", () => {

@@ -72,6 +72,7 @@ import {
   MAX_SELECTED_MATCHES,
   selectedMatches,
   selectedOptions,
+  winningOptionId,
   type PrizeRangeMetrics,
 } from "./calculator";
 import {
@@ -82,6 +83,7 @@ import { parseRecognizedText } from "./ocr";
 import {
   convertSportteryMatches,
   fetchSportteryMatchCalculator,
+  fetchSportteryMatchHandicap,
   fetchSportteryMatchScore,
   fetchSportteryMatchSnapshot,
   getNextSportteryAutoRefreshDelay,
@@ -92,14 +94,14 @@ import {
   isMatchSellable,
   mergeSportteryMatchCache,
   normalizeSportteryMatchId,
-  parseSportteryMatchScore,
+  parseSportteryMatchScoreDetails,
   refreshSelectedOdds,
   type SportteryLeague,
   type SportteryMatchFetchMode,
   type SportteryMatchSnapshot,
   type SportteryMatchDate,
 } from "./sporttery";
-import { judgeSlipWithResults, RESULT_MARKETS, resultSelectOptions } from "./results";
+import { judgeSlipWithResults, repairSlipHandicapResults, RESULT_MARKETS, resultSelectOptions } from "./results";
 import {
   createDefaultSettings,
   DEFAULT_LEAGUE_TAG_COLORS,
@@ -194,6 +196,8 @@ const compareMatchDisplayOrder = (left: MatchItem, right: MatchItem) => (
 const sortMatchesForDisplay = (items: MatchItem[]) => [...items].sort(compareMatchDisplayOrder);
 
 const isOrderOddsLocked = (slip: Pick<SavedSlip, "oddsLocked" | "settledAt">) => Boolean(slip.settledAt || slip.oddsLocked);
+
+const formatHandicap = (handicap: number) => `${handicap > 0 ? "+" : ""}${handicap}`;
 
 const matchResultOptionLabel = (match: MatchItem, type: MarketType, optionId?: string) => {
   if (!optionId) return null;
@@ -611,7 +615,13 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
   const [savedSlips, setSavedSlips] = useState<SavedSlip[]>(() => {
     try {
       const raw = localStorage.getItem(SAVED_KEY);
-      return raw ? JSON.parse(raw) as SavedSlip[] : [];
+      if (!raw) return [];
+      const parsed = JSON.parse(raw) as SavedSlip[];
+      const repaired = parsed.map(repairSlipHandicapResults);
+      if (repaired.some((slip, index) => slip !== parsed[index])) {
+        localStorage.setItem(SAVED_KEY, JSON.stringify(repaired));
+      }
+      return repaired;
     } catch {
       return [];
     }
@@ -967,16 +977,17 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
   );
   const resultMatches = useMemo(() => {
     const unique = new Map<string, MatchItem>();
+    const officialById = new Map(matches.map((match) => [normalizeSportteryMatchId(match.id), match]));
     filteredSavedSlips
       .filter((slip) => !slip.settledAt)
       .forEach((slip) => selectedMatches(slip.matches)
         .filter((match) => !(slip.failedMatches ?? []).includes(match.id) && !matchHasSelectedHit(match, slip.hits ?? {}))
         .forEach((match) => {
         const matchId = normalizeSportteryMatchId(match.id);
-        if (!unique.has(matchId)) unique.set(matchId, match);
+        if (!unique.has(matchId)) unique.set(matchId, officialById.get(matchId) ?? match);
         }));
     return sortMatchesForDisplay([...unique.values()]);
-  }, [filteredSavedSlips]);
+  }, [filteredSavedSlips, matches]);
 
   const availableMatchDateSet = useMemo(() => new Set(matchDates
     .filter((date) => matches.some((match) => match.date === date.businessDate && (!onlySellableMatches || isMatchSellable(match, saleNow))))
@@ -1116,7 +1127,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
       return;
     }
     const draft = matchWithClearedSelections(source);
-    const parsed = parseRecognizedText(entry.text, { selectOptions: true })[0];
+    const parsed = parseRecognizedText(entry.text, { selectOptions: true, emptyOdds: true })[0];
     if (parsed) {
       draft.markets = draft.markets.map((market) => {
         const parsedMarket = parsed.markets.find((item) => item.type === market.type);
@@ -1162,7 +1173,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
       message.warning(`最多可选择 ${MAX_SELECTED_MATCHES} 场比赛`);
       return;
     }
-    const parsedEntries = manualOrderEntries.map((entry) => parseRecognizedText(entry.text, { selectOptions: true }));
+    const parsedEntries = manualOrderEntries.map((entry) => parseRecognizedText(entry.text, { selectOptions: true, emptyOdds: true }));
     const invalidIndex = parsedEntries.findIndex((entryMatches) => entryMatches.length !== 1 || selectedMatches(entryMatches).length !== 1);
     if (invalidIndex >= 0) {
       message.warning(`第 ${invalidIndex + 1} 场没有识别到完整比赛及投注项`);
@@ -1175,6 +1186,14 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
       return;
     }
     const normalizedMatches = parsed.map((match) => ({ ...match, id: normalizeSportteryMatchId(match.id) }));
+    const missingHandicapIndex = normalizedMatches.findIndex((match) => {
+      const rqspf = match.markets.find((market) => market.type === "rqspf");
+      return rqspf?.options.some((option) => option.selected) && typeof rqspf.handicap !== "number";
+    });
+    if (missingHandicapIndex >= 0) {
+      message.warning(`第 ${missingHandicapIndex + 1} 场选择了让球胜平负，请填写让球数，例如“让球胜平负（-1）”`);
+      return;
+    }
     if (new Set(normalizedMatches.map((match) => match.id)).size !== normalizedMatches.length) {
       message.warning("同一比赛不能重复添加");
       return;
@@ -1404,8 +1423,24 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
       const values = { ...(current[matchId]?.values ?? {}) };
       if (optionId) values[type] = optionId;
       else delete values[type];
+      const exactScore = String(values.score ?? "").match(/^(\d+):(\d+)$/);
+      const fullScore = exactScore
+        ? { home: Number(exactScore[1]), away: Number(exactScore[2]) }
+        : type === "score" ? undefined : current[matchId]?.fullScore;
+      const matchHandicap = match.markets.find((market) => market.type === "rqspf")?.handicap;
+      const rqspfHandicap = current[matchId]?.rqspfHandicap ?? matchHandicap;
+      if (fullScore && typeof rqspfHandicap === "number") {
+        values.rqspf = winningOptionId("rqspf", fullScore.home, fullScore.away, 0, 0, rqspfHandicap);
+      }
       const next = { ...current };
-      if (Object.keys(values).length > 0) next[matchId] = { matchId, updatedAt: new Date().toISOString(), source: "manual", values };
+      if (Object.keys(values).length > 0) next[matchId] = {
+        matchId,
+        updatedAt: new Date().toISOString(),
+        source: "manual",
+        values,
+        ...(typeof rqspfHandicap === "number" ? { rqspfHandicap } : {}),
+        ...(fullScore ? { fullScore } : {}),
+      };
       else delete next[matchId];
       return next;
     });
@@ -1413,13 +1448,33 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
 
   const requestMatchResult = async (match: MatchItem) => {
     const matchId = normalizeSportteryMatchId(match.id);
-    const scorePayload = await fetchSportteryMatchScore(matchId);
+    const [scorePayload, fetchedHandicap] = await Promise.all([
+      fetchSportteryMatchScore(matchId),
+      fetchSportteryMatchHandicap(matchId).catch(() => undefined),
+    ]);
     const phase = getSportteryMatchPhaseTc(scorePayload);
     console.log("[体彩接口] 比分与比赛阶段原始数据", scorePayload);
     if (!isSportteryRegularTimeFinished(scorePayload)) return { status: "unfinished" as const, phase };
-    const values = parseSportteryMatchScore(scorePayload, match);
+    const cachedMatch = matchesRef.current.find((item) => normalizeSportteryMatchId(item.id) === matchId);
+    const cachedHandicap = cachedMatch?.markets.find((market) => market.type === "rqspf")?.handicap;
+    const rqspfHandicap = fetchedHandicap ?? cachedHandicap;
+    const resultMatch = {
+      ...match,
+      markets: match.markets.map((market) => market.type === "rqspf"
+        ? { ...market, handicap: rqspfHandicap }
+        : market),
+    };
+    const parsedResult = parseSportteryMatchScoreDetails(scorePayload, resultMatch);
+    const values = parsedResult.values;
     if (Object.keys(values).length === 0) throw new Error("常规时间已结束，但比分接口暂未返回可识别比分");
-    const nextResult = { matchId, updatedAt: new Date().toISOString(), source: "api" as const, values };
+    const nextResult = {
+      matchId,
+      updatedAt: new Date().toISOString(),
+      source: "api" as const,
+      values,
+      ...(typeof rqspfHandicap === "number" ? { rqspfHandicap } : {}),
+      fullScore: parsedResult.fullScore,
+    };
     setMatchResults((current) => ({ ...current, [matchId]: nextResult }));
     return { status: "success" as const, valueCount: Object.keys(values).length };
   };
@@ -2247,7 +2302,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
                       <button type="button" className="match-phase-info" aria-label="查看比赛阶段映射与常规时间判断规则"><InfoCircleOutlined /></button>
                     </Tooltip>
                   </div>
-                  <p>汇总当前未结账订单中尚未判断成功或失败的比赛；同一比赛只要仍有一个订单待判断就会保留。</p>
+                  <p>汇总当前未结账订单中尚未判断成功或失败的比赛；让球数按比赛 ID 从官方比赛数据重新获取，并同步到订单。</p>
                 </div>
                 <Space wrap>
                   {!matchResultsCollapsed && <Button icon={<ReloadOutlined />} loading={allResultsFetching} disabled={resultMatches.length === 0 || resultFetchingMatchIds.length > 0} onClick={() => { void fetchAllMatchResults(); }}>获取全部赛果</Button>}
@@ -2271,20 +2326,28 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
                           {result && <Tag color={result.source === "api" ? "cyan" : "default"}>{result.source === "api" ? "接口赛果" : "手动填写"}</Tag>}
                         </div>
                         <div className="match-result-fields">
-                          {RESULT_MARKETS.map((type) => (
-                            <label key={type}>
-                              <span>{MARKET_LABELS[type]}{type === "rqspf" ? `（${(match.markets.find((market) => market.type === type)?.handicap ?? 0) > 0 ? "+" : ""}${match.markets.find((market) => market.type === type)?.handicap ?? 0}）` : ""}</span>
-                              <Select
-                                allowClear
-                                showSearch
-                                optionFilterProp="label"
-                                placeholder="选择赛果"
-                                value={result?.values[type]}
-                                options={resultSelectOptions(match, type)}
-                                onChange={(value) => updateMatchResult(match, type, value)}
-                              />
-                            </label>
-                          ))}
+                          {RESULT_MARKETS.map((type) => {
+                            const handicap = type === "rqspf"
+                              ? result?.rqspfHandicap ?? match.markets.find((market) => market.type === type)?.handicap
+                              : undefined;
+                            const value = type === "rqspf" && result?.fullScore && typeof handicap === "number"
+                              ? winningOptionId("rqspf", result.fullScore.home, result.fullScore.away, 0, 0, handicap)
+                              : result?.values[type];
+                            return (
+                              <label key={type}>
+                                <span>{MARKET_LABELS[type]}{type === "rqspf" ? `（${typeof handicap === "number" ? formatHandicap(handicap) : "待获取盘口"}）` : ""}</span>
+                                <Select
+                                  allowClear
+                                  showSearch
+                                  optionFilterProp="label"
+                                  placeholder="选择赛果"
+                                  value={value}
+                                  options={resultSelectOptions(match, type)}
+                                  onChange={(nextValue) => updateMatchResult(match, type, nextValue)}
+                                />
+                              </label>
+                            );
+                          })}
                         </div>
                         <Button
                           icon={<ReloadOutlined />}

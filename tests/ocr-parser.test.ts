@@ -54,3 +54,14 @@ test("解析完整五玩法手动订单格式", () => {
   assert.equal(parsed[0].markets.find((market) => market.type === "rqspf")?.handicap, -1);
   assert.equal(parsed[0].markets.find((market) => market.type === "halfFull")?.options.find((option) => option.id === "WD")?.odds, 19);
 });
+
+test("手动订单缺少让球数时不再静默使用默认 -1", () => {
+  const parsed = parseRecognizedText(`
+    比赛 ID：2040594
+    周四201 科林蒂安 VS 里莫
+    让球胜平负 平 @3.20
+  `, { emptyOdds: true });
+  const rqspf = parsed[0].markets.find((market) => market.type === "rqspf");
+  assert.equal(rqspf?.handicap, undefined);
+  assert.equal(rqspf?.options.find((option) => option.id === "draw")?.selected, true);
+});

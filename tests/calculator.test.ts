@@ -16,7 +16,7 @@ import {
   MAX_SELECTED_MATCHES,
 } from "../app/calculator";
 import { cloneMatches, initialMatches } from "../app/data";
-import { judgeSlipWithResults } from "../app/results";
+import { judgeSlipWithResults, repairSlipHandicapResults } from "../app/results";
 import type { SavedSlip } from "../app/types";
 
 function select(matches = cloneMatches(initialMatches.slice(0, 2))) {
@@ -167,6 +167,85 @@ test("赛果判断写入命中；全部已选玩法均未中才标记比赛失�
   assert.deepEqual(judged.resultValues?.["2040595"], { spf: "lose", score: "0:1", halfFull: "DL" });
   assert.deepEqual(judged.failedMatches, ["2040595"]);
   assert.equal(isOrderFailed(judged), true);
+});
+
+test("同场比赛统一按赛果接口重新取得的固定让球数判断并修正订单快照", () => {
+  const createSlip = (handicap: number, selectedOptionId: string): SavedSlip => {
+    const matches = cloneMatches(initialMatches.slice(0, 1));
+    const match = matches[0];
+    match.id = "2040594";
+    const rqspf = match.markets.find((market) => market.type === "rqspf")!;
+    rqspf.handicap = handicap;
+    rqspf.options.find((option) => option.id === selectedOptionId)!.selected = true;
+    return { name: `${handicap}`, savedAt: new Date(0).toISOString(), matches, passes: [1], multiple: 1 };
+  };
+  const sharedResult = {
+    "2040594": {
+      matchId: "2040594",
+      updatedAt: new Date(0).toISOString(),
+      source: "api" as const,
+      values: { rqspf: "draw", score: "2:1" },
+      rqspfHandicap: 1,
+      fullScore: { home: 2, away: 1 },
+    },
+  };
+
+  const receivingOne = judgeSlipWithResults(createSlip(1, "win"), sharedResult);
+  assert.equal(receivingOne.hits?.["2040594"]?.rqspf, "win");
+  assert.equal(receivingOne.resultValues?.["2040594"]?.rqspf, "win");
+  assert.equal(receivingOne.matches[0].markets.find((market) => market.type === "rqspf")?.handicap, 1);
+  assert.deepEqual(receivingOne.failedMatches, []);
+
+  const staleSnapshot = judgeSlipWithResults(createSlip(-1, "draw"), sharedResult);
+  assert.equal(staleSnapshot.hits?.["2040594"]?.rqspf, undefined);
+  assert.equal(staleSnapshot.resultValues?.["2040594"]?.rqspf, "win");
+  assert.equal(staleSnapshot.matches[0].markets.find((market) => market.type === "rqspf")?.handicap, 1);
+  assert.deepEqual(staleSnapshot.failedMatches, ["2040594"]);
+});
+
+test("没有取得固定让球数时不判断让球胜平负", () => {
+  const matches = cloneMatches(initialMatches.slice(0, 1));
+  matches[0].id = "2040594";
+  const rqspf = matches[0].markets.find((market) => market.type === "rqspf")!;
+  rqspf.options.find((option) => option.id === "draw")!.selected = true;
+  const judged = judgeSlipWithResults(
+    { name: "待盘口", savedAt: new Date(0).toISOString(), matches, passes: [1], multiple: 1 },
+    {
+      "2040594": {
+        matchId: "2040594",
+        updatedAt: new Date(0).toISOString(),
+        source: "api",
+        values: { rqspf: "draw", score: "2:1" },
+        fullScore: { home: 2, away: 1 },
+      },
+    },
+  );
+  assert.equal(judged.resultValues?.["2040594"]?.rqspf, undefined);
+  assert.equal(judged.failedMatches?.length, 0);
+});
+
+test("加载订单时修复按其它让球数保存的历史命中结果", () => {
+  const matches = cloneMatches(initialMatches.slice(0, 1));
+  const match = matches[0];
+  match.id = "2040594";
+  const rqspf = match.markets.find((market) => market.type === "rqspf")!;
+  rqspf.handicap = 1;
+  rqspf.options.find((option) => option.id === "draw")!.selected = true;
+  rqspf.options.find((option) => option.id === "lose")!.selected = true;
+  const repaired = repairSlipHandicapResults({
+    name: "历史误判",
+    savedAt: new Date(0).toISOString(),
+    matches,
+    passes: [1],
+    multiple: 1,
+    hits: { "2040594": { rqspf: "draw" } },
+    resultValues: { "2040594": { rqspf: "draw", score: "2:1" } },
+    failedMatches: [],
+  });
+
+  assert.equal(repaired.resultValues?.["2040594"]?.rqspf, "win");
+  assert.equal(repaired.hits?.["2040594"]?.rqspf, undefined);
+  assert.deepEqual(repaired.failedMatches, ["2040594"]);
 });
 
 test("订单状态区分成功、有希望和失败", () => {

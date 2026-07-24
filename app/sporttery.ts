@@ -199,6 +199,10 @@ export function convertSportteryMatches(payload: SportteryMatchCalculatorRespons
     .map(({ match, groupBusinessDate }) => {
     const handicap = Number.parseFloat(String(match.hhad?.goalLine ?? ""));
     const markets = createMarkets(0, Number.isFinite(handicap) ? handicap : 0);
+    if (!Number.isFinite(handicap)) {
+      const rqspf = markets.find((market) => market.type === "rqspf");
+      if (rqspf) rqspf.handicap = undefined;
+    }
     const matchSelling = globalSaleEnabled && match.matchStatus === "Selling";
 
     markets.forEach((market) => {
@@ -449,6 +453,36 @@ const fixedBonusOddsHistory = (payload: Record<string, unknown> | null) => {
   return history && typeof history === "object" ? history as Record<string, unknown> : null;
 };
 
+/** 从按 matchId 查询的官方固定奖金数据中读取该场比赛的固定让球数。 */
+export function parseSportteryMatchHandicap(payload: unknown): number | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const root = payload as Record<string, unknown>;
+  const value = root.value && typeof root.value === "object" ? root.value as Record<string, unknown> : null;
+  const resultList = Array.isArray(value?.matchResultList) ? value.matchResultList : [];
+  for (const item of resultList) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const poolCode = String(record.code ?? record.poolCode ?? "").toUpperCase();
+    if (poolCode !== "HHAD") continue;
+    const handicap = Number.parseFloat(String(record.goalLine ?? ""));
+    if (Number.isFinite(handicap)) return handicap;
+  }
+
+  const history = fixedBonusOddsHistory(root);
+  const hhadList = Array.isArray(history?.hhadList) ? history.hhadList : [];
+  for (let index = hhadList.length - 1; index >= 0; index -= 1) {
+    const record = hhadList[index];
+    if (!record || typeof record !== "object") continue;
+    const handicap = Number.parseFloat(String((record as Record<string, unknown>).goalLine ?? ""));
+    if (Number.isFinite(handicap)) return handicap;
+  }
+  return undefined;
+}
+
+export async function fetchSportteryMatchHandicap(matchId: string) {
+  return parseSportteryMatchHandicap(await fetchSportteryFixedBonusPayload(matchId));
+}
+
 export function convertSportteryMorningMatches(
   payload: SportteryMatchListResponse,
   fixedBonusPayloads: Map<string, Record<string, unknown>>,
@@ -580,25 +614,39 @@ export function isSportteryRegularTimeFinished(payload: unknown) {
   return phase !== null && !SPORTTERY_REGULAR_TIME_ACTIVE_PHASES.includes(phase as 1 | 2 | 10 | 16);
 }
 
+export type ParsedSportteryMatchScore = {
+  values: Partial<Record<MarketType, string>>;
+  fullScore?: { home: number; away: number };
+};
+
 /** 从比分接口提取竞彩足球所需的常规时间赛果；sectionNo 2 优先于可能包含加时的总比分。 */
-export function parseSportteryMatchScore(payload: unknown, match: MatchItem): Partial<Record<MarketType, string>> {
+export function parseSportteryMatchScoreDetails(payload: unknown, match: MatchItem): ParsedSportteryMatchScore {
   const root = payload && typeof payload === "object" ? payload as Record<string, unknown> : null;
   const value = root?.value && typeof root.value === "object" ? root.value as Record<string, unknown> : null;
   const sections = Array.isArray(value?.sectionsNos) ? value.sectionsNos as Array<Record<string, unknown>> : [];
   const sectionScore = (sectionNo: number) => parseScore(sections.find((section) => Number(section.sectionNo) === sectionNo)?.score);
   const fullScore = sectionScore(2) ?? parseScore(value?.sectionsNo999);
   const halfScore = sectionScore(1);
-  if (!fullScore) return {};
+  if (!fullScore) return { values: {} };
 
-  const handicap = match.markets.find((market) => market.type === "rqspf")?.handicap ?? 0;
+  const handicap = match.markets.find((market) => market.type === "rqspf")?.handicap;
   const values: Partial<Record<MarketType, string>> = {
     spf: winningOptionId("spf", fullScore[0], fullScore[1], 0, 0),
-    rqspf: winningOptionId("rqspf", fullScore[0], fullScore[1], 0, 0, handicap),
     score: winningOptionId("score", fullScore[0], fullScore[1], 0, 0),
     goals: winningOptionId("goals", fullScore[0], fullScore[1], 0, 0),
   };
+  if (typeof handicap === "number" && Number.isFinite(handicap)) {
+    values.rqspf = winningOptionId("rqspf", fullScore[0], fullScore[1], 0, 0, handicap);
+  }
   if (halfScore) values.halfFull = winningOptionId("halfFull", fullScore[0], fullScore[1], halfScore[0], halfScore[1]);
-  return values;
+  return {
+    values,
+    fullScore: { home: fullScore[0], away: fullScore[1] },
+  };
+}
+
+export function parseSportteryMatchScore(payload: unknown, match: MatchItem): Partial<Record<MarketType, string>> {
+  return parseSportteryMatchScoreDetails(payload, match).values;
 }
 
 const findPoolResult = (payload: unknown, poolCode: string): unknown => {

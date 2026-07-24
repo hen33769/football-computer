@@ -36,6 +36,11 @@ export type MatchResult = {
   updatedAt: string;
   source: "manual" | "api";
   values: Partial<Record<MarketType, string>>;
+  rqspfHandicap?: number;
+  fullScore?: {
+    home: number;
+    away: number;
+  };
 };
 
 export type MatchResults = Record<string, MatchResult>;
