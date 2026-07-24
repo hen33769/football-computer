@@ -987,6 +987,8 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
         const matchId = normalizeSportteryMatchId(match.id);
         if (!unique.has(matchId)) unique.set(matchId, officialById.get(matchId) ?? match);
         }));
+    console.log(filteredSavedSlips)
+    console.log(sortMatchesForDisplay([...unique.values()]))
     return sortMatchesForDisplay([...unique.values()]);
   }, [filteredSavedSlips, matches]);
 
