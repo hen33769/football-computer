@@ -185,12 +185,16 @@ test("比赛缓存覆盖最新数据、停售旧比赛并清除五天前数据",
   assert.equal(market(cached[2], "spf").options[0].selected, true);
 });
 
-test("新增导入比赛与现有缓存取并集，同场比赛保留现有数据", () => {
+test("新增导入比赛以新值更新同场数据，并由现有数据补齐缺项", () => {
   const existing = cloneMatches(convertSportteryMatches(payload, beforeKickoff))[0];
   market(existing, "spf").options[0].odds = 9.99;
   const duplicate = cloneMatches(convertSportteryMatches(payload, beforeKickoff))[0];
   duplicate.id = "sporttery-2040585";
   market(duplicate, "spf").options[0].odds = 1.11;
+  duplicate.markets = [{
+    ...market(duplicate, "spf"),
+    options: [market(duplicate, "spf").options[0]],
+  }];
   const added = { ...createEmptyMatch(2), id: "sporttery-2040002", date: "2026-07-24", code: "203" };
   const expired = { ...createEmptyMatch(3), id: "2039999", date: "2026-07-17" };
 
@@ -202,7 +206,9 @@ test("新增导入比赛与现有缓存取并集，同场比赛保留现有数�
 
   assert.equal(union.length, 2);
   assert.equal(union[0].id, "2040585");
-  assert.equal(market(union[0], "spf").options[0].odds, 9.99);
+  assert.equal(market(union[0], "spf").options[0].odds, 1.11);
+  assert.equal(market(union[0], "spf").options[1].odds, 2.82);
+  assert.equal(market(union[0], "rqspf").options[0].odds, 1.48);
   assert.equal(union[1].id, "2040002");
 });
 
@@ -258,7 +264,7 @@ test("固定奖金接口按真实 code 和 combination 结构解析已完赛赛�
   assert.deepEqual(result, { spf: "lose", rqspf: "draw", score: "2:3", goals: "5", halfFull: "DL" });
 });
 
-test("matchResultList 为空时仍可从全场比分推导四类赛果", () => {
+test("matchResultList 为空时仍可从全场和半场比分推导五类赛果", () => {
   const [match] = convertSportteryMatches(payload, beforeKickoff);
   const result = parseSportteryFixedBonus({
     success: true,
@@ -273,6 +279,7 @@ test("matchResultList 为空时仍可从全场比分推导四类赛果", () => {
     rqspf: "win",
     score: "2:1",
     goals: "3",
+    halfFull: "WW",
   });
 });
 

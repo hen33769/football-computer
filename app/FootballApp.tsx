@@ -1752,8 +1752,8 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
           : normalizeAppSettings(data.settings));
         setAppSettings(nextSettings);
         notification.success({
-          message: strategy === "merge" ? "设置新增完成" : "设置覆盖完成",
-          description: strategy === "merge" ? "已保留现有颜色并补入新联赛颜色" : "联赛标签颜色已替换",
+          message: strategy === "merge" ? "设置合并完成" : "设置覆盖完成",
+          description: strategy === "merge" ? "已用 JSON 颜色更新冲突项，并保留文件缺少的现有颜色" : "联赛标签颜色已替换",
           placement: "bottomRight",
         });
         return;
@@ -1782,7 +1782,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
         const restoredMatches = prepareMatches(strategy);
         applyMatches(restoredMatches);
         notification.success({
-          message: strategy === "merge" ? "比赛数据新增完成" : "比赛数据覆盖完成",
+          message: strategy === "merge" ? "比赛数据合并完成" : "比赛数据覆盖完成",
           description: `当前共有 ${restoredMatches.length} 场 5 天内比赛`,
           placement: "bottomRight",
         });
@@ -1816,7 +1816,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
         modal.confirm({
           title: strategy === "merge" ? "新增完整数据？" : "覆盖完整数据？",
           content: strategy === "merge"
-            ? `将保留本地数据，新增 ${orderMerge.added} 个订单并合并比赛与设置；本地账本只计入新增订单。`
+            ? `将新增 ${orderMerge.added} 个、更新 ${orderMerge.updated} 个订单，并以 JSON 数据更新重复比赛与设置；文件缺项继续使用本地数据。`
             : `将覆盖当前本地订单、比赛、设置和账本，恢复 ${restoredOrders.length} 个订单与 ${restoredMatches.length} 场比赛。`,
           okText: strategy === "merge" ? "新增合并" : "覆盖恢复",
           cancelText: "取消",
@@ -1831,9 +1831,9 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
             localStorage.setItem(EXPENSE_KEY, String(nextExpense));
             localStorage.setItem(INCOME_KEY, String(nextIncome));
             notification.success({
-              message: strategy === "merge" ? "完整数据新增完成" : "完整数据覆盖完成",
+              message: strategy === "merge" ? "完整数据合并完成" : "完整数据覆盖完成",
               description: strategy === "merge"
-                ? `新增 ${orderMerge.added} 个订单，当前共 ${restoredOrders.length} 个订单、${restoredMatches.length} 场比赛`
+                ? `新增 ${orderMerge.added} 个、更新 ${orderMerge.updated} 个订单，当前共 ${restoredOrders.length} 个订单、${restoredMatches.length} 场比赛`
                 : `已恢复 ${restoredOrders.length} 个订单、${restoredMatches.length} 场比赛、设置与账本`,
               placement: "bottomRight",
             });
@@ -1843,12 +1843,12 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
       }
 
       if (strategy === "merge") {
-        const { nextOrders, added, skipped, expenseDelta, incomeDelta } = unionSavedOrders(savedSlips, incomingOrders);
+        const { nextOrders, added, updated, expenseDelta, incomeDelta } = unionSavedOrders(savedSlips, incomingOrders);
         setSavedSlips(nextOrders);
         setExpenseTotal((current) => Math.max(0, current + expenseDelta));
         setIncomeTotal((current) => Math.max(0, current + incomeDelta));
         localStorage.setItem(SAVED_KEY, JSON.stringify(nextOrders));
-        notification.success({ message: "订单新增完成", description: `新增 ${added} 个，跳过 ${skipped} 个同 ID 订单`, placement: "bottomRight" });
+        notification.success({ message: "订单合并完成", description: `新增 ${added} 个，更新 ${updated} 个同 ID 订单`, placement: "bottomRight" });
         return;
       }
 
@@ -1969,10 +1969,10 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
         ]}
       />
       {([
-        ["orders", "导入订单", importStrategy === "merge" ? "仅加入新订单，同 ID 保留本地订单" : "用 JSON 订单替换本地订单"],
-        ["settings", "导入设置", importStrategy === "merge" ? "保留现有颜色，仅加入新联赛颜色" : "用 JSON 设置替换本地设置"],
-        ["matches", "导入比赛数据", importStrategy === "merge" ? "保留本地比赛，仅加入新比赛" : "用 JSON 比赛替换本地比赛缓存"],
-        ["full", "导入完整数据", importStrategy === "merge" ? "合并订单、比赛和设置，保留本地账本" : "覆盖订单、比赛、设置与账本"],
+        ["orders", "导入订单", importStrategy === "merge" ? "同 ID 用 JSON 更新，文件缺项保留本地值" : "用 JSON 订单替换本地订单"],
+        ["settings", "导入设置", importStrategy === "merge" ? "同联赛用 JSON 更新，文件缺项保留本地值" : "用 JSON 设置替换本地设置"],
+        ["matches", "导入比赛数据", importStrategy === "merge" ? "同场用 JSON 更新，缺少的玩法与倍率保留本地值" : "用 JSON 比赛替换本地比赛缓存"],
+        ["full", "导入完整数据", importStrategy === "merge" ? "JSON 值优先更新，文件缺项保留本地值" : "覆盖订单、比赛、设置与账本"],
       ] as const).map(([mode, title, description]) => (
         <Upload
           key={mode}

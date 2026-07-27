@@ -331,7 +331,36 @@ export function mergeSportteryMatchCache(
   ));
 }
 
-/** 保留现有比赛，只补入尚不存在的导入比赛，并清除五天前的数据。 */
+const mergeImportedMatch = (current: MatchItem, incoming: MatchItem): MatchItem => ({
+  ...current,
+  ...incoming,
+  id: normalizeSportteryMatchId(incoming.id),
+  markets: [
+    ...incoming.markets.map((incomingMarket) => {
+      const currentMarket = current.markets.find((market) => market.type === incomingMarket.type);
+      if (!currentMarket) return incomingMarket;
+      return {
+        ...currentMarket,
+        ...incomingMarket,
+        options: [
+          ...incomingMarket.options.map((incomingOption) => {
+            const currentOption = currentMarket.options.find((option) => option.id === incomingOption.id);
+            if (!currentOption) return incomingOption;
+            const mergedOption = { ...currentOption, ...incomingOption };
+            return {
+              ...mergedOption,
+              selected: mergedOption.odds > 0 && (currentOption.selected || incomingOption.selected),
+            };
+          }),
+          ...currentMarket.options.filter((option) => !incomingMarket.options.some((item) => item.id === option.id)),
+        ],
+      };
+    }),
+    ...current.markets.filter((market) => !incoming.markets.some((item) => item.type === market.type)),
+  ],
+});
+
+/** 以导入值更新同场比赛，并用现有数据补齐导入文件缺少的玩法或选项。 */
 export function unionSportteryMatchCache(
   current: MatchItem[],
   incoming: MatchItem[],
@@ -341,10 +370,17 @@ export function unionSportteryMatchCache(
   const cutoff = retainedDateCutoff(today);
   const union: MatchItem[] = [];
 
-  [...current, ...incoming].forEach((match) => {
+  current.forEach((match) => {
     if (match.date < cutoff) return;
     const normalized = { ...match, id: normalizeSportteryMatchId(match.id) };
     if (!union.some((item) => sameMatch(item, normalized))) union.push(normalized);
+  });
+  incoming.forEach((match) => {
+    if (match.date < cutoff) return;
+    const normalized = { ...match, id: normalizeSportteryMatchId(match.id) };
+    const currentIndex = union.findIndex((item) => sameMatch(item, normalized));
+    if (currentIndex >= 0) union[currentIndex] = mergeImportedMatch(union[currentIndex], normalized);
+    else union.push(normalized);
   });
 
   return union.sort((left, right) => (

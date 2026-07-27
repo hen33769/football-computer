@@ -34,6 +34,17 @@ export const normalizeHexColor = (value: unknown) => {
   return null;
 };
 
+const validLeagueTagColors = (value: unknown) => {
+  if (!value || typeof value !== "object") return {};
+  const raw = value as Partial<AppSettings>;
+  const colors = raw.appearance?.leagueTagColors;
+  if (!colors || typeof colors !== "object" || Array.isArray(colors)) return {};
+  return Object.fromEntries(Object.entries(colors).flatMap(([league, color]) => {
+    const normalized = normalizeHexColor(color);
+    return league.trim() && normalized ? [[leagueColorSettingKey(league.trim()), normalized]] : [];
+  }));
+};
+
 export function createDefaultSettings(): AppSettings {
   return {
     schemaVersion: 1,
@@ -46,14 +57,7 @@ export function createDefaultSettings(): AppSettings {
 export function normalizeAppSettings(value: unknown): AppSettings {
   const defaults = createDefaultSettings();
   if (!value || typeof value !== "object") return defaults;
-  const raw = value as Partial<AppSettings>;
-  const colors = raw.appearance?.leagueTagColors;
-  if (!colors || typeof colors !== "object" || Array.isArray(colors)) return defaults;
-
-  const validColors = Object.fromEntries(Object.entries(colors).flatMap(([league, color]) => {
-    const normalized = normalizeHexColor(color);
-    return league.trim() && normalized ? [[leagueColorSettingKey(league.trim()), normalized]] : [];
-  }));
+  const validColors = validLeagueTagColors(value);
 
   return {
     schemaVersion: 1,
@@ -63,14 +67,13 @@ export function normalizeAppSettings(value: unknown): AppSettings {
   };
 }
 
-/** 保留现有设置，只补入导入文件中新出现的联赛颜色。 */
+/** 以导入文件中明确提供的颜色更新设置，并保留文件未提供的现有颜色。 */
 export function unionAppSettings(current: AppSettings, incoming: unknown): AppSettings {
-  const normalizedIncoming = normalizeAppSettings(incoming);
   return normalizeAppSettings({
     appearance: {
       leagueTagColors: {
-        ...normalizedIncoming.appearance.leagueTagColors,
         ...current.appearance.leagueTagColors,
+        ...validLeagueTagColors(incoming),
       },
     },
   });

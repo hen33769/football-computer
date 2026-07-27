@@ -28,8 +28,12 @@ test("导入设置会过滤非法颜色并补齐默认配置", () => {
   assert.equal(settings.appearance.leagueTagColors.新联赛, "#112233");
 });
 
-test("新增导入设置只补入新联赛颜色", () => {
-  const current = withLeagueTagColor(createDefaultSettings(), "欧冠", "#123456");
+test("新增导入设置以新颜色更新冲突项，并保留文件缺少的现有颜色", () => {
+  const current = withLeagueTagColor(
+    withLeagueTagColor(createDefaultSettings(), "欧冠", "#123456"),
+    "巴甲",
+    "#654321",
+  );
   const settings = unionAppSettings(current, {
     appearance: {
       leagueTagColors: {
@@ -39,7 +43,8 @@ test("新增导入设置只补入新联赛颜色", () => {
     },
   });
 
-  assert.equal(settings.appearance.leagueTagColors.欧冠, "#123456");
+  assert.equal(settings.appearance.leagueTagColors.欧冠, "#abcdef");
+  assert.equal(settings.appearance.leagueTagColors.巴甲, "#654321");
   assert.equal(settings.appearance.leagueTagColors.新联赛, "#112233");
 });
 

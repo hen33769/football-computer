@@ -10,18 +10,27 @@ export const orderLedgerTotals = (orders: SavedSlip[]) => ({
   income: orders.reduce((total, order) => total + (order.settledPrize ?? 0), 0),
 });
 
-/** 保留现有同 ID 订单，只补入新的导入订单。 */
+/** 以导入订单更新同 ID 订单，并保留导入对象未提供的现有可选字段。 */
 export function unionSavedOrders(current: SavedSlip[], incoming: SavedSlip[]) {
   const nextOrders = [...current];
-  const existingIds = new Set(nextOrders.flatMap((order) => order.id ? [order.id] : []));
   let added = 0;
+  let updated = 0;
   let expenseDelta = 0;
   let incomeDelta = 0;
 
   incoming.forEach((order) => {
-    if (order.id && existingIds.has(order.id)) return;
+    const currentIndex = order.id ? nextOrders.findIndex((item) => item.id === order.id) : -1;
+    if (currentIndex >= 0) {
+      const currentOrder = nextOrders[currentIndex];
+      const mergedOrder = { ...currentOrder, ...order };
+      nextOrders[currentIndex] = mergedOrder;
+      expenseDelta += calculateStake(mergedOrder.matches, mergedOrder.passes, mergedOrder.multiple)
+        - calculateStake(currentOrder.matches, currentOrder.passes, currentOrder.multiple);
+      incomeDelta += (mergedOrder.settledPrize ?? 0) - (currentOrder.settledPrize ?? 0);
+      updated += 1;
+      return;
+    }
     nextOrders.push(order);
-    if (order.id) existingIds.add(order.id);
     expenseDelta += calculateStake(order.matches, order.passes, order.multiple);
     incomeDelta += order.settledPrize ?? 0;
     added += 1;
@@ -30,7 +39,7 @@ export function unionSavedOrders(current: SavedSlip[], incoming: SavedSlip[]) {
   return {
     nextOrders: sortSavedOrders(nextOrders),
     added,
-    skipped: incoming.length - added,
+    updated,
     expenseDelta,
     incomeDelta,
   };
