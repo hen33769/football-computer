@@ -267,13 +267,17 @@ function OddsHistoryTooltip({ option, children }: { option: OddsOption; children
   const changeCount = Math.max(0, history.length - 1);
   if (!history.length) return children;
   const displayedHistory = history;
+  const openingOdds = displayedHistory[0].odds;
   const content = (
     <div className="odds-history-popover">
       <div className="odds-history-title"><b>{option.label}</b><span>共 {history.length} 条记录 · {changeCount} 次变化</span></div>
+      <div className="odds-history-columns"><span>时间</span><span>倍率</span><span>较初盘</span></div>
       <div className="odds-history-list">
         {displayedHistory.map((entry, index) => {
           const isInitial = index === 0;
           const isLatest = displayedHistory.length > 1 && index === displayedHistory.length - 1;
+          const rawRelativeChange = entry.odds - openingOdds;
+          const relativeChange = Math.abs(rawRelativeChange) < 0.005 ? 0 : rawRelativeChange;
           return (
             <div key={`${entry.updatedAt}-${entry.odds}-${index}`}>
               <span className="odds-history-date">
@@ -284,6 +288,9 @@ function OddsHistoryTooltip({ option, children }: { option: OddsOption; children
               <strong className={entry.trend > 0 ? "up" : entry.trend < 0 ? "down" : ""}>
                 {entry.odds.toFixed(2)}<OddsTrendIndicator trend={entry.trend} />
               </strong>
+              <span className={`odds-history-relative ${relativeChange > 0 ? "up" : relativeChange < 0 ? "down" : ""}`}>
+                {relativeChange > 0 ? "+" : ""}{relativeChange.toFixed(2)}
+              </span>
             </div>
           );
         })}

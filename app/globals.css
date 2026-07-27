@@ -236,18 +236,23 @@ button, input, textarea { font: inherit; }
   background: #fff;
   box-shadow: 0 12px 32px rgba(21, 41, 47, .18);
 }
-.odds-history-popover { min-width: 300px; }
+.odds-history-popover { --odds-history-columns: minmax(0, 1fr) 66px 64px; min-width: min(340px, calc(100vw - 48px)); }
 .odds-history-title { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding-bottom: 8px; border-bottom: 1px solid #e8edef; }
 .odds-history-title b { color: var(--ink); }
 .odds-history-title span { color: var(--ink); font-size: 11px; }
+.odds-history-columns { min-height: 26px; display: grid; grid-template-columns: var(--odds-history-columns); align-items: center; gap: 12px; color: #758489; font-size: 10px; }
+.odds-history-columns span:nth-child(n+2) { text-align: right; }
 .odds-history-list { overflow: visible; }
-.odds-history-list > div { min-height: 34px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 18px; border-bottom: 1px solid #edf0f1; }
+.odds-history-list > div { min-height: 34px; display: grid; grid-template-columns: var(--odds-history-columns); align-items: center; gap: 12px; border-bottom: 1px solid #edf0f1; }
 .odds-history-list > div:last-child { border-bottom: 0; }
-.odds-history-date { min-width: 0; display: flex; align-items: center; gap: 5px; color: var(--ink); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.odds-history-date { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 5px; color: var(--ink); font-size: 11px; font-variant-numeric: tabular-nums; }
 .odds-history-date .ant-tag { margin: 0; padding-inline: 5px; font-size: 10px; line-height: 17px; }
-.odds-history-list strong { display: inline-flex; align-items: center; gap: 3px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.odds-history-list strong { display: inline-flex; align-items: center; justify-self: end; gap: 3px; color: var(--ink); font-variant-numeric: tabular-nums; }
 .odds-history-list strong.up { color: #e5484d; }
 .odds-history-list strong.down { color: #1677ff; }
+.odds-history-relative { justify-self: end; color: var(--ink); font-size: 11px; font-variant-numeric: tabular-nums; }
+.odds-history-relative.up { color: #e5484d; }
+.odds-history-relative.down { color: #1677ff; }
 .match-card-actions { display: grid; grid-template-columns: 1fr 3fr 1fr; gap: 6px; margin-top: 12px; }
 .match-card-actions .ant-btn { min-width: 0; padding-inline: 2px; font-size: 14px; }
 .match-card-actions .ant-btn > span:not(.ant-btn-icon) { overflow-wrap: anywhere; }
