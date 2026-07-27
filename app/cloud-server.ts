@@ -1,24 +1,57 @@
-import { eq } from "drizzle-orm";
+import { and, eq, gt } from "drizzle-orm";
 import { getDb } from "../db";
-import { users } from "../db/schema";
-import { getChatGPTUser } from "./chatgpt-auth";
+import { accountSessions, users } from "../db/schema";
 import type { CloudAccount } from "./cloud";
 
-export type AuthenticatedCloudAccount = {
-  identity: {
-    email: string;
-    displayName: string;
-  };
-  account: CloudAccount;
-};
+const SESSION_COOKIE = "smgr_account_session";
+const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 365;
 
-export async function findAuthenticatedCloudAccount(): Promise<
+export type AuthenticatedCloudAccount = { account: CloudAccount };
+
+function readCookie(request: Request, name: string) {
+  const cookies = request.headers.get("cookie") ?? "";
+  for (const part of cookies.split(";")) {
+    const separator = part.indexOf("=");
+    if (separator < 0) continue;
+    if (part.slice(0, separator).trim() !== name) continue;
+    return decodeURIComponent(part.slice(separator + 1).trim());
+  }
+  return "";
+}
+
+async function hashSessionToken(token: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export async function createAccountSession(userId: string) {
+  const token = `${crypto.randomUUID()}.${crypto.randomUUID()}`;
+  const tokenHash = await hashSessionToken(token);
+  const expiresAt = new Date(Date.now() + SESSION_MAX_AGE_SECONDS * 1000).toISOString();
+  await getDb().insert(accountSessions).values({ tokenHash, userId, expiresAt });
+  return { token, expiresAt };
+}
+
+export function sessionCookie(token: string) {
+  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; Max-Age=${SESSION_MAX_AGE_SECONDS}; HttpOnly; Secure; SameSite=Lax`;
+}
+
+export function clearSessionCookie() {
+  return `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`;
+}
+
+export async function deleteAccountSession(request: Request) {
+  const token = readCookie(request, SESSION_COOKIE);
+  if (!token) return;
+  await getDb().delete(accountSessions).where(eq(accountSessions.tokenHash, await hashSessionToken(token)));
+}
+
+export async function findAuthenticatedCloudAccount(request: Request): Promise<
   | { kind: "anonymous" }
-  | { kind: "unregistered"; identity: { email: string; displayName: string } }
   | { kind: "ready"; value: AuthenticatedCloudAccount }
 > {
-  const identity = await getChatGPTUser();
-  if (!identity) return { kind: "anonymous" };
+  const token = readCookie(request, SESSION_COOKIE);
+  if (!token) return { kind: "anonymous" };
 
   const [row] = await getDb()
     .select({
@@ -26,20 +59,19 @@ export async function findAuthenticatedCloudAccount(): Promise<
       account: users.account,
       role: users.role,
     })
-    .from(users)
-    .where(eq(users.authSubject, identity.email.trim().toLocaleLowerCase("en-US")))
+    .from(accountSessions)
+    .innerJoin(users, eq(accountSessions.userId, users.id))
+    .where(and(
+      eq(accountSessions.tokenHash, await hashSessionToken(token)),
+      gt(accountSessions.expiresAt, new Date().toISOString()),
+    ))
     .limit(1);
 
-  const normalizedIdentity = {
-    email: identity.email,
-    displayName: identity.displayName,
-  };
-  if (!row) return { kind: "unregistered", identity: normalizedIdentity };
+  if (!row) return { kind: "anonymous" };
 
   return {
     kind: "ready",
     value: {
-      identity: normalizedIdentity,
       account: {
         id: row.id,
         account: row.account,
@@ -49,17 +81,11 @@ export async function findAuthenticatedCloudAccount(): Promise<
   };
 }
 
-export async function requireAuthenticatedCloudAccount() {
-  const result = await findAuthenticatedCloudAccount();
+export async function requireAuthenticatedCloudAccount(request: Request) {
+  const result = await findAuthenticatedCloudAccount(request);
   if (result.kind === "anonymous") {
     return {
-      response: Response.json({ error: "请先登录" }, { status: 401 }),
-      value: null,
-    };
-  }
-  if (result.kind === "unregistered") {
-    return {
-      response: Response.json({ error: "请先创建唯一账号" }, { status: 409 }),
+      response: Response.json({ error: "请先输入账号登录" }, { status: 401 }),
       value: null,
     };
   }

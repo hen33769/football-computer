@@ -18,7 +18,7 @@ function isMatch(value: unknown): value is MatchItem {
 
 export async function PUT(request: Request) {
   try {
-    const authenticated = await requireAuthenticatedCloudAccount();
+    const authenticated = await requireAuthenticatedCloudAccount(request);
     if (!authenticated.value) return authenticated.response!;
     if (authenticated.value.account.role !== "admin") {
       return Response.json({ error: "只有管理员可以更新公共比赛数据" }, { status: 403 });

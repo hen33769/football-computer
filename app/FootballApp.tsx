@@ -177,6 +177,12 @@ type LoadedOrderDraft = {
   multiple: number;
   hits: CurrentHits;
 };
+type AccountLoginBetDraft = {
+  matches: MatchItem[];
+  passes: number[];
+  multiple: number;
+  hits: CurrentHits;
+};
 type ManualOrderEntry = {
   key: string;
   matchId: string | null;
@@ -704,16 +710,37 @@ function InnerFootballApp({
   cloudSyncStatus,
   onCloudPersonalChange,
   onCloudMatchesChange,
+  onRequireAccount,
+  onLogout,
 }: {
   initialView: AppView;
   onNavigate?: (view: AppView) => void;
-  cloudAccount: CloudAccount;
+  cloudAccount: CloudAccount | null;
   cloudSyncStatus: CloudSyncStatus;
   onCloudPersonalChange: (state: CloudPersonalState) => void;
   onCloudMatchesChange: (matches: MatchItem[]) => void;
+  onRequireAccount: (view?: AppView) => void;
+  onLogout: () => Promise<void>;
 }) {
   const { message, modal, notification } = App.useApp();
   const headerRef = useRef<HTMLElement | null>(null);
+  const [accountLoginBetDraft] = useState<AccountLoginBetDraft | null>(() => {
+    if (initialView !== "betting") return null;
+    try {
+      const raw = sessionStorage.getItem(CLOUD_STORAGE_KEYS.loginBetDraft);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as Partial<AccountLoginBetDraft>;
+      return Array.isArray(parsed.matches)
+        && Array.isArray(parsed.passes)
+        && typeof parsed.multiple === "number"
+        && parsed.hits
+        && typeof parsed.hits === "object"
+        ? parsed as AccountLoginBetDraft
+        : null;
+    } catch {
+      return null;
+    }
+  });
   const [loadedOrderDraft] = useState<LoadedOrderDraft | null>(() => {
     if (initialView !== "betting") return null;
     try {
@@ -723,14 +750,26 @@ function InnerFootballApp({
       return null;
     }
   });
-  const [matches, setMatches] = useState<MatchItem[]>(() => loadedOrderDraft ? cloneMatches(loadedOrderDraft.matches) : loadCachedMatches());
+  const [matches, setMatches] = useState<MatchItem[]>(() => accountLoginBetDraft
+    ? cloneMatches(accountLoginBetDraft.matches)
+    : loadedOrderDraft
+      ? cloneMatches(loadedOrderDraft.matches)
+      : loadCachedMatches());
   const matchesRef = useRef(matches);
-  const [passes, setPasses] = useState<number[]>(() => loadedOrderDraft ? [...loadedOrderDraft.passes] : []);
-  const [multiple, setMultiple] = useState(() => loadedOrderDraft?.multiple ?? 1);
+  const [passes, setPasses] = useState<number[]>(() => accountLoginBetDraft
+    ? [...accountLoginBetDraft.passes]
+    : loadedOrderDraft
+      ? [...loadedOrderDraft.passes]
+      : []);
+  const [multiple, setMultiple] = useState(() => accountLoginBetDraft?.multiple ?? loadedOrderDraft?.multiple ?? 1);
   const [temporaryOrder, setTemporaryOrder] = useState<{ id: string; name: string } | null>(() => (
     loadedOrderDraft && loadedOrderDraft.mode !== "copy" ? { id: loadedOrderDraft.id, name: loadedOrderDraft.name } : null
   ));
-  const [hits, setHits] = useState<CurrentHits>(() => loadedOrderDraft?.mode === "copy" ? {} : cloneHits(loadedOrderDraft?.hits));
+  const [hits, setHits] = useState<CurrentHits>(() => accountLoginBetDraft
+    ? cloneHits(accountLoginBetDraft.hits)
+    : loadedOrderDraft?.mode === "copy"
+      ? {}
+      : cloneHits(loadedOrderDraft?.hits));
   const [previewMatchId, setPreviewMatchId] = useState<string | null>(null);
   const [moreMatchId, setMoreMatchId] = useState<string | null>(null);
   const [trendMatchId, setTrendMatchId] = useState<string | null>(null);
@@ -848,6 +887,14 @@ function InnerFootballApp({
   }, [loadedOrderDraft, message]);
 
   useEffect(() => {
+    if (!accountLoginBetDraft || !cloudAccount) return;
+    sessionStorage.removeItem(CLOUD_STORAGE_KEYS.loginBetDraft);
+    setSaveName("");
+    setSaveOpen(true);
+    message.success("账号已登录，刚才选择的比赛和串关已保留");
+  }, [accountLoginBetDraft, cloudAccount, message]);
+
+  useEffect(() => {
     localStorage.setItem(EXPENSE_KEY, String(expenseTotal));
   }, [expenseTotal]);
 
@@ -856,6 +903,7 @@ function InnerFootballApp({
   }, [incomeTotal]);
 
   useEffect(() => {
+    if (!cloudAccount) return;
     if (cloudAccount.id !== "local") {
       localStorage.setItem(CLOUD_STORAGE_KEYS.pendingPersonal, cloudAccount.id);
     }
@@ -864,7 +912,7 @@ function InnerFootballApp({
       finance: { expenseTotal, incomeTotal },
       settings: appSettings,
     });
-  }, [appSettings, cloudAccount.id, expenseTotal, incomeTotal, onCloudPersonalChange, savedSlips]);
+  }, [appSettings, cloudAccount, expenseTotal, incomeTotal, onCloudPersonalChange, savedSlips]);
 
   useEffect(() => {
     matchesRef.current = matches;
@@ -992,6 +1040,10 @@ function InnerFootballApp({
   }, [passes, passOptions]);
 
   const navigateToView = (view: AppView) => {
+    if (!cloudAccount && view !== "betting") {
+      onRequireAccount(view);
+      return;
+    }
     if (view !== "betting" && temporaryOrder) restoreSavedMatches();
     if (onNavigate) {
       onNavigate(view);
@@ -1414,6 +1466,16 @@ function InnerFootballApp({
   };
 
   const openSaveSlip = () => {
+    if (!cloudAccount) {
+      sessionStorage.setItem(CLOUD_STORAGE_KEYS.loginBetDraft, JSON.stringify({
+        matches,
+        passes: activePasses,
+        multiple,
+        hits,
+      } satisfies AccountLoginBetDraft));
+      onRequireAccount();
+      return;
+    }
     setSaveName(temporaryOrder?.name ?? "");
     setSaveOpen(true);
   };
@@ -1935,7 +1997,7 @@ function InnerFootballApp({
 
   const importDataJson = async (file: File, mode: DataTransferMode, strategy: ImportStrategy) => {
     try {
-      if (mode === "matches" && cloudAccount.role !== "admin") {
+      if (mode === "matches" && cloudAccount?.role !== "admin") {
         throw new Error("只有管理员可以导入所有账号共用的比赛数据");
       }
       if (file.size > 20 * 1024 * 1024) throw new Error("JSON 文件不能超过 20 MB");
@@ -2008,7 +2070,7 @@ function InnerFootballApp({
         const restoredSettings = strategy === "merge"
           ? unionAppSettings(appSettings, data.settings)
           : normalizeAppSettings(data.settings);
-        const canImportMatches = cloudAccount.role === "admin";
+        const canImportMatches = cloudAccount?.role === "admin";
         const rawMatches = data.matches;
         if (canImportMatches && (!Array.isArray(rawMatches) || !rawMatches.every(isExportedMatch))) throw new Error("完整数据中的 matches 比赛数据无效");
         const restoredMatches = canImportMatches ? prepareMatches(strategy) : loadCachedMatches();
@@ -2172,14 +2234,14 @@ function InnerFootballApp({
       {([
         ["orders", "导入订单", importStrategy === "merge" ? "同 ID 用 JSON 更新，文件缺项保留本地值" : "用 JSON 订单替换本地订单"],
         ["settings", "导入设置", importStrategy === "merge" ? "同联赛用 JSON 更新，文件缺项保留本地值" : "用 JSON 设置替换本地设置"],
-        ["matches", "导入公共比赛数据", cloudAccount.role === "admin"
+        ["matches", "导入公共比赛数据", cloudAccount?.role === "admin"
           ? importStrategy === "merge" ? "同场用 JSON 更新，缺少的玩法与倍率保留云端值" : "用 JSON 比赛替换所有账号的公共比赛"
           : "仅管理员可以更新所有账号共用的比赛"],
-        ["full", "导入完整数据", cloudAccount.role === "admin"
+        ["full", "导入完整数据", cloudAccount?.role === "admin"
           ? importStrategy === "merge" ? "JSON 值优先更新，文件缺项保留云端值" : "覆盖当前账号数据与公共比赛"
           : importStrategy === "merge" ? "合并当前账号数据，公共比赛保持不变" : "覆盖当前账号数据，公共比赛保持不变"],
       ] as const).map(([mode, title, description]) => {
-        const disabled = mode === "matches" && cloudAccount.role !== "admin";
+        const disabled = mode === "matches" && cloudAccount?.role !== "admin";
         return (
           <Upload
             key={mode}
@@ -2210,13 +2272,13 @@ function InnerFootballApp({
     : cloudSyncStatus === "error"
       ? "云同步失败，本机数据仍已保留"
       : "云端数据已同步";
-  const accountMenu = (
+  const accountMenu = cloudAccount ? (
     <div className="cloud-account-menu">
       <div><b>{cloudAccount.account}</b><Tag color={cloudAccount.role === "admin" ? "gold" : "blue"}>{cloudAccount.role === "admin" ? "管理员" : "账号"}</Tag></div>
       <span className={cloudSyncStatus === "error" ? "error" : ""}>{syncLabel}</span>
-      <Button href="/signout-with-chatgpt?return_to=%2F" icon={<LogoutOutlined />} block>退出登录</Button>
+      <Button icon={<LogoutOutlined />} block onClick={() => { void onLogout(); }}>退出账号</Button>
     </div>
-  );
+  ) : null;
 
   return (
     <div className="football-app">
@@ -2243,11 +2305,17 @@ function InnerFootballApp({
             <Button className={activeView === "settings" ? "view-toggle active" : "view-toggle"} icon={<SettingOutlined />} onClick={() => navigateToView("settings")}>
               <span className="header-button-label">设置</span>
             </Button>
-            <Popover content={accountMenu} trigger="click" placement="bottomRight">
-              <Button className="cloud-account-button" icon={<UserOutlined />}>
-                <span className="header-button-label">{cloudAccount.account}</span>
+            {cloudAccount ? (
+              <Popover content={accountMenu} trigger="click" placement="bottomRight">
+                <Button className="cloud-account-button" icon={<UserOutlined />}>
+                  <span className="header-button-label">{cloudAccount.account}</span>
+                </Button>
+              </Popover>
+            ) : (
+              <Button className="cloud-account-button" icon={<UserOutlined />} onClick={() => onRequireAccount()}>
+                <span className="header-button-label">账号登录</span>
               </Button>
-            </Popover>
+            )}
           </div>
         </div>
         <div className="responsible-note"><InfoCircleOutlined /> 非官方模拟工具 · 模拟器随便玩</div>
@@ -2426,7 +2494,7 @@ function InnerFootballApp({
         <main className="page-shell orders-shell">
           <section className="orders-page">
             <div className="section-heading orders-heading">
-              <div><span className="eyebrow">LOCAL ORDERS</span><h2>订单列表</h2><p>已保存的预测单只保存在当前浏览器中，可以查看明细或重新载入继续调整。</p></div>
+              <div><span className="eyebrow">CLOUD ORDERS</span><h2>订单列表</h2><p>订单、累计收支会保存到当前账号，并在其他设备登录后自动同步。</p></div>
               <Space wrap>
                 <Tag color="cyan">显示 {filteredSavedSlips.length} / 共 {savedSlips.length} 个订单</Tag>
                 <Button icon={<ExpandOutlined />} disabled={filteredSavedSlips.length === 0} onClick={expandAllOrderOptions}>展开全部选项</Button>
@@ -2772,7 +2840,7 @@ function InnerFootballApp({
         <main className="page-shell settings-shell">
           <section className="settings-page">
             <div className="section-heading settings-heading">
-              <div><span className="eyebrow">APP SETTINGS</span><h2>设置</h2><p>应用设置使用独立的版本化本地存储，后续新增配置不会与订单数据混在一起。</p></div>
+              <div><span className="eyebrow">CLOUD SETTINGS</span><h2>设置</h2><p>应用设置与当前账号绑定，并在其他设备登录后自动同步。</p></div>
               <Space wrap>
                 <Tag color="cyan">{settingsLeagueNames.length} 个联赛颜色</Tag>
                 <Button type="primary" icon={<HomeOutlined />} onClick={() => navigateToView("betting")}>返回投注</Button>
@@ -3046,9 +3114,9 @@ function InnerFootballApp({
         )}
       </Drawer>
 
-      <Modal open={saveOpen} onCancel={() => setSaveOpen(false)} onOk={saveSlip} title={temporaryOrder ? "更新当前预测单" : "保存当前预测单"} okText={temporaryOrder ? "覆盖更新" : "保存到本机"} cancelText="取消">
+      <Modal open={saveOpen} onCancel={() => setSaveOpen(false)} onOk={saveSlip} title={temporaryOrder ? "更新当前预测单" : "保存当前预测单"} okText={temporaryOrder ? "覆盖更新" : "保存到账号"} cancelText="取消">
         <Input autoFocus value={saveName} onChange={(event) => setSaveName(event.target.value)} onPressEnter={saveSlip} placeholder="可选；留空则使用当前日期时间" maxLength={30} showCount />
-        <p className="modal-help">名称留空时将使用“年月日时分秒”自动命名。数据仅保存在当前浏览器的本地存储中，不会上传。</p>
+        <p className="modal-help">名称留空时将使用“年月日时分秒”自动命名。保存后会同步到当前账号。</p>
       </Modal>
 
       <Modal
@@ -3143,13 +3211,17 @@ export default function FootballApp({
   cloudSyncStatus = "saved",
   onCloudPersonalChange = ignoreCloudPersonalChange,
   onCloudMatchesChange = ignoreCloudMatchesChange,
+  onRequireAccount = () => undefined,
+  onLogout = async () => undefined,
 }: {
   initialView?: AppView;
   onNavigate?: (view: AppView) => void;
-  cloudAccount?: CloudAccount;
+  cloudAccount?: CloudAccount | null;
   cloudSyncStatus?: CloudSyncStatus;
   onCloudPersonalChange?: (state: CloudPersonalState) => void;
   onCloudMatchesChange?: (matches: MatchItem[]) => void;
+  onRequireAccount?: (view?: AppView) => void;
+  onLogout?: () => Promise<void>;
 }) {
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
@@ -3179,6 +3251,8 @@ export default function FootballApp({
           cloudSyncStatus={cloudSyncStatus}
           onCloudPersonalChange={onCloudPersonalChange}
           onCloudMatchesChange={onCloudMatchesChange}
+          onRequireAccount={onRequireAccount}
+          onLogout={onLogout}
         />
       </App>
     </ConfigProvider>

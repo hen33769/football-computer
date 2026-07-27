@@ -15,7 +15,7 @@ import FootballApp, { type AppView } from "./FootballApp";
 import { createDefaultSettings, normalizeAppSettings } from "./settings";
 import type { MatchItem, SavedSlip } from "./types";
 
-type GateStatus = "loading" | "signin" | "account" | "ready" | "error";
+type RouteStatus = "loading" | "ready" | "error";
 
 function pathForView(view: AppView) {
   return view === "orders" ? "/orders" : view === "settings" ? "/settings" : "/";
@@ -68,6 +68,15 @@ function installPersonalState(state: CloudPersonalState, accountId: string) {
   localStorage.setItem(CLOUD_STORAGE_KEYS.accountId, accountId);
 }
 
+function installPublicState() {
+  localStorage.setItem(CLOUD_STORAGE_KEYS.orders, "[]");
+  localStorage.setItem(CLOUD_STORAGE_KEYS.expense, "0");
+  localStorage.setItem(CLOUD_STORAGE_KEYS.income, "0");
+  localStorage.setItem(CLOUD_STORAGE_KEYS.settings, JSON.stringify(createDefaultSettings()));
+  localStorage.removeItem(CLOUD_STORAGE_KEYS.accountId);
+  localStorage.removeItem(CLOUD_STORAGE_KEYS.pendingPersonal);
+}
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...init,
@@ -87,16 +96,21 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export default function FootballRoute({ initialView }: { initialView: AppView }) {
-  const [activeView, setActiveView] = useState(initialView);
-  const [gateStatus, setGateStatus] = useState<GateStatus>("loading");
+  const initialPersonalView = initialView === "betting" ? null : initialView;
+  const [activeView, setActiveView] = useState<AppView>(initialPersonalView ? "betting" : initialView);
+  const [routeStatus, setRouteStatus] = useState<RouteStatus>("loading");
   const [account, setAccount] = useState<CloudAccount | null>(null);
+  const [accountDialogOpen, setAccountDialogOpen] = useState(Boolean(initialPersonalView));
   const [accountDraft, setAccountDraft] = useState("");
-  const [identityName, setIdentityName] = useState("");
-  const [gateError, setGateError] = useState("");
+  const [accountSubmitting, setAccountSubmitting] = useState(false);
+  const [accountError, setAccountError] = useState("");
+  const [routeErrorMessage, setRouteErrorMessage] = useState("");
   const [syncStatus, setSyncStatus] = useState<CloudSyncStatus>("saved");
   const syncQueueRef = useRef<Promise<void>>(Promise.resolve());
   const pendingWritesRef = useRef(0);
   const personalGenerationRef = useRef(0);
+  const accountIdRef = useRef<string | null>(null);
+  const pendingViewRef = useRef<AppView | null>(initialPersonalView);
 
   const savePersonalImmediately = useCallback(async (personal: CloudPersonalState) => {
     const response = await requestJson<{ orders?: SavedSlip[] }>("/api/cloud/personal", {
@@ -116,14 +130,28 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
     });
   }, []);
 
-  const bootstrap = useCallback(async () => {
-    setGateStatus("loading");
-    setGateError("");
+  const bootstrap = useCallback(async (showLoading = true) => {
+    if (showLoading) setRouteStatus("loading");
+    setRouteErrorMessage("");
     try {
       const result = await requestJson<CloudBootstrapResponse>("/api/cloud/bootstrap");
+      const cloudMatches = result.matches ?? [];
+      const localMatches = readJson<MatchItem[]>(CLOUD_STORAGE_KEYS.matches, []);
+      if (cloudMatches.length > 0) {
+        localStorage.setItem(CLOUD_STORAGE_KEYS.matches, JSON.stringify(clearMatchSelections(cloudMatches)));
+      }
+
       if (result.requiresAccount || !result.account || !result.personal) {
-        setIdentityName(result.identity?.displayName ?? "");
-        setGateStatus("account");
+        const localMarker = localStorage.getItem(CLOUD_STORAGE_KEYS.accountId);
+        const localPersonal = readLocalPersonalState();
+        if (!localMarker && hasLocalPersonalData(localPersonal)) {
+          localStorage.setItem(CLOUD_STORAGE_KEYS.pendingMigration, JSON.stringify(localPersonal));
+        }
+        installPublicState();
+        accountIdRef.current = null;
+        setAccount(null);
+        setSyncStatus("saved");
+        setRouteStatus("ready");
         return;
       }
 
@@ -131,36 +159,39 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
       const localMarker = localStorage.getItem(CLOUD_STORAGE_KEYS.accountId);
       const hasPendingLocalWrite = localStorage.getItem(CLOUD_STORAGE_KEYS.pendingPersonal) === nextAccount.id;
       const localPersonal = readLocalPersonalState();
+      const pendingMigration = readJson<CloudPersonalState | null>(CLOUD_STORAGE_KEYS.pendingMigration, null);
       let personal = result.personal;
-      if (
+      if (!result.hasPersonalData && pendingMigration) {
+        personal = await savePersonalImmediately(pendingMigration);
+      } else if (
         (hasPendingLocalWrite || !result.hasPersonalData)
         && (!localMarker || localMarker === nextAccount.id)
         && hasLocalPersonalData(localPersonal)
       ) {
         personal = await savePersonalImmediately(localPersonal);
-        localStorage.removeItem(CLOUD_STORAGE_KEYS.pendingPersonal);
       }
+      localStorage.removeItem(CLOUD_STORAGE_KEYS.pendingPersonal);
+      localStorage.removeItem(CLOUD_STORAGE_KEYS.pendingMigration);
       installPersonalState(personal, nextAccount.id);
 
-      const cloudMatches = result.matches ?? [];
-      const localMatches = readJson<MatchItem[]>(CLOUD_STORAGE_KEYS.matches, []);
-      if (cloudMatches.length > 0) {
-        localStorage.setItem(CLOUD_STORAGE_KEYS.matches, JSON.stringify(clearMatchSelections(cloudMatches)));
-      } else if (nextAccount.role === "admin" && localMatches.length > 0) {
+      if (cloudMatches.length === 0 && nextAccount.role === "admin" && localMatches.length > 0) {
         await saveMatchesImmediately(localMatches);
       }
 
+      accountIdRef.current = nextAccount.id;
       setAccount(nextAccount);
       setSyncStatus("saved");
-      setGateStatus("ready");
-    } catch (error) {
-      const status = (error as Error & { status?: number }).status;
-      if (status === 401) {
-        setGateStatus("signin");
-        return;
+      const pendingView = pendingViewRef.current;
+      if (pendingView) {
+        pendingViewRef.current = null;
+        setActiveView(pendingView);
+        window.history.replaceState({}, "", pathForView(pendingView));
       }
-      setGateError(error instanceof Error ? error.message : "云端连接失败");
-      setGateStatus("error");
+      setAccountDialogOpen(false);
+      setRouteStatus("ready");
+    } catch (error) {
+      setRouteErrorMessage(error instanceof Error ? error.message : "云端连接失败");
+      setRouteStatus("error");
     }
   }, [saveMatchesImmediately, savePersonalImmediately]);
 
@@ -172,31 +203,76 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
   }, [bootstrap]);
 
   useEffect(() => {
-    const onPopState = () => setActiveView(viewForPath(window.location.pathname));
+    const onPopState = () => {
+      const view = viewForPath(window.location.pathname);
+      if (!accountIdRef.current && view !== "betting") {
+        pendingViewRef.current = view;
+        setAccountDialogOpen(true);
+        setActiveView("betting");
+        return;
+      }
+      setActiveView(view);
+    };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
-  const createAccount = async (event: FormEvent) => {
+  const openAccountDialog = useCallback((view?: AppView) => {
+    if (view && view !== "betting") pendingViewRef.current = view;
+    setAccountError("");
+    setAccountDialogOpen(true);
+  }, []);
+
+  const closeAccountDialog = () => {
+    pendingViewRef.current = null;
+    setAccountDialogOpen(false);
+    setAccountError("");
+    sessionStorage.removeItem(CLOUD_STORAGE_KEYS.loginBetDraft);
+    if (window.location.pathname !== "/") window.history.replaceState({}, "", "/");
+  };
+
+  const enterAccount = async (event: FormEvent) => {
     event.preventDefault();
     const validationError = accountNameError(accountDraft);
     if (validationError) {
-      setGateError(validationError);
+      setAccountError(validationError);
       return;
     }
-    setGateError("");
+    setAccountSubmitting(true);
+    setAccountError("");
     try {
       await requestJson("/api/cloud/account", {
         method: "POST",
         body: JSON.stringify({ account: accountDraft }),
       });
-      await bootstrap();
+      await bootstrap(false);
+      setAccountDraft("");
     } catch (error) {
-      setGateError(error instanceof Error ? error.message : "账号创建失败");
+      setAccountError(error instanceof Error ? error.message : "账号登录失败");
+    } finally {
+      setAccountSubmitting(false);
     }
   };
 
+  const logout = useCallback(async () => {
+    setSyncStatus("saving");
+    await syncQueueRef.current.catch(() => undefined);
+    try {
+      await requestJson("/api/cloud/account", { method: "DELETE" });
+    } finally {
+      accountIdRef.current = null;
+      installPublicState();
+      setAccount(null);
+      setSyncStatus("saved");
+      setActiveView("betting");
+      pendingViewRef.current = null;
+      sessionStorage.removeItem(CLOUD_STORAGE_KEYS.loginBetDraft);
+      window.history.replaceState({}, "", "/");
+    }
+  }, []);
+
   const enqueueWrite = useCallback((task: () => Promise<void>) => {
+    if (!accountIdRef.current) return;
     pendingWritesRef.current += 1;
     setSyncStatus("saving");
     const run = syncQueueRef.current.catch(() => undefined).then(task);
@@ -207,11 +283,18 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
     }).catch((error) => {
       pendingWritesRef.current -= 1;
       setSyncStatus("error");
-      if ((error as Error & { status?: number }).status === 401) setGateStatus("signin");
+      if ((error as Error & { status?: number }).status === 401) {
+        accountIdRef.current = null;
+        installPublicState();
+        setAccount(null);
+        setActiveView("betting");
+        setAccountDialogOpen(true);
+      }
     });
   }, []);
 
   const syncPersonal = useCallback((personal: CloudPersonalState) => {
+    if (!accountIdRef.current) return;
     const generation = personalGenerationRef.current + 1;
     personalGenerationRef.current = generation;
     enqueueWrite(async () => {
@@ -230,70 +313,33 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
   }, [account?.role, enqueueWrite, saveMatchesImmediately]);
 
   const navigate = (view: AppView) => {
+    if (view !== "betting" && !account) {
+      openAccountDialog(view);
+      return;
+    }
     const path = pathForView(view);
     if (window.location.pathname !== path) window.history.pushState({}, "", path);
     setActiveView(view);
   };
 
-  if (gateStatus === "loading") {
+  if (routeStatus === "loading") {
     return (
       <div className="app-loading-shell">
         <div className="app-loading-mark">☁</div>
-        <b>正在连接云端数据</b>
-        <span>加载账号、订单、设置与公共比赛…</span>
+        <b>正在加载公共比赛</b>
+        <span>查看比赛无需登录，个人功能按账号同步。</span>
       </div>
     );
   }
 
-  if (gateStatus === "signin") {
-    return (
-      <main className="cloud-gate">
-        <section className="cloud-gate-card">
-          <div className="cloud-gate-logo" aria-hidden="true">★</div>
-          <span className="cloud-gate-kicker">SMGR CLOUD</span>
-          <h1>登录后继续</h1>
-          <p>无需为本应用设置密码。登录后，你的订单、收支和设置会自动同步到所有电脑。</p>
-          <a className="cloud-gate-primary" href="/signin-with-chatgpt?return_to=%2F">使用 ChatGPT 登录</a>
-          <small>比赛与赔率数据由所有账号共用。</small>
-        </section>
-      </main>
-    );
-  }
-
-  if (gateStatus === "account") {
-    return (
-      <main className="cloud-gate">
-        <form className="cloud-gate-card" onSubmit={createAccount}>
-          <div className="cloud-gate-logo" aria-hidden="true">★</div>
-          <span className="cloud-gate-kicker">WELCOME {identityName ? `· ${identityName}` : ""}</span>
-          <h1>创建唯一账号</h1>
-          <p>账号用于显示和绑定个人数据。以后登录同一 ChatGPT 身份即可自动进入这个账号。</p>
-          <label htmlFor="cloud-account">账号</label>
-          <input
-            id="cloud-account"
-            autoFocus
-            autoComplete="username"
-            maxLength={24}
-            value={accountDraft}
-            onChange={(event) => setAccountDraft(event.target.value)}
-            placeholder="例如：football88"
-          />
-          {gateError && <div className="cloud-gate-error">{gateError}</div>}
-          <button className="cloud-gate-primary" type="submit">创建并进入</button>
-          <small>支持中文、字母、数字、点、横线和下划线。</small>
-        </form>
-      </main>
-    );
-  }
-
-  if (gateStatus === "error") {
+  if (routeStatus === "error") {
     return (
       <main className="cloud-gate">
         <section className="cloud-gate-card">
           <div className="cloud-gate-logo error" aria-hidden="true">!</div>
           <span className="cloud-gate-kicker">CLOUD OFFLINE</span>
           <h1>暂时无法连接云端</h1>
-          <p>{gateError}</p>
+          <p>{routeErrorMessage}</p>
           <button className="cloud-gate-primary" type="button" onClick={() => void bootstrap()}>重新连接</button>
         </section>
       </main>
@@ -301,13 +347,44 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
   }
 
   return (
-    <FootballApp
-      initialView={activeView}
-      onNavigate={navigate}
-      cloudAccount={account!}
-      cloudSyncStatus={syncStatus}
-      onCloudPersonalChange={syncPersonal}
-      onCloudMatchesChange={syncMatches}
-    />
+    <>
+      <FootballApp
+        key={account?.id ?? "public"}
+        initialView={activeView}
+        onNavigate={navigate}
+        cloudAccount={account}
+        cloudSyncStatus={syncStatus}
+        onCloudPersonalChange={syncPersonal}
+        onCloudMatchesChange={syncMatches}
+        onRequireAccount={openAccountDialog}
+        onLogout={logout}
+      />
+      {accountDialogOpen && !account && (
+        <div className="cloud-account-backdrop" role="presentation">
+          <form className="cloud-gate-card cloud-account-dialog" onSubmit={enterAccount} aria-labelledby="cloud-account-title">
+            <button className="cloud-dialog-close" type="button" aria-label="关闭登录窗口" onClick={closeAccountDialog}>×</button>
+            <div className="cloud-gate-logo" aria-hidden="true">★</div>
+            <span className="cloud-gate-kicker">SMGR ACCOUNT</span>
+            <h1 id="cloud-account-title">输入账号进入</h1>
+            <p>已有账号会直接登录；新账号会自动创建。订单、收支和设置将同步到这个账号。</p>
+            <label htmlFor="cloud-account">账号</label>
+            <input
+              id="cloud-account"
+              autoFocus
+              autoComplete="username"
+              maxLength={24}
+              value={accountDraft}
+              onChange={(event) => setAccountDraft(event.target.value)}
+              placeholder="例如：football88"
+            />
+            {accountError && <div className="cloud-gate-error">{accountError}</div>}
+            <button className="cloud-gate-primary" type="submit" disabled={accountSubmitting}>
+              {accountSubmitting ? "正在进入…" : "登录或创建账号"}
+            </button>
+            <small>无需密码。关闭此窗口仍可查看公共比赛；请勿使用包含隐私信息的账号名。</small>
+          </form>
+        </div>
+      )}
+    </>
   );
 }

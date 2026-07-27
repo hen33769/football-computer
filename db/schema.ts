@@ -11,6 +11,16 @@ export const users = sqliteTable("users", {
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+export const accountSessions = sqliteTable("account_sessions", {
+  tokenHash: text("token_hash").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  expiresAt: text("expires_at").notNull(),
+}, (table) => [
+  index("account_sessions_user_idx").on(table.userId),
+  index("account_sessions_expires_idx").on(table.expiresAt),
+]);
+
 export const userStates = sqliteTable("user_states", {
   userId: text("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
   settingsJson: text("settings_json").notNull().default("{}"),

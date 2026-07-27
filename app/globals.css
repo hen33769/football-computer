@@ -79,6 +79,33 @@ button, input, textarea { font: inherit; }
 .cloud-gate-primary:hover { color: #12363a; filter: brightness(1.04); }
 .cloud-gate-card small { color: rgba(255,255,255,.48); line-height: 1.6; }
 .cloud-gate-error { padding: 9px 11px; border-radius: 10px; color: #ffd8da; font-size: 12px; background: rgba(240,78,85,.18); }
+.cloud-account-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(3, 28, 33, .72);
+  backdrop-filter: blur(10px);
+}
+.cloud-account-dialog { position: relative; }
+.cloud-dialog-close {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  width: 36px;
+  height: 36px;
+  border: 1px solid rgba(255,255,255,.16);
+  border-radius: 50%;
+  color: rgba(255,255,255,.78);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  background: rgba(255,255,255,.08);
+}
+.cloud-dialog-close:hover { color: #fff; background: rgba(255,255,255,.14); }
+.cloud-gate-primary:disabled { cursor: wait; opacity: .68; }
 .hero-header {
   position: fixed;
   top: 0;

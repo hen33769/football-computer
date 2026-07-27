@@ -7,35 +7,32 @@ import { findAuthenticatedCloudAccount, parseJson, routeError } from "../../../c
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    const authenticated = await findAuthenticatedCloudAccount();
+    const db = getDb();
+    const authenticated = await findAuthenticatedCloudAccount(request);
+    const matchRows = await db.select().from(sharedMatches).orderBy(sharedMatches.businessDate, sharedMatches.matchId);
+    const matches = matchRows.flatMap((row) => {
+      const match = parseJson<MatchItem | null>(row.dataJson, null);
+      return match ? [match] : [];
+    });
+
     if (authenticated.kind === "anonymous") {
-      return Response.json({ error: "请先登录" }, { status: 401 });
-    }
-    if (authenticated.kind === "unregistered") {
       return Response.json({
         requiresAccount: true,
-        identity: { displayName: authenticated.identity.displayName },
+        matches,
       });
     }
 
     const { account } = authenticated.value;
-    const db = getDb();
-    const [stateRows, orderRows, matchRows] = await Promise.all([
+    const [stateRows, orderRows] = await Promise.all([
       db.select().from(userStates).where(eq(userStates.userId, account.id)).limit(1),
       db.select().from(userOrders).where(eq(userOrders.userId, account.id)).orderBy(desc(userOrders.savedAt)),
-      db.select().from(sharedMatches).orderBy(sharedMatches.businessDate, sharedMatches.matchId),
     ]);
-
     const state = stateRows[0];
     const orders = orderRows.flatMap((row) => {
       const order = parseJson<SavedSlip | null>(row.dataJson, null);
       return order ? [order] : [];
-    });
-    const matches = matchRows.flatMap((row) => {
-      const match = parseJson<MatchItem | null>(row.dataJson, null);
-      return match ? [match] : [];
     });
 
     return Response.json({

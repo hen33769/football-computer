@@ -24,7 +24,7 @@ function finiteNonNegative(value: unknown) {
 
 export async function PUT(request: Request) {
   try {
-    const authenticated = await requireAuthenticatedCloudAccount();
+    const authenticated = await requireAuthenticatedCloudAccount(request);
     if (!authenticated.value) return authenticated.response!;
 
     const payload = await request.json() as {
