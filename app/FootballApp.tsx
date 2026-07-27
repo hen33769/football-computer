@@ -50,7 +50,6 @@ import {
   RollbackOutlined,
   SaveOutlined,
   SettingOutlined,
-  StarFilled,
   UndoOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
@@ -1018,7 +1017,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
         root.style.setProperty("--header-top-pad", `${26 - progress * 16}px`);
         root.style.setProperty("--header-bottom-pad", `${10 * progress}px`);
         root.style.setProperty("--header-content-height", `${84 - progress * 44}px`);
-        root.style.setProperty("--header-brand-size", `${54 - progress * 14}px`);
+        root.style.setProperty("--header-brand-size", `${64 - progress * 16}px`);
         root.style.setProperty("--header-title-size", `${36 - progress * 12}px`);
         root.style.setProperty("--header-note-opacity", `${1 - progress}`);
         root.style.setProperty("--header-note-height", `${44 * (1 - progress)}px`);
@@ -1026,8 +1025,8 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
         root.style.setProperty("--header-label-width", `${84 * (1 - progress)}px`);
         root.style.setProperty("--header-action-gap", `${10 - progress * 4}px`);
         root.style.setProperty("--header-brand-opacity", `${1 - progress}`);
-        root.style.setProperty("--header-brand-width", `${460 * (1 - progress)}px`);
-        root.style.setProperty("--header-brand-height", `${60 * (1 - progress)}px`);
+        root.style.setProperty("--header-brand-width", `${560 * (1 - progress)}px`);
+        root.style.setProperty("--header-brand-height", `${68 * (1 - progress)}px`);
         root.style.setProperty("--header-brand-translate", `${-7 * progress}px`);
         root.style.setProperty("--header-content-gap", `${24 * (1 - progress)}px`);
         root.style.setProperty("--header-content-bottom", `${12 * (1 - progress)}px`);
@@ -1866,16 +1865,16 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta http-equiv="refresh" content="0; url=${DEMO_URL}" />
-    <title>打开竞彩足球模拟工具</title>
+    <title>打开 SMGR</title>
   </head>
   <body>
-    <p>正在打开竞彩足球模拟工具……</p>
+    <p>正在打开 SMGR……</p>
     <p><a href="${DEMO_URL}">如果没有自动跳转，请点击这里</a></p>
     <script>window.location.replace(${JSON.stringify(DEMO_URL)});</script>
   </body>
 </html>
 `;
-    downloadBlob(new Blob([html], { type: "text/html;charset=utf-8" }), "竞彩足球模拟工具.html");
+    downloadBlob(new Blob([html], { type: "text/html;charset=utf-8" }), "SMGR.html");
     message.success("页面已保存，打开 HTML 文件即可进入在线 Demo");
   };
 
@@ -2180,8 +2179,8 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
         <div className="hero-glow" />
         <div className="hero-content">
           <div className="brand-lockup">
-            <div className="brand-ball"><StarFilled /></div>
-            <div><p>中国体育彩票 · 玩法模拟 · v{APP_VERSION}</p><h1>竞彩足球模拟工具</h1></div>
+            <div className="brand-logo" role="img" aria-label="SMGR" />
+            <div><p>中国以小博大 · 玩法模拟 · v{APP_VERSION}</p><h1>Small Money Get Rich</h1></div>
           </div>
           <div className="hero-actions">
             {activeView === "orders" && <Button icon={<PlusOutlined />} onClick={openManualOrder}><span className="header-button-label">手动添加订单</span></Button>}
@@ -2201,7 +2200,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
             </Button>
           </div>
         </div>
-        <div className="responsible-note"><InfoCircleOutlined /> 非官方模拟工具 · 不提供购彩、支付或交易服务 · 请理性参与</div>
+        <div className="responsible-note"><InfoCircleOutlined /> 非官方模拟工具 · 模拟器随便玩</div>
       </header>
       <div className="hero-header-spacer" aria-hidden="true" />
 
@@ -3100,7 +3099,7 @@ export default function FootballApp({ initialView = "betting", onNavigate }: { i
     return (
       <div className="app-loading-shell">
         <div className="app-loading-mark">★</div>
-        <b>竞彩足球模拟工具</b>
+        <b>Small Money Get Rich</b>
         <span>正在载入官方比赛…</span>
       </div>
     );

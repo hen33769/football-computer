@@ -44,6 +44,10 @@ html = html
   .replace(stylePlaceholder, () => `<style>${css}</style>`)
   .replace(scriptPlaceholder, () => `<script>${js}</script>`);
 
+if (sourcePath === htmlPath) {
+  html = html.replaceAll("../SMGR.png", "./SMGR.png");
+}
+
 const outputPath = join(distDir, "football-simulator.html");
 await writeFile(outputPath, html, "utf8");
 await rm(join(distDir, "assets"), { recursive: true, force: true });

@@ -72,8 +72,8 @@ button, input, textarea { font: inherit; }
   will-change: min-height, gap;
 }
 .brand-lockup {
-  max-width: var(--header-brand-width, 460px);
-  max-height: var(--header-brand-height, 60px);
+  max-width: var(--header-brand-width, 560px);
+  max-height: var(--header-brand-height, 68px);
   margin-right: auto;
   overflow: hidden;
   display: flex;
@@ -85,16 +85,15 @@ button, input, textarea { font: inherit; }
   white-space: nowrap;
   will-change: max-width, max-height, opacity, transform;
 }
-.brand-ball {
-  width: var(--header-brand-size, 54px); height: var(--header-brand-size, 54px); display: grid; place-items: center;
-  border-radius: 18px; color: #ffdb7a; font-size: 26px;
-  background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.2);
-  box-shadow: inset 0 0 28px rgba(255,255,255,.07);
+.brand-logo {
+  width: var(--header-brand-size, 64px); height: var(--header-brand-size, 64px); display: block;
+  border-radius: 18px;
+  background: url("/SMGR.png") center / contain no-repeat;
   flex: 0 0 auto;
   will-change: width, height;
 }
 .brand-lockup p { max-height: 18px; margin: 0 0 3px; overflow: hidden; color: rgba(255,255,255,.68); font-size: 12px; letter-spacing: .18em; opacity: var(--header-note-opacity, 1); }
-.brand-lockup h1 { margin: 0; font-size: clamp(22px, 3vw, var(--header-title-size, 36px)); line-height: 1.15; letter-spacing: .02em; white-space: nowrap; }
+.brand-lockup h1 { margin: 0; color: #ffdc80; font-size: clamp(22px, 3vw, var(--header-title-size, 36px)); line-height: 1.15; letter-spacing: .02em; white-space: nowrap; }
 .hero-actions { margin-left: auto; display: flex; align-items: center; gap: var(--header-action-gap, 10px); flex: 0 0 auto; }
 .hero-actions .ant-upload-wrapper, .hero-actions .ant-upload-select { display: inline-flex; }
 .hero-actions .ant-btn { color: #fff; border-color: rgba(255,255,255,.25); background: rgba(255,255,255,.1); backdrop-filter: blur(8px); }
@@ -735,7 +734,7 @@ button, input, textarea { font: inherit; }
 }
 
 @media (max-width: 560px) {
-  .brand-ball { border-radius: 14px; }
+  .brand-logo { border-radius: 14px; }
   .brand-lockup p { font-size: 9px; }
   .hero-actions .ant-badge { width: auto; }
   .responsible-note { line-height: 1.5; }
