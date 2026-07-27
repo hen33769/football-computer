@@ -202,6 +202,32 @@ export const getMatchSaleState = (match: MatchItem, now = new Date()): MatchSale
 export const isMatchSellable = (match: MatchItem, now = new Date()) => getMatchSaleState(match, now) === "selling";
 export const isMatchSelectable = (match: MatchItem, now = new Date()) => getMatchSaleState(match, now) !== "stopped";
 
+/** 将订单选择映射到当前比赛，只保留仍可选择且倍率有效的投注项。 */
+export function selectAvailableOrderBets(
+  currentMatches: MatchItem[],
+  orderMatches: MatchItem[],
+  now = new Date(),
+): MatchItem[] {
+  return currentMatches.map((match) => {
+    const orderMatch = orderMatches.find((item) => sameMatch(item, match));
+    const selected = new Set(orderMatch?.markets.flatMap((market) => market.options
+      .filter((option) => option.selected)
+      .map((option) => `${market.type}:${option.id}`)) ?? []);
+    const selectable = isMatchSelectable(match, now);
+    return {
+      ...match,
+      id: normalizeSportteryMatchId(match.id),
+      markets: match.markets.map((market) => ({
+        ...market,
+        options: market.options.map((option) => ({
+          ...option,
+          selected: selectable && option.odds > 0 && selected.has(`${market.type}:${option.id}`),
+        })),
+      })),
+    };
+  });
+}
+
 export function convertSportteryMatches(payload: SportteryMatchCalculatorResponse, now = new Date()): MatchItem[] {
   const groups = payload.value?.matchInfoList;
   if (!Array.isArray(groups)) {

@@ -22,6 +22,7 @@ import {
   parseSportteryFixedBonus,
   refreshSelectedOdds,
   replaceSportteryMatches,
+  selectAvailableOrderBets,
   unionSportteryMatchCache,
   type SportteryMatchCalculatorResponse,
   type SportteryMatchListResponse,
@@ -119,6 +120,26 @@ test("开赛时间是停售边界，开赛前非可售比赛均为待开售", ()
   assert.equal(isMatchSelectable(stopped, new Date("2026-07-22T10:00:00")), true);
   assert.equal(getMatchSaleState(stopped, new Date("2026-07-31T20:00:00")), "stopped");
   assert.equal(isMatchSelectable(stopped, new Date("2026-07-31T20:00:00")), false);
+});
+
+test("载入和复制订单只恢复当前仍可选择的投注项", () => {
+  const current = convertSportteryMatches(payload, beforeKickoff);
+  const orderMatches = cloneMatches(current);
+  const orderSpf = market(orderMatches[0], "spf");
+  orderSpf.options[0].selected = true;
+  orderSpf.options[1].selected = true;
+  market(orderMatches[0], "rqspf").options[0].selected = true;
+
+  const currentSpf = market(current[0], "spf");
+  currentSpf.options[1].odds = 0;
+  currentSpf.options[2].selected = true;
+
+  const available = selectAvailableOrderBets(current, orderMatches, beforeKickoff);
+  assert.deepEqual(market(available[0], "spf").options.map((option) => option.selected), [true, false, false]);
+  assert.equal(market(available[0], "rqspf").options[0].selected, true);
+
+  const stopped = selectAvailableOrderBets(current, orderMatches, new Date("2026-07-23T01:30:00"));
+  assert.equal(stopped[0].markets.some((item) => item.options.some((option) => option.selected)), false);
 });
 
 test("订单只更新匹配且仍可售的已选项倍率", () => {

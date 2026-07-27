@@ -101,6 +101,7 @@ import {
   normalizeSportteryMatchId,
   parseSportteryMatchScoreDetails,
   refreshSelectedOdds,
+  selectAvailableOrderBets,
   unionSportteryMatchCache,
   type SportteryLeague,
   type SportteryMatchFetchMode,
@@ -161,6 +162,7 @@ const MATCH_PHASE_ROWS = [
 ] as const;
 type LoadedOrderDraft = {
   mode?: "load" | "copy";
+  filteredOptionCount?: number;
   id: string;
   name: string;
   matches: MatchItem[];
@@ -204,6 +206,8 @@ const compareMatchDisplayOrder = (left: MatchItem, right: MatchItem) => (
 );
 
 const sortMatchesForDisplay = (items: MatchItem[]) => [...items].sort(compareMatchDisplayOrder);
+
+const countSelectedOptions = (items: MatchItem[]) => items.reduce((total, match) => total + selectedOptions(match).length, 0);
 
 const matchesSaleFilter = (match: MatchItem, filter: MatchSaleFilter, now: Date) => {
   const state = getMatchSaleState(match, now);
@@ -511,6 +515,18 @@ const cloneHits = (hits: CurrentHits | undefined): CurrentHits => Object.fromEnt
   Object.entries(hits ?? {}).map(([matchId, values]) => [matchId, { ...values }]),
 );
 
+const filterHitsForSelections = (hits: CurrentHits | undefined, matches: MatchItem[]): CurrentHits => Object.fromEntries(
+  Object.entries(hits ?? {}).flatMap(([matchId, values]) => {
+    const match = matches.find((item) => normalizeSportteryMatchId(item.id) === normalizeSportteryMatchId(matchId));
+    if (!match) return [];
+    const selectedValues = Object.fromEntries(Object.entries(values).filter(([type, optionId]) => (
+      match.markets.find((market) => market.type === type)?.options
+        .some((option) => option.id === optionId && option.selected)
+    )));
+    return Object.keys(selectedValues).length > 0 ? [[match.id, selectedValues]] : [];
+  }),
+) as CurrentHits;
+
 const marketEditorGroups = (market: Market) => {
   if (market.type === "score") {
     const drawIds = new Set(["0:0", "1:1", "2:2", "3:3", "drawOther"]);
@@ -801,9 +817,12 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
   useEffect(() => {
     if (!loadedOrderDraft) return;
     sessionStorage.removeItem(LOADED_ORDER_KEY);
+    const filteredText = loadedOrderDraft.filteredOptionCount
+      ? `，已过滤 ${loadedOrderDraft.filteredOptionCount} 个不可用投注项`
+      : "";
     message.success(loadedOrderDraft.mode === "copy"
-      ? `已复制“${loadedOrderDraft.name}”的投注，保存时将创建新订单`
-      : `已载入“${loadedOrderDraft.name}”，保存时将更新当前订单`);
+      ? `已复制“${loadedOrderDraft.name}”的投注，保存时将创建新订单${filteredText}`
+      : `已载入“${loadedOrderDraft.name}”，保存时将更新当前订单${filteredText}`);
   }, [loadedOrderDraft, message]);
 
   useEffect(() => {
@@ -1136,6 +1155,40 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
     } : current);
   };
 
+  const removeBettingOption = (matchId: string, type: MarketType, optionId: string) => {
+    setMatches((current) => current.map((match) => match.id !== matchId ? match : {
+      ...match,
+      markets: match.markets.map((market) => market.type !== type ? market : {
+        ...market,
+        options: market.options.map((option) => option.id === optionId ? { ...option, selected: false } : option),
+      }),
+    }));
+    setHits((current) => {
+      if (current[matchId]?.[type] !== optionId) return current;
+      return { ...current, [matchId]: { ...current[matchId], [type]: undefined } };
+    });
+    if (pickedCount === 1) setDetailsOpen(false);
+  };
+
+  const clearBettingMatch = (matchId: string) => {
+    const removedCount = matches.find((match) => match.id === matchId)?.markets
+      .reduce((total, market) => total + market.options.filter((option) => option.selected).length, 0) ?? 0;
+    setMatches((current) => current.map((match) => match.id !== matchId ? match : {
+      ...match,
+      markets: match.markets.map((market) => ({
+        ...market,
+        options: market.options.map((option) => option.selected ? { ...option, selected: false } : option),
+      })),
+    }));
+    setHits((current) => {
+      if (!current[matchId]) return current;
+      const next = { ...current };
+      delete next[matchId];
+      return next;
+    });
+    if (removedCount >= pickedCount) setDetailsOpen(false);
+  };
+
   const persistNewOrder = (name: string, orderMatches: MatchItem[], orderPasses: number[], orderMultiple: number, source: string) => {
     const nextOrder: SavedSlip = {
       id: createSlipId(),
@@ -1352,6 +1405,14 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
       message.warning("该订单已结账，不能再载入修改");
       return;
     }
+    const availableMatches = selectAvailableOrderBets(matches, slip.matches, saleNow);
+    const availableOptionCount = countSelectedOptions(availableMatches);
+    if (availableOptionCount === 0) {
+      message.warning("该订单没有当前可用的投注项");
+      return;
+    }
+    const filteredOptionCount = Math.max(0, countSelectedOptions(slip.matches) - availableOptionCount);
+    const availableHits = filterHitsForSelections(slip.hits, availableMatches);
     const orderId = slip.id || createSlipId();
     const loadedSlip = slip.id ? slip : { ...slip, id: orderId };
     if (!slip.id) {
@@ -1359,25 +1420,32 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
       setSavedSlips(nextSavedSlips);
       localStorage.setItem(SAVED_KEY, JSON.stringify(nextSavedSlips));
     }
-    setMatches(cloneMatches(loadedSlip.matches));
+    setMatches(availableMatches);
     setPasses([...loadedSlip.passes]);
     setMultiple(loadedSlip.multiple);
-    setHits(cloneHits(loadedSlip.hits));
+    setHits(availableHits);
     setTemporaryOrder({ id: orderId, name: loadedSlip.name });
     sessionStorage.setItem(LOADED_ORDER_KEY, JSON.stringify({
       mode: "load",
+      filteredOptionCount,
       id: orderId,
       name: loadedSlip.name,
-      matches: cloneMatches(loadedSlip.matches),
+      matches: availableMatches,
       passes: [...loadedSlip.passes],
       multiple: loadedSlip.multiple,
-      hits: cloneHits(loadedSlip.hits),
+      hits: availableHits,
     } satisfies LoadedOrderDraft));
     navigateToView("betting");
   };
 
   const copySlip = (slip: SavedSlip) => {
-    const copiedMatches = cloneMatches(slip.matches);
+    const copiedMatches = selectAvailableOrderBets(matches, slip.matches, saleNow);
+    const availableOptionCount = countSelectedOptions(copiedMatches);
+    if (availableOptionCount === 0) {
+      message.warning("该订单没有当前可用的投注项");
+      return;
+    }
+    const filteredOptionCount = Math.max(0, countSelectedOptions(slip.matches) - availableOptionCount);
     setMatches(copiedMatches);
     setPasses([...slip.passes]);
     setMultiple(slip.multiple);
@@ -1385,6 +1453,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
     setTemporaryOrder(null);
     sessionStorage.setItem(LOADED_ORDER_KEY, JSON.stringify({
       mode: "copy",
+      filteredOptionCount,
       id: slip.id || createSlipId(),
       name: slip.name,
       matches: copiedMatches,
@@ -2605,7 +2674,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
                       <div className="order-actions">
                         <Button icon={<EyeOutlined />} onClick={() => openOrderDetails(slip)}>明细</Button>
                         <Button icon={<EditOutlined />} onClick={() => openOrderEditor(slip)}>编辑</Button>
-                        <Button type="primary" icon={<ImportOutlined />} disabled={Boolean(slip.settledAt)} onClick={() => loadSlip(slip)}>载入投注</Button>
+                        {!slip.settledAt && <Button type="primary" icon={<ImportOutlined />} onClick={() => loadSlip(slip)}>载入投注</Button>}
                         <Button color="orange" variant="solid" icon={<CopyOutlined />} onClick={() => copySlip(slip)}>复制投注</Button>
                         <div className="order-closing-actions">
                           {slip.settledAt ? (
@@ -2633,9 +2702,11 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
                               <span><Button className="checkout-order-button" icon={<CheckOutlined />} disabled>结账</Button></span>
                             </Tooltip>
                           )}
-                          <Popconfirm title="删除这张预测单？" description="将同时回滚该订单的支出和已入账收入。" okText="删除" cancelText="取消" onConfirm={() => deleteSlip(slip)}>
-                            <Button className="delete-order-button" danger icon={<DeleteOutlined />}>删除</Button>
-                          </Popconfirm>
+                          {!slip.settledAt && (
+                            <Popconfirm title="删除这张预测单？" description="将同时回滚该订单的支出和已入账收入。" okText="删除" cancelText="取消" onConfirm={() => deleteSlip(slip)}>
+                              <Button className="delete-order-button" danger icon={<DeleteOutlined />}>删除</Button>
+                            </Popconfirm>
+                          )}
                         </div>
                       </div>
                     </Card>
@@ -2826,16 +2897,41 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
         <p className="drawer-tip">点击一个已选项即标记为当前玩法命中；同一玩法再次点击可取消或改选。</p>
         {chosenMatches.map((match) => (
           <section className="detail-match" key={match.id}>
-            <div className="detail-match-title"><span>{match.weekday}{match.code}</span><b>{match.home} VS {match.away}</b></div>
-            <div className="detail-options">
+            <div className="detail-match-title">
+              <span>{match.weekday}{match.code}</span>
+              <b>{match.home} VS {match.away}</b>
+              <Tooltip title="编辑本场投注">
+                <Button
+                  className="edit-match-bets"
+                  type="text"
+                  size="small"
+                  icon={<EditOutlined />}
+                  aria-label={`编辑 ${match.home} VS ${match.away} 投注`}
+                  onClick={() => setMoreMatchId(match.id)}
+                />
+              </Tooltip>
+              <Button className="clear-match-bets" type="text" danger size="small" icon={<DeleteOutlined />} onClick={() => clearBettingMatch(match.id)}>清除本场</Button>
+            </div>
+            <div className="detail-options betting-detail-options">
               {match.markets.flatMap((market) => market.options.filter((item) => item.selected).map((item) => {
                 const active = hits[match.id]?.[market.type] === item.id;
                 return (
-                  <button type="button" className={active ? "hit" : ""} key={`${market.type}-${item.id}`} onClick={() => toggleHit(match.id, market.type, item.id)}>
-                    <small>{MARKET_LABELS[market.type]}{market.type === "rqspf" ? ` ${(market.handicap ?? 0) > 0 ? "+" : ""}${market.handicap ?? 0}` : ""}</small>
-                    <span>{formatOrderOptionLabel(market, item)}<b>@{item.odds.toFixed(2)}</b></span>
-                    {active && <CheckOutlined />}
-                  </button>
+                  <div className={`betting-detail-option ${active ? "hit" : ""}`} key={`${market.type}-${item.id}`}>
+                    <button type="button" className="betting-detail-option-content" onClick={() => toggleHit(match.id, market.type, item.id)}>
+                      <small>{MARKET_LABELS[market.type]}{market.type === "rqspf" ? ` ${(market.handicap ?? 0) > 0 ? "+" : ""}${market.handicap ?? 0}` : ""}</small>
+                      <span>{formatOrderOptionLabel(market, item)}<b>@{item.odds.toFixed(2)}</b></span>
+                      {active && <CheckOutlined />}
+                    </button>
+                    <Button
+                      className="betting-detail-option-remove"
+                      type="text"
+                      danger
+                      size="small"
+                      icon={<CloseOutlined />}
+                      aria-label={`删除 ${MARKET_LABELS[market.type]} ${formatOrderOptionLabel(market, item)}`}
+                      onClick={() => removeBettingOption(match.id, market.type, item.id)}
+                    />
+                  </div>
                 );
               }))}
             </div>
