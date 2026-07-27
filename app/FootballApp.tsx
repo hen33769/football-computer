@@ -1077,16 +1077,22 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
     () => new Set(visibleLeagueNames ?? leagueOptions.map((item) => item.leagueNameAbbr)),
     [leagueOptions, visibleLeagueNames],
   );
+  const dateAndSaleFilteredMatches = useMemo(() => matches
+    .filter((match) => !selectedMatchDate || match.date === selectedMatchDate)
+    .filter((match) => matchesSaleFilter(match, matchSaleFilter, saleNow)),
+  [matches, matchSaleFilter, saleNow, selectedMatchDate]);
+  const availableLeagueOptions = useMemo(() => {
+    const availableLeagueNames = new Set(dateAndSaleFilteredMatches.map((match) => match.league));
+    return leagueOptions.filter((league) => availableLeagueNames.has(league.leagueNameAbbr));
+  }, [dateAndSaleFilteredMatches, leagueOptions]);
   const settingsLeagueNames = useMemo(() => [...new Set([
     ...Object.keys(DEFAULT_LEAGUE_TAG_COLORS),
     ...leagueOptions.map((item) => leagueColorSettingKey(item.leagueNameAbbr)),
     ...Object.keys(appSettings.appearance.leagueTagColors),
   ])], [appSettings.appearance.leagueTagColors, leagueOptions]);
-  const filteredMatches = useMemo(() => matches
-    .filter((match) => !selectedMatchDate || match.date === selectedMatchDate)
-    .filter((match) => matchesSaleFilter(match, matchSaleFilter, saleNow))
+  const filteredMatches = useMemo(() => dateAndSaleFilteredMatches
     .filter((match) => leagueOptions.length === 0 || visibleLeagueSet.has(match.league))
-    .sort(compareMatchDisplayOrder), [leagueOptions.length, matches, matchSaleFilter, saleNow, selectedMatchDate, visibleLeagueSet]);
+    .sort(compareMatchDisplayOrder), [dateAndSaleFilteredMatches, leagueOptions.length, visibleLeagueSet]);
 
   const groupedMatches = useMemo(() => {
     const groups = new Map<string, MatchItem[]>();
@@ -2146,7 +2152,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
             <div className="match-filter-row league-filter-control">
               <span>比赛类型</span>
               <div className="league-filter-tags">
-                {leagueOptions.map((league) => {
+                {availableLeagueOptions.map((league) => {
                   const visible = visibleLeagueSet.has(league.leagueNameAbbr);
                   const leagueColor = getLeagueTagColor(appSettings, league.leagueNameAbbr);
                   return (
