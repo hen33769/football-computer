@@ -363,7 +363,7 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
         <div className="cloud-account-backdrop" role="presentation">
           <form className="cloud-gate-card cloud-account-dialog" onSubmit={enterAccount} aria-labelledby="cloud-account-title">
             <button className="cloud-dialog-close" type="button" aria-label="关闭登录窗口" onClick={closeAccountDialog}>×</button>
-            <div className="cloud-gate-logo" aria-hidden="true">★</div>
+            <div className="cloud-gate-logo cloud-gate-brand-logo" role="img" aria-label="SMGR" />
             <span className="cloud-gate-kicker">SMGR ACCOUNT</span>
             <h1 id="cloud-account-title">输入账号进入</h1>
             <p>已有账号会直接登录；新账号会自动创建。订单、收支和设置将同步到这个账号。</p>

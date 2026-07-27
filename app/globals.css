@@ -59,6 +59,7 @@ button, input, textarea { font: inherit; }
   width: 58px; height: 58px; display: grid; place-items: center; border-radius: 18px;
   color: #ffdc80; font-size: 27px; background: rgba(255,255,255,.12);
 }
+.cloud-gate-brand-logo { background: url("/SMGR.jpg") center / cover no-repeat; }
 .cloud-gate-logo.error { color: #fff; background: rgba(240,78,85,.72); }
 .cloud-gate-kicker { margin-top: 6px; color: #79ded2; font-size: 11px; font-weight: 800; letter-spacing: .18em; }
 .cloud-gate-card h1 { margin: 0; color: #ffdc80; font-size: 30px; }
