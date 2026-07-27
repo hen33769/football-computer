@@ -621,11 +621,11 @@ button, input, textarea { font: inherit; }
 .order-option-divider.ant-divider-vertical { height: 1em; margin: 0 9px; border-color: #cbd6d5; }
 .order-expand-button { width: 100%; margin-top: 5px; color: #148d86; }
 .order-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 15px; }
+.order-closing-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .checkout-order-button:not(:disabled) { border-color: #2da783; color: #128767; background: #f1fbf7; }
 .checkout-order-button:not(:disabled):hover { border-color: #128767 !important; color: #0d7358 !important; background: #e8f8f1 !important; }
 .withdraw-checkout-button { border-color: #d99b45; color: #a56816; background: #fff9ef; }
 .withdraw-checkout-button:hover { border-color: #bd791d !important; color: #8e570d !important; background: #fff4df !important; }
-.delete-order-button { margin-left: auto; }
 .order-odds-editor { max-height: 58vh; overflow: auto; padding-right: 4px; }
 .order-odds-match { padding: 15px 2px; border-bottom: 1px solid var(--line); }
 .order-odds-match:last-child { border-bottom: 0; }
@@ -762,7 +762,7 @@ button, input, textarea { font: inherit; }
   .order-metrics div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
   .order-actions { display: grid; grid-template-columns: 1fr 1fr; }
   .order-actions .ant-btn { width: 100%; }
-  .delete-order-button { margin-left: 0; }
+  .order-closing-actions { display: grid; grid-template-columns: 1fr 1fr; grid-column: 1 / -1; margin-left: 0; }
   .order-odds-market { grid-template-columns: 1fr; gap: 6px; }
   .order-odds-market > div { grid-template-columns: 1fr; }
   .order-detail-summary { grid-template-columns: 1fr; }

@@ -160,6 +160,7 @@ const MATCH_PHASE_ROWS = [
   [16, "赛前"],
 ] as const;
 type LoadedOrderDraft = {
+  mode?: "load" | "copy";
   id: string;
   name: string;
   matches: MatchItem[];
@@ -689,8 +690,10 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
   const matchesRef = useRef(matches);
   const [passes, setPasses] = useState<number[]>(() => loadedOrderDraft ? [...loadedOrderDraft.passes] : []);
   const [multiple, setMultiple] = useState(() => loadedOrderDraft?.multiple ?? 1);
-  const [temporaryOrder, setTemporaryOrder] = useState<{ id: string; name: string } | null>(() => loadedOrderDraft ? { id: loadedOrderDraft.id, name: loadedOrderDraft.name } : null);
-  const [hits, setHits] = useState<CurrentHits>(() => cloneHits(loadedOrderDraft?.hits));
+  const [temporaryOrder, setTemporaryOrder] = useState<{ id: string; name: string } | null>(() => (
+    loadedOrderDraft && loadedOrderDraft.mode !== "copy" ? { id: loadedOrderDraft.id, name: loadedOrderDraft.name } : null
+  ));
+  const [hits, setHits] = useState<CurrentHits>(() => loadedOrderDraft?.mode === "copy" ? {} : cloneHits(loadedOrderDraft?.hits));
   const [previewMatchId, setPreviewMatchId] = useState<string | null>(null);
   const [moreMatchId, setMoreMatchId] = useState<string | null>(null);
   const [trendMatchId, setTrendMatchId] = useState<string | null>(null);
@@ -798,7 +801,9 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
   useEffect(() => {
     if (!loadedOrderDraft) return;
     sessionStorage.removeItem(LOADED_ORDER_KEY);
-    message.success(`已载入“${loadedOrderDraft.name}”，保存时将更新当前订单`);
+    message.success(loadedOrderDraft.mode === "copy"
+      ? `已复制“${loadedOrderDraft.name}”的投注，保存时将创建新订单`
+      : `已载入“${loadedOrderDraft.name}”，保存时将更新当前订单`);
   }, [loadedOrderDraft, message]);
 
   useEffect(() => {
@@ -1360,12 +1365,32 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
     setHits(cloneHits(loadedSlip.hits));
     setTemporaryOrder({ id: orderId, name: loadedSlip.name });
     sessionStorage.setItem(LOADED_ORDER_KEY, JSON.stringify({
+      mode: "load",
       id: orderId,
       name: loadedSlip.name,
       matches: cloneMatches(loadedSlip.matches),
       passes: [...loadedSlip.passes],
       multiple: loadedSlip.multiple,
       hits: cloneHits(loadedSlip.hits),
+    } satisfies LoadedOrderDraft));
+    navigateToView("betting");
+  };
+
+  const copySlip = (slip: SavedSlip) => {
+    const copiedMatches = cloneMatches(slip.matches);
+    setMatches(copiedMatches);
+    setPasses([...slip.passes]);
+    setMultiple(slip.multiple);
+    setHits({});
+    setTemporaryOrder(null);
+    sessionStorage.setItem(LOADED_ORDER_KEY, JSON.stringify({
+      mode: "copy",
+      id: slip.id || createSlipId(),
+      name: slip.name,
+      matches: copiedMatches,
+      passes: [...slip.passes],
+      multiple: slip.multiple,
+      hits: {},
     } satisfies LoadedOrderDraft));
     navigateToView("betting");
   };
@@ -2578,37 +2603,40 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
                       </div>
                       <Button className="order-expand-button" type="text" icon={expanded ? <CaretUpOutlined /> : <CaretDownOutlined />} onClick={() => toggleOrderExpanded(orderKey)}>{expanded ? "收起比赛选项" : "展开比赛选项"}</Button>
                       <div className="order-actions">
-                        <Button icon={<EyeOutlined />} onClick={() => openOrderDetails(slip)}>查看明细</Button>
-                        <Button icon={<EditOutlined />} onClick={() => openOrderEditor(slip)}>编辑订单</Button>
-                        {slip.settledAt ? (
-                          <Popconfirm
-                            title="确认撤回结账？"
-                            description={`将从累计收入中扣除 ¥${currency(slip.settledPrize ?? 0)}，并把订单恢复为未结账状态。`}
-                            okText="确认撤回"
-                            cancelText="取消"
-                            onConfirm={() => withdrawOrderSettlement(slip)}
-                          >
-                            <Button className="withdraw-checkout-button" icon={<RollbackOutlined />}>撤回</Button>
-                          </Popconfirm>
-                        ) : orderSettleable ? (
-                          <Popconfirm
-                            title="确认结账？"
-                            description={`将按当前命中结果把 ¥${currency(trackedPrize)} 计入累计收入，结账后不可编辑倍率或命中。`}
-                            okText="确认结账"
-                            cancelText="取消"
-                            onConfirm={() => settleOrders([slip])}
-                          >
-                            <Button className="checkout-order-button" icon={<CheckOutlined />}>结账</Button>
-                          </Popconfirm>
-                        ) : (
-                          <Tooltip title="该订单未对比赛果">
-                            <span><Button className="checkout-order-button" icon={<CheckOutlined />} disabled>结账</Button></span>
-                          </Tooltip>
-                        )}
+                        <Button icon={<EyeOutlined />} onClick={() => openOrderDetails(slip)}>明细</Button>
+                        <Button icon={<EditOutlined />} onClick={() => openOrderEditor(slip)}>编辑</Button>
                         <Button type="primary" icon={<ImportOutlined />} disabled={Boolean(slip.settledAt)} onClick={() => loadSlip(slip)}>载入投注</Button>
-                        <Popconfirm title="删除这张预测单？" description="将同时回滚该订单的支出和已入账收入。" okText="删除" cancelText="取消" onConfirm={() => deleteSlip(slip)}>
-                          <Button className="delete-order-button" danger icon={<DeleteOutlined />}>删除</Button>
-                        </Popconfirm>
+                        <Button color="orange" variant="solid" icon={<CopyOutlined />} onClick={() => copySlip(slip)}>复制投注</Button>
+                        <div className="order-closing-actions">
+                          {slip.settledAt ? (
+                            <Popconfirm
+                              title="确认撤回结账？"
+                              description={`将从累计收入中扣除 ¥${currency(slip.settledPrize ?? 0)}，并把订单恢复为未结账状态。`}
+                              okText="确认撤回"
+                              cancelText="取消"
+                              onConfirm={() => withdrawOrderSettlement(slip)}
+                            >
+                              <Button className="withdraw-checkout-button" icon={<RollbackOutlined />}>撤回</Button>
+                            </Popconfirm>
+                          ) : orderSettleable ? (
+                            <Popconfirm
+                              title="确认结账？"
+                              description={`将按当前命中结果把 ¥${currency(trackedPrize)} 计入累计收入，结账后不可编辑倍率或命中。`}
+                              okText="确认结账"
+                              cancelText="取消"
+                              onConfirm={() => settleOrders([slip])}
+                            >
+                              <Button className="checkout-order-button" icon={<CheckOutlined />}>结账</Button>
+                            </Popconfirm>
+                          ) : (
+                            <Tooltip title="该订单未对比赛果">
+                              <span><Button className="checkout-order-button" icon={<CheckOutlined />} disabled>结账</Button></span>
+                            </Tooltip>
+                          )}
+                          <Popconfirm title="删除这张预测单？" description="将同时回滚该订单的支出和已入账收入。" okText="删除" cancelText="取消" onConfirm={() => deleteSlip(slip)}>
+                            <Button className="delete-order-button" danger icon={<DeleteOutlined />}>删除</Button>
+                          </Popconfirm>
+                        </div>
                       </div>
                     </Card>
                   );
