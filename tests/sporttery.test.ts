@@ -4,6 +4,7 @@ import { cloneMatches, createEmptyMatch } from "../app/data";
 import {
   convertSportteryMorningMatches,
   convertSportteryMatches,
+  enrichSportteryMatchOddsHistory,
   fetchSportteryMatchSnapshot,
   getNextSportteryAutoRefreshDelay,
   getMatchSaleState,
@@ -14,6 +15,7 @@ import {
   isMatchSelectable,
   isMatchSellable,
   mergeSportteryMatchCache,
+  parseSportteryOptionOddsHistory,
   parseSportteryMatchScore,
   parseSportteryMatchScoreDetails,
   parseSportteryMatchHandicap,
@@ -421,6 +423,34 @@ test("早间比赛使用 oddsHistory 各玩法最后一条记录", () => {
   assert.equal(market(match, "halfFull").options.find((option) => option.id === "WD")?.odds, 19);
 });
 
+test("固定奖金历史仅保留实际倍率变化并计算最后一次方向", () => {
+  const fixedHistoryPayload = {
+    value: {
+      oddsHistory: {
+        hadList: [
+          { h: "2.10", updateDate: "2026-07-25", updateTime: "09:00:00" },
+          { h: "2.10", updateDate: "2026-07-25", updateTime: "10:00:00" },
+          { h: "2.25", updateDate: "2026-07-26", updateTime: "11:00:00" },
+          { h: "2.18", updateDate: "2026-07-27", updateTime: "12:00:00" },
+        ],
+      },
+    },
+  };
+  const history = parseSportteryOptionOddsHistory(fixedHistoryPayload, "spf", "win");
+
+  assert.deepEqual(history, [
+    { odds: 2.1, updatedAt: "2026-07-25 09:00:00", trend: 0 },
+    { odds: 2.25, updatedAt: "2026-07-26 11:00:00", trend: 1 },
+    { odds: 2.18, updatedAt: "2026-07-27 12:00:00", trend: -1 },
+  ]);
+
+  const [baseMatch] = convertSportteryMatches(payload, beforeKickoff);
+  market(baseMatch, "spf").options.find((option) => option.id === "win")!.odds = 2.18;
+  const enriched = enrichSportteryMatchOddsHistory(baseMatch, fixedHistoryPayload);
+  assert.equal(market(enriched, "spf").options.find((option) => option.id === "win")?.oddsTrend, -1);
+  assert.equal(market(enriched, "spf").options.find((option) => option.id === "win")?.oddsHistory?.length, 3);
+});
+
 test("常规模式按小时为今天及以后的缺失比赛逐场补取倍率", async () => {
   const now = new Date("2026-07-24T12:00:00");
   const standardPayload = structuredClone(payload);
@@ -499,7 +529,7 @@ test("常规模式按小时为今天及以后的缺失比赛逐场补取倍率",
   try {
     const snapshot = await fetchSportteryMatchSnapshot("standard", now);
     assert.equal(snapshot.mode, "standard");
-    assert.deepEqual(fixedBonusMatchIds, ["2040999"]);
+    assert.deepEqual(fixedBonusMatchIds.sort(), ["2040585", "2040999"]);
     assert.deepEqual(snapshot.matches.map((match) => match.id), ["2040585", "2040999"]);
     const supplemented = snapshot.matches.find((match) => match.id === "2040999")!;
     assert.equal(supplemented.saleStatus, "pending");

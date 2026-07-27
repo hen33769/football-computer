@@ -41,12 +41,10 @@ import {
   HomeOutlined,
   ImportOutlined,
   InfoCircleOutlined,
-  LineChartOutlined,
   LockOutlined,
   MinusOutlined,
   PlusOutlined,
   QuestionCircleOutlined,
-  ReadOutlined,
   ReloadOutlined,
   RightOutlined,
   RollbackOutlined,
@@ -57,7 +55,7 @@ import {
   UploadOutlined,
 } from "@ant-design/icons";
 import dayjs from "dayjs";
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import {
   calculateCurrentPrize,
   calculatePassMultipliers,
@@ -123,7 +121,7 @@ import {
   withLeagueTagColor,
   type AppSettings,
 } from "./settings";
-import type { CurrentHits, Market, MarketType, MatchItem, MatchResults, PrizeRange, SavedSlip } from "./types";
+import type { CurrentHits, Market, MarketType, MatchItem, MatchResults, OddsOption, PrizeRange, SavedSlip } from "./types";
 
 const SAVED_KEY = "football-simulator-saved-slips-v1";
 const LEGACY_DRAFT_KEY = "football-simulator-current-draft-v1";
@@ -264,6 +262,30 @@ function OddsTrendIndicator({ trend }: { trend?: -1 | 0 | 1 }) {
   );
 }
 
+function OddsHistoryTooltip({ option, children }: { option: OddsOption; children: ReactElement }) {
+  const history = option.oddsHistory ?? [];
+  const changeCount = Math.max(0, history.length - 1);
+  if (changeCount <= 1) return children;
+  const content = (
+    <div className="odds-history-popover">
+      <div className="odds-history-title"><b>{option.label}</b><span>共 {changeCount} 次变化</span></div>
+      <div className="odds-history-list">
+        {[...history].reverse().map((entry, index) => (
+          <div key={`${entry.updatedAt}-${entry.odds}-${index}`}>
+            <span>{entry.updatedAt || "发布时间未知"}</span>
+            <strong>{entry.odds.toFixed(2)}<OddsTrendIndicator trend={entry.trend} /></strong>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+  return (
+    <Tooltip title={content} mouseEnterDelay={1} placement="top" classNames={{ root: "odds-history-tooltip" }}>
+      <span className="odds-tooltip-target">{children}</span>
+    </Tooltip>
+  );
+}
+
 const winningMultiplierRange = (range: PrizeRangeMetrics["multiplier"]) => {
   if (range.max <= 0) return "—";
   const format = (value: number) => value.toLocaleString("zh-CN", {
@@ -350,6 +372,15 @@ const isExportedMatch = (value: unknown): value is MatchItem => {
       && typeof option.odds === "number"
       && Number.isFinite(option.odds)
       && (typeof option.oddsTrend === "undefined" || [-1, 0, 1].includes(option.oddsTrend))
+      && (typeof option.oddsHistory === "undefined" || (
+        Array.isArray(option.oddsHistory)
+        && option.oddsHistory.every((entry) => (
+          typeof entry.odds === "number"
+          && Number.isFinite(entry.odds)
+          && typeof entry.updatedAt === "string"
+          && [-1, 0, 1].includes(entry.trend)
+        ))
+      ))
       && typeof option.selected === "boolean"
     ))
   ));
@@ -492,17 +523,18 @@ function MarketRow({
       </div>
       <div className="market-options compact-options">
         {market.options.map((item) => (
-          <button
-            type="button"
-            className={`odds-option ${!disabled && item.odds > 0 && item.selected ? "selected" : ""}`}
-            key={item.id}
-            disabled={disabled || item.odds <= 0}
-            onClick={() => onToggle(matchId, market.type, item.id)}
-            aria-pressed={!disabled && item.odds > 0 && item.selected}
-          >
-            <span>{item.label}</span>
-            <strong>{item.odds > 0 ? <>{item.odds.toFixed(2)}<OddsTrendIndicator trend={item.oddsTrend} /></> : "--"}</strong>
-          </button>
+          <OddsHistoryTooltip option={item} key={item.id}>
+            <button
+              type="button"
+              className={`odds-option ${!disabled && item.odds > 0 && item.selected ? "selected" : ""}`}
+              disabled={disabled || item.odds <= 0}
+              onClick={() => onToggle(matchId, market.type, item.id)}
+              aria-pressed={!disabled && item.odds > 0 && item.selected}
+            >
+              <span>{item.label}</span>
+              <strong>{item.odds > 0 ? <>{item.odds.toFixed(2)}<OddsTrendIndicator trend={item.oddsTrend} /></> : "--"}</strong>
+            </button>
+          </OddsHistoryTooltip>
         ))}
       </div>
     </div>
@@ -601,11 +633,11 @@ function MatchCard({
       <MarketRow market={spf} matchId={match.id} onToggle={onToggle} disabled={!selectable} />
       <MarketRow market={rqspf} matchId={match.id} onToggle={onToggle} disabled={!selectable} />
       <div className="match-card-actions">
-        <Button icon={<ReadOutlined />} onClick={() => onPreview(match.id)}>赛事前瞻</Button>
+        <Button onClick={() => onPreview(match.id)}>赛事前瞻</Button>
         <Button className="more-play-button" type={picked ? "primary" : "default"} ghost={Boolean(picked)} onClick={() => onMore(match.id)}>
           更多玩法{picked ? ` · 已选 ${picked} 项` : ""}
         </Button>
-        <Button icon={<LineChartOutlined />} onClick={() => onTrend(match.id)}>官方趋势</Button>
+        <Button onClick={() => onTrend(match.id)}>官方趋势</Button>
       </div>
     </article>
   );
@@ -2631,9 +2663,11 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
               {marketEditorGroups(market).map((group) => (
                 <div className="more-options-row" key={group.key}>
                   {group.options.map((item) => (
-                    <button type="button" disabled={!isMatchSelectable(moreMatch, saleNow) || item.odds <= 0} className={`more-odds-option ${isMatchSelectable(moreMatch, saleNow) && item.odds > 0 && item.selected ? "selected" : ""}`} key={item.id} onClick={() => toggleOption(moreMatch.id, market.type, item.id)} aria-pressed={isMatchSelectable(moreMatch, saleNow) && item.odds > 0 && item.selected}>
-                      <span>{item.label}</span><strong>{item.odds > 0 ? <><OddsTrendIndicator trend={item.oddsTrend} />@{item.odds.toFixed(2)}</> : "--"}</strong>
-                    </button>
+                    <OddsHistoryTooltip option={item} key={item.id}>
+                      <button type="button" disabled={!isMatchSelectable(moreMatch, saleNow) || item.odds <= 0} className={`more-odds-option ${isMatchSelectable(moreMatch, saleNow) && item.odds > 0 && item.selected ? "selected" : ""}`} onClick={() => toggleOption(moreMatch.id, market.type, item.id)} aria-pressed={isMatchSelectable(moreMatch, saleNow) && item.odds > 0 && item.selected}>
+                        <span>{item.label}</span><strong>{item.odds > 0 ? <><OddsTrendIndicator trend={item.oddsTrend} />@{item.odds.toFixed(2)}</> : "--"}</strong>
+                      </button>
+                    </OddsHistoryTooltip>
                   ))}
                 </div>
               ))}

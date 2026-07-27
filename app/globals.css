@@ -244,8 +244,19 @@ button, input, textarea { font: inherit; }
 .odds-trend.down { color: #1677ff; }
 .odds-option.selected .odds-trend, .more-odds-option.selected .odds-trend { color: #fff; }
 .odds-option.selected { color: #fff; border-color: var(--accent); background: linear-gradient(135deg, #f65b61, #eb444d); box-shadow: 0 7px 18px rgba(240,78,85,.22); }
+.odds-tooltip-target { width: 100%; min-width: 0; display: flex; }
+.odds-tooltip-target > button { width: 100%; }
+.odds-history-tooltip { max-width: 360px; }
+.odds-history-popover { min-width: 260px; }
+.odds-history-title { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,.22); }
+.odds-history-title span { color: rgba(255,255,255,.7); font-size: 11px; }
+.odds-history-list { max-height: 270px; overflow-y: auto; }
+.odds-history-list > div { min-height: 32px; display: flex; align-items: center; justify-content: space-between; gap: 18px; border-bottom: 1px solid rgba(255,255,255,.12); }
+.odds-history-list > div:last-child { border-bottom: 0; }
+.odds-history-list > div > span { color: rgba(255,255,255,.72); font-size: 11px; font-variant-numeric: tabular-nums; }
+.odds-history-list strong { display: inline-flex; align-items: center; gap: 3px; color: #fff; font-variant-numeric: tabular-nums; }
 .match-card-actions { display: grid; grid-template-columns: 1fr 3fr 1fr; gap: 6px; margin-top: 12px; }
-.match-card-actions .ant-btn { min-width: 0; padding-inline: 5px; font-size: 10px; }
+.match-card-actions .ant-btn { min-width: 0; padding-inline: 2px; font-size: 14px; }
 .match-card-actions .ant-btn > span:not(.ant-btn-icon) { overflow-wrap: anywhere; }
 .more-play-button { width: 100%; }
 .more-play-button.ant-btn-background-ghost { color: var(--accent); border-color: rgba(240,78,85,.4); }
@@ -289,7 +300,16 @@ button, input, textarea { font: inherit; }
 .score-trend-groups .insight-section-title h3 { color: #708287; font-size: 12px; }
 .insight-note { margin: 14px 0 0; color: #829095; font-size: 11px; line-height: 1.6; }
 .preview-filters { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
-.preview-filters .ant-tag { line-height: 24px; }
+.preview-filter-tag.ant-tag {
+  min-width: 60px;
+  margin: 0;
+  padding: 2px 10px;
+  line-height: 22px;
+  text-align: center;
+  cursor: pointer;
+  user-select: none;
+}
+.preview-filter-tag.ant-tag[aria-disabled="true"] { cursor: wait; opacity: .6; }
 .feature-analysis { border: 1px solid #e5eaea; border-radius: 6px; overflow: hidden; }
 .feature-team-names { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; padding: 12px 16px; color: #263f45; background: #f1f5f4; }
 .feature-team-names b:last-child { text-align: right; }
@@ -305,13 +325,23 @@ button, input, textarea { font: inherit; }
 .preview-summary b { margin-right: 3px; color: #263f45; font-size: 13px; }
 .preview-summary strong { font-weight: 700; }
 .preview-summary .win { color: #d8424c; }
-.preview-summary .draw { color: #218a73; }
-.preview-summary .loss { color: #1673bd; }
+.preview-summary .draw { color: #1673bd; }
+.preview-summary .loss { color: #218a73; }
 .match-history-table { min-width: 660px; }
+.recent-match-table .table-date { width: 100px; min-width: 100px; }
+.match-history-table .opponent-team { color: #96a3a6; }
+.match-history-table .score-result { color: #52676c; }
+.match-history-table .score-result.home { color: #d8424c; }
+.match-history-table .score-result.draw { color: #1673bd; }
+.match-history-table .score-result.away { color: #218a73; }
 .match-history-table .match-result { font-weight: 800; }
 .match-history-table .match-result.home { color: #d8424c; }
-.match-history-table .match-result.draw { color: #218a73; }
-.match-history-table .match-result.away { color: #1673bd; }
+.match-history-table .match-result.draw { color: #1673bd; }
+.match-history-table .match-result.away { color: #218a73; }
+.total-goals-trend { width: 116px; display: grid; grid-template-columns: minmax(0, 1fr) 20px; align-items: center; gap: 8px; margin: 0 auto; }
+.total-goals-track { height: 7px; overflow: hidden; border-radius: 4px; background: #e8eeee; }
+.total-goals-track i { display: block; height: 100%; border-radius: inherit; background: #e15860; transition: width .2s ease; }
+.total-goals-trend b { color: #4f6267; font-variant-numeric: tabular-nums; text-align: right; }
 .preview-two-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .preview-team-block { min-width: 0; border: 1px solid #e5eaea; border-radius: 6px; overflow: hidden; }
 .preview-team-block > .insight-table-scroll { border: 0; border-top: 1px solid #e5eaea; border-radius: 0; }
@@ -701,7 +731,6 @@ button, input, textarea { font: inherit; }
   .match-refresh-button { width: 100%; justify-self: stretch; }
   .match-update-time { text-align: right; }
   .match-card { padding: 14px 12px; }
-  .match-card-actions .ant-btn { height: 46px; flex-direction: column; gap: 1px; padding: 3px; line-height: 1.15; }
   .teams b { font-size: 14px; }
   .compact-options { gap: 5px; }
   .market-row { grid-template-columns: 36px minmax(0, 1fr); gap: 5px; }
@@ -743,9 +772,7 @@ button, input, textarea { font: inherit; }
   .insight-modal .ant-modal-body { max-height: calc(100dvh - 150px); }
   .insight-section-title { align-items: flex-start; flex-direction: column; }
   .preview-filters { width: 100%; justify-content: flex-start; }
-  .preview-filters .ant-segmented { width: 100%; }
-  .preview-filters .ant-segmented-group { width: 100%; }
-  .preview-filters .ant-segmented-item { flex: 1; text-align: center; }
+  .preview-filter-tag.ant-tag { flex: 1; }
   .feature-row { grid-template-columns: minmax(72px, 1fr) minmax(110px, 1.35fr) minmax(72px, 1fr); gap: 7px; padding-inline: 9px; }
   .feature-row > strong { font-size: 10px; }
 }

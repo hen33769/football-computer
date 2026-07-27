@@ -5,7 +5,6 @@ import {
   Button,
   Empty,
   Modal,
-  Segmented,
   Spin,
   Tag,
 } from "antd";
@@ -15,7 +14,7 @@ import {
   ExportOutlined,
   ReloadOutlined,
 } from "@ant-design/icons";
-import { useEffect, useMemo, useState } from "react";
+import { type KeyboardEvent, useEffect, useMemo, useState } from "react";
 import {
   fetchSportteryHistory,
   fetchSportteryPreviewStatic,
@@ -270,23 +269,41 @@ function PreviewFilters({
   onTournamentChange: (value: FilterFlag) => void;
   onHomeAwayChange: (value: FilterFlag) => void;
 }) {
+  const toggleFilter = (
+    event: KeyboardEvent<HTMLSpanElement>,
+    currentValue: FilterFlag,
+    onChange: (value: FilterFlag) => void,
+  ) => {
+    if (loading || (event.key !== "Enter" && event.key !== " ")) return;
+    event.preventDefault();
+    onChange(currentValue === 1 ? 0 : 1);
+  };
   return (
     <div className="preview-filters">
-      <Segmented
-        size="small"
-        disabled={loading}
-        value={tournamentFlag}
-        options={[{ label: "全部赛事", value: 0 }, { label: "同赛事", value: 1 }]}
-        onChange={(value) => onTournamentChange(value as FilterFlag)}
-      />
-      <Segmented
-        size="small"
-        disabled={loading}
-        value={homeAwayFlag}
-        options={[{ label: "不区分主客", value: 0 }, { label: "同主客", value: 1 }]}
-        onChange={(value) => onHomeAwayChange(value as FilterFlag)}
-      />
-      <Tag>近 20 场</Tag>
+      <Tag
+        className="preview-filter-tag"
+        color={tournamentFlag === 1 ? "red" : undefined}
+        role="checkbox"
+        aria-checked={tournamentFlag === 1}
+        aria-disabled={loading}
+        tabIndex={loading ? -1 : 0}
+        onClick={() => !loading && onTournamentChange(tournamentFlag === 1 ? 0 : 1)}
+        onKeyDown={(event) => toggleFilter(event, tournamentFlag, onTournamentChange)}
+      >
+        同赛事
+      </Tag>
+      <Tag
+        className="preview-filter-tag"
+        color={homeAwayFlag === 1 ? "red" : undefined}
+        role="checkbox"
+        aria-checked={homeAwayFlag === 1}
+        aria-disabled={loading}
+        tabIndex={loading ? -1 : 0}
+        onClick={() => !loading && onHomeAwayChange(homeAwayFlag === 1 ? 0 : 1)}
+        onKeyDown={(event) => toggleFilter(event, homeAwayFlag, onHomeAwayChange)}
+      >
+        同主客
+      </Tag>
     </div>
   );
 }
@@ -368,25 +385,56 @@ function SummaryLine({ statistics }: { statistics: InsightRecord }) {
   );
 }
 
-function MatchRowsTable({ rows, resultMode = false }: { rows: InsightRecord[]; resultMode?: boolean }) {
+function MatchRowsTable({
+  rows,
+  focusTeamName = "",
+  resultMode = false,
+}: {
+  rows: InsightRecord[];
+  focusTeamName?: string;
+  resultMode?: boolean;
+}) {
   if (!rows.length) return <EmptyBlock />;
+  const maxTotalGoals = resultMode ? 0 : Math.max(
+    ...rows.map((item) => Math.max(0, amount(item.totalTeamFullCourtGoalCnt))),
+  );
   return (
     <div className="insight-table-scroll">
-      <table className="insight-table match-history-table">
+      <table className={`insight-table match-history-table ${resultMode ? "recent-match-table" : ""}`}>
         <thead><tr><th>比赛日期</th><th>赛事</th><th>主队</th><th>比分</th><th>客队</th>{resultMode ? <th>本队赛果</th> : <th>总进球</th>}</tr></thead>
         <tbody>
           {rows.map((item, index) => {
-            const result = text(item.teamMatchResult, "");
+            const result = text(resultMode ? item.teamMatchResult : item.homeMatchResult, "");
+            const homeTeamName = text(item.homeTeamShortName);
+            const awayTeamName = text(item.awayTeamShortName);
             return (
               <tr key={`${text(item.matchId)}-${index}`}>
                 <td className="table-date">{text(item.matchDate)}</td>
                 <td>{text(item.tournamentShortName)}</td>
-                <td>{text(item.homeTeamShortName)}</td>
-                <td><b>{text(item.fullCourtGoal)}</b><small>半 {text(item.halfTimeGoal)}</small></td>
-                <td>{text(item.awayTeamShortName)}</td>
+                <td className={focusTeamName && homeTeamName !== focusTeamName ? "opponent-team" : ""}>{homeTeamName}</td>
+                <td><b className={`score-result ${result}`}>{text(item.fullCourtGoal)}</b><small>半 {text(item.halfTimeGoal)}</small></td>
+                <td className={focusTeamName && awayTeamName !== focusTeamName ? "opponent-team" : ""}>{awayTeamName}</td>
                 {resultMode ? (
                   <td><span className={`match-result ${result}`}>{result === "home" ? "胜" : result === "draw" ? "平" : "负"}</span></td>
-                ) : <td>{text(item.totalTeamFullCourtGoalCnt)}</td>}
+                ) : (
+                  <td>
+                    <div
+                      className="total-goals-trend"
+                      title={`总进球 ${text(item.totalTeamFullCourtGoalCnt, "0")}`}
+                    >
+                      <span className="total-goals-track">
+                        <i
+                          style={{
+                            width: `${maxTotalGoals > 0
+                              ? Math.max(0, amount(item.totalTeamFullCourtGoalCnt)) / maxTotalGoals * 100
+                              : 0}%`,
+                          }}
+                        />
+                      </span>
+                      <b>{text(item.totalTeamFullCourtGoalCnt, "0")}</b>
+                    </div>
+                  </td>
+                )}
               </tr>
             );
           })}
@@ -434,10 +482,11 @@ function StandingsTable({ side }: { side: InsightRecord }) {
 
 function RecentTeam({ team }: { team: InsightRecord }) {
   if (!Object.keys(team).length) return <EmptyBlock />;
+  const statistics = asRecord(team.statistics);
   return (
     <div className="preview-team-block">
-      <SummaryLine statistics={asRecord(team.statistics)} />
-      <MatchRowsTable rows={asRows(team.matchList)} resultMode />
+      <SummaryLine statistics={statistics} />
+      <MatchRowsTable rows={asRows(team.matchList)} focusTeamName={text(statistics.teamShortName, "")} resultMode />
     </div>
   );
 }
@@ -597,7 +646,7 @@ export function MatchPreviewModal({
     <Modal
       open={open}
       onCancel={onClose}
-      width={1120}
+      width={1280}
       className="insight-modal"
       title={match ? `${match.weekday}${match.code} · ${match.home} VS ${match.away} · 赛事前瞻` : "赛事前瞻"}
       footer={<Button type="primary" onClick={onClose}>关闭</Button>}
@@ -630,7 +679,7 @@ export function MatchPreviewModal({
           {historyError ? <Alert type="error" showIcon message={historyError} /> : (
             <Spin spinning={historyLoading}>
               <SummaryLine statistics={asRecord(history?.statistics)} />
-              <MatchRowsTable rows={asRows(history?.matchList)} />
+              <MatchRowsTable rows={asRows(history?.matchList)} focusTeamName={text(history?.statistics && asRecord(history.statistics).teamShortName, "")} />
             </Spin>
           )}
         </section>

@@ -1,6 +1,6 @@
 import { createMarkets } from "./data";
 import { winningOptionId } from "./calculator";
-import type { MarketType, MatchItem } from "./types";
+import type { MarketType, MatchItem, OddsHistoryEntry } from "./types";
 
 export const SPORTTERY_MATCH_CALCULATOR_URL =
   "https://webapi.sporttery.cn/gateway/uniform/football/getMatchCalculatorV1.qry";
@@ -130,6 +130,10 @@ const toOddsTrend = (value: unknown): -1 | 0 | 1 => {
   const trend = Number.parseInt(String(value ?? "0"), 10);
   return trend > 0 ? 1 : trend < 0 ? -1 : 0;
 };
+
+const compareOdds = (current: number, previous: number): -1 | 0 | 1 => (
+  current > previous ? 1 : current < previous ? -1 : 0
+);
 
 const scoreApiKey = (optionId: string) => {
   if (optionId === "winOther") return "s1sh";
@@ -600,6 +604,64 @@ const fixedBonusOddsHistory = (payload: Record<string, unknown> | null) => {
   return history && typeof history === "object" ? history as Record<string, unknown> : null;
 };
 
+const HISTORY_LIST_BY_MARKET: Record<MarketType, string> = {
+  spf: "hadList",
+  rqspf: "hhadList",
+  score: "crsList",
+  goals: "ttgList",
+  halfFull: "hafuList",
+};
+
+export function parseSportteryOptionOddsHistory(
+  payload: Record<string, unknown>,
+  marketType: MarketType,
+  optionId: string,
+): OddsHistoryEntry[] {
+  const history = fixedBonusOddsHistory(payload);
+  const rows = Array.isArray(history?.[HISTORY_LIST_BY_MARKET[marketType]])
+    ? history[HISTORY_LIST_BY_MARKET[marketType]] as SportteryOdds[]
+    : [];
+  const apiKey = optionApiKey(marketType, optionId);
+  return rows.reduce<OddsHistoryEntry[]>((entries, row) => {
+    const odds = toOdds(row[apiKey]);
+    if (odds <= 0 || entries.at(-1)?.odds === odds) return entries;
+    const previous = entries.at(-1)?.odds;
+    const trend = typeof previous === "number" ? compareOdds(odds, previous) : 0;
+    const updatedAt = [row.updateDate, row.updateTime].filter(Boolean).join(" ");
+    entries.push({ odds, updatedAt, trend });
+    return entries;
+  }, []);
+}
+
+export function enrichSportteryMatchOddsHistory(
+  match: MatchItem,
+  payload: Record<string, unknown>,
+): MatchItem {
+  return {
+    ...match,
+    markets: match.markets.map((market) => ({
+      ...market,
+      options: market.options.map((option) => {
+        let oddsHistory = parseSportteryOptionOddsHistory(payload, market.type, option.id);
+        const lastHistory = oddsHistory.at(-1);
+        if (option.odds > 0 && lastHistory && lastHistory.odds !== option.odds) {
+          oddsHistory = [...oddsHistory, {
+            odds: option.odds,
+            updatedAt: "当前",
+            trend: compareOdds(option.odds, lastHistory.odds),
+          }];
+        }
+        const latestTrend = oddsHistory.at(-1)?.trend;
+        return {
+          ...option,
+          ...(oddsHistory.length ? { oddsHistory } : {}),
+          oddsTrend: latestTrend || option.oddsTrend || 0,
+        };
+      }),
+    })),
+  };
+}
+
 /** 从按 matchId 查询的官方固定奖金数据中读取该场比赛的固定让球数。 */
 export function parseSportteryMatchHandicap(payload: unknown): number | undefined {
   if (!payload || typeof payload !== "object") return undefined;
@@ -663,10 +725,26 @@ export function convertSportteryMorningMatches(
   return convertSportteryMatches({
     ...payload,
     value: { ...payload.value, matchInfoList: enrichedGroups, vtoolsConfig: { onLineSaleStatus: 1 } },
-  }, now).map((match) => (
-    match.saleStatus === "selling" ? { ...match, saleStatus: "pending" as const } : match
-  ));
+  }, now).map((match) => {
+    const fixedPayload = fixedBonusPayloads.get(normalizeSportteryMatchId(match.id));
+    const enriched = fixedPayload ? enrichSportteryMatchOddsHistory(match, fixedPayload) : match;
+    return enriched.saleStatus === "selling" ? { ...enriched, saleStatus: "pending" as const } : enriched;
+  });
 }
+
+const fetchSportteryOddsHistories = async (matches: MatchItem[]) => {
+  let failureCount = 0;
+  const enriched = await mapWithConcurrency(matches, 6, async (match) => {
+    try {
+      const payload = await fetchSportteryFixedBonusPayload(match.id);
+      return enrichSportteryMatchOddsHistory(match, payload);
+    } catch {
+      failureCount += 1;
+      return match;
+    }
+  });
+  return { matches: enriched, failureCount };
+};
 
 export async function fetchSportteryMatchSnapshot(
   mode: SportteryMatchFetchMode,
@@ -680,26 +758,31 @@ export async function fetchSportteryMatchSnapshot(
       fetchSportteryMatchList().catch(() => null),
     ]);
     const primaryMatches = convertSportteryMatches(payload, now);
+    const primaryHistoryPromise = fetchSportteryOddsHistories(primaryMatches);
     if (!matchListPayload) {
+      const primaryHistory = await primaryHistoryPromise;
       return {
         mode,
-        matches: primaryMatches,
+        matches: primaryHistory.matches,
         matchDates: payload.value?.matchDateList ?? [],
         leagues: payload.value?.leagueList ?? [],
         lastUpdateTime: payload.value?.lastUpdateTime ?? "",
-        fixedBonusFailureCount: 0,
+        fixedBonusFailureCount: primaryHistory.failureCount,
       };
     }
 
     const supplementPayload = selectSportterySupplementPayload(matchListPayload, primaryMatches, localDateKey(now));
-    const supplement = await fetchSportteryMorningMatches(supplementPayload, now);
+    const [primaryHistory, supplement] = await Promise.all([
+      primaryHistoryPromise,
+      fetchSportteryMorningMatches(supplementPayload, now),
+    ]);
     return {
       mode,
-      matches: mergeSportteryMatchSources(primaryMatches, supplement.matches),
+      matches: mergeSportteryMatchSources(primaryHistory.matches, supplement.matches),
       matchDates: matchListPayload.value?.matchDateList ?? payload.value?.matchDateList ?? [],
       leagues: matchListPayload.value?.leagueList ?? payload.value?.leagueList ?? [],
       lastUpdateTime: payload.value?.lastUpdateTime ?? "",
-      fixedBonusFailureCount: supplement.fixedBonusFailureCount,
+      fixedBonusFailureCount: primaryHistory.failureCount + supplement.fixedBonusFailureCount,
     };
   }
 

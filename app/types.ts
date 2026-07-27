@@ -1,10 +1,17 @@
 export type MarketType = "spf" | "rqspf" | "score" | "goals" | "halfFull";
 
+export type OddsHistoryEntry = {
+  odds: number;
+  updatedAt: string;
+  trend: -1 | 0 | 1;
+};
+
 export type OddsOption = {
   id: string;
   label: string;
   odds: number;
   oddsTrend?: -1 | 0 | 1;
+  oddsHistory?: OddsHistoryEntry[];
   selected: boolean;
 };
 
