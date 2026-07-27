@@ -80,7 +80,7 @@ import {
   cloneMatches,
   MARKET_LABELS,
 } from "./data";
-import AppVersion from "./AppVersion";
+import { APP_VERSION } from "./AppVersion";
 import { MatchPreviewModal, OfficialTrendModal } from "./FootballInsights";
 import { orderLedgerTotals, sortSavedOrders, unionSavedOrders } from "./imports";
 import { parseRecognizedText } from "./ocr";
@@ -265,22 +265,39 @@ function OddsTrendIndicator({ trend }: { trend?: -1 | 0 | 1 }) {
 function OddsHistoryTooltip({ option, children }: { option: OddsOption; children: ReactElement }) {
   const history = option.oddsHistory ?? [];
   const changeCount = Math.max(0, history.length - 1);
-  if (changeCount <= 1) return children;
+  if (!history.length) return children;
+  const displayedHistory = history;
   const content = (
     <div className="odds-history-popover">
-      <div className="odds-history-title"><b>{option.label}</b><span>共 {changeCount} 次变化</span></div>
+      <div className="odds-history-title"><b>{option.label}</b><span>共 {history.length} 条记录 · {changeCount} 次变化</span></div>
       <div className="odds-history-list">
-        {[...history].reverse().map((entry, index) => (
-          <div key={`${entry.updatedAt}-${entry.odds}-${index}`}>
-            <span>{entry.updatedAt || "发布时间未知"}</span>
-            <strong>{entry.odds.toFixed(2)}<OddsTrendIndicator trend={entry.trend} /></strong>
-          </div>
-        ))}
+        {displayedHistory.map((entry, index) => {
+          const isInitial = index === 0;
+          const isLatest = displayedHistory.length > 1 && index === displayedHistory.length - 1;
+          return (
+            <div key={`${entry.updatedAt}-${entry.odds}-${index}`}>
+              <span className="odds-history-date">
+                {entry.updatedAt || "发布时间未知"}
+                {isInitial && <Tag color="blue">初盘</Tag>}
+                {isLatest && <Tag color="red">最新</Tag>}
+              </span>
+              <strong className={entry.trend > 0 ? "up" : entry.trend < 0 ? "down" : ""}>
+                {entry.odds.toFixed(2)}<OddsTrendIndicator trend={entry.trend} />
+              </strong>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
   return (
-    <Tooltip title={content} mouseEnterDelay={1} placement="top" classNames={{ root: "odds-history-tooltip" }}>
+    <Tooltip
+      title={content}
+      color="#fff"
+      mouseEnterDelay={0.6}
+      placement="top"
+      classNames={{ root: "odds-history-tooltip" }}
+    >
       <span className="odds-tooltip-target">{children}</span>
     </Tooltip>
   );
@@ -2051,7 +2068,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
         <div className="hero-content">
           <div className="brand-lockup">
             <div className="brand-ball"><StarFilled /></div>
-            <div><p>中国体育彩票 · 玩法模拟</p><h1>竞彩足球模拟工具</h1></div>
+            <div><p>中国体育彩票 · 玩法模拟 · v{APP_VERSION}</p><h1>竞彩足球模拟工具</h1></div>
           </div>
           <div className="hero-actions">
             {activeView === "orders" && <Button icon={<PlusOutlined />} onClick={openManualOrder}><span className="header-button-label">手动添加订单</span></Button>}
@@ -2925,7 +2942,6 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
         ))}
       </Modal>
 
-      <AppVersion />
     </div>
   );
 }
