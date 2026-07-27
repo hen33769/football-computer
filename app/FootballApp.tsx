@@ -17,6 +17,7 @@ import {
   Modal,
   Popconfirm,
   Popover,
+  Segmented,
   Select,
   Space,
   Switch,
@@ -80,6 +81,7 @@ import {
   MARKET_LABELS,
 } from "./data";
 import AppVersion from "./AppVersion";
+import { orderLedgerTotals, sortSavedOrders, unionSavedOrders } from "./imports";
 import { parseRecognizedText } from "./ocr";
 import {
   convertSportteryMatches,
@@ -114,6 +116,7 @@ import {
   normalizeAppSettings,
   readableTagTextColor,
   saveAppSettings,
+  unionAppSettings,
   withLeagueTagColor,
   type AppSettings,
 } from "./settings";
@@ -131,7 +134,7 @@ const DEMO_URL = "https://hen33769.github.io/football-computer/";
 
 export type AppView = "betting" | "orders" | "settings";
 type DataTransferMode = "orders" | "settings" | "matches" | "full";
-type ImportDataTransferMode = DataTransferMode | "matches-add";
+type ImportStrategy = "merge" | "replace";
 type OrderProgressFilter = "settled" | "unsettled" | null;
 type OrderStatusFilter = "success" | "hopeful" | "failed";
 type MatchSaleFilter = "all" | "non-stopped" | "stopped" | "selling" | "pending";
@@ -689,6 +692,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
   const initializedMatchDateCollapseRef = useRef(new Set<string>());
   const autoCollapsedMatchDatesRef = useRef(new Set<string>());
   const [appSettings, setAppSettings] = useState<AppSettings>(() => loadAppSettings());
+  const [importStrategy, setImportStrategy] = useState<ImportStrategy>("merge");
   const saleNow = useMemo(() => new Date(saleClock), [saleClock]);
 
   const applySportterySnapshot = useCallback((snapshot: SportteryMatchSnapshot) => {
@@ -856,16 +860,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
   }, [passes, passOptions]);
 
   const navigateToView = (view: AppView) => {
-    if (view !== "betting" && temporaryOrder) {
-      sessionStorage.setItem(LOADED_ORDER_KEY, JSON.stringify({
-        id: temporaryOrder.id,
-        name: temporaryOrder.name,
-        matches: cloneMatches(matches),
-        passes: [...activePasses],
-        multiple,
-        hits: cloneHits(hits),
-      } satisfies LoadedOrderDraft));
-    }
+    if (view !== "betting" && temporaryOrder) restoreSavedMatches();
     if (onNavigate) {
       onNavigate(view);
       return;
@@ -1742,30 +1737,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
     });
   };
 
-  const mergeOrders = (incomingOrders: SavedSlip[]) => {
-    const nextOrders = [...savedSlips];
-    let added = 0;
-    let updated = 0;
-    let expenseDelta = 0;
-    let incomeDelta = 0;
-    incomingOrders.forEach((order) => {
-      const index = nextOrders.findIndex((item) => item.id === order.id);
-      if (index >= 0) {
-        expenseDelta += calculateStake(order.matches, order.passes, order.multiple) - calculateStake(nextOrders[index].matches, nextOrders[index].passes, nextOrders[index].multiple);
-        incomeDelta += (order.settledPrize ?? 0) - (nextOrders[index].settledPrize ?? 0);
-        nextOrders[index] = order;
-        updated += 1;
-      } else {
-        nextOrders.push(order);
-        expenseDelta += calculateStake(order.matches, order.passes, order.multiple);
-        incomeDelta += order.settledPrize ?? 0;
-        added += 1;
-      }
-    });
-    return { nextOrders, added, updated, expenseDelta, incomeDelta };
-  };
-
-  const importDataJson = async (file: File, mode: ImportDataTransferMode) => {
+  const importDataJson = async (file: File, mode: DataTransferMode, strategy: ImportStrategy) => {
     try {
       if (file.size > 20 * 1024 * 1024) throw new Error("JSON 文件不能超过 20 MB");
       const rawPayload = JSON.parse(await file.text()) as unknown;
@@ -1775,33 +1747,42 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
 
       if (mode === "settings") {
         if (!data.settings || typeof data.settings !== "object") throw new Error("文件中缺少 settings 对象");
-        const nextSettings = saveAppSettings(normalizeAppSettings(data.settings));
+        const nextSettings = saveAppSettings(strategy === "merge"
+          ? unionAppSettings(appSettings, data.settings)
+          : normalizeAppSettings(data.settings));
         setAppSettings(nextSettings);
-        notification.success({ message: "设置导入完成", description: "联赛标签颜色已更新", placement: "bottomRight" });
+        notification.success({
+          message: strategy === "merge" ? "设置新增完成" : "设置覆盖完成",
+          description: strategy === "merge" ? "已保留现有颜色并补入新联赛颜色" : "联赛标签颜色已替换",
+          placement: "bottomRight",
+        });
         return;
       }
 
-      const restoreMatches = (strategy: "replace" | "union" = "replace") => {
+      const prepareMatches = (matchStrategy: ImportStrategy) => {
         const rawMatches = data.matches;
         if (!Array.isArray(rawMatches)) throw new Error("文件中缺少 matches 数组");
         if (!rawMatches.every(isExportedMatch)) throw new Error("比赛数据结构与导出格式不一致");
         const incomingMatches = JSON.parse(JSON.stringify(rawMatches)) as MatchItem[];
         const currentMatches = temporaryOrder ? loadCachedMatches() : matchesRef.current;
-        const restoredMatches = strategy === "union"
+        return matchStrategy === "merge"
           ? unionSportteryMatchCache(currentMatches, incomingMatches, new Date())
           : mergeSportteryMatchCache([], incomingMatches, new Date());
+      };
+
+      const applyMatches = (restoredMatches: MatchItem[]) => {
         saveCachedMatches(restoredMatches);
         matchesRef.current = restoredMatches;
         if (!temporaryOrder) setMatches(restoredMatches);
         setMatchDates(cachedMatchDates(restoredMatches));
         setLeagueOptions(cachedLeagueOptions(restoredMatches));
-        return restoredMatches;
       };
 
-      if (mode === "matches" || mode === "matches-add") {
-        const restoredMatches = restoreMatches(mode === "matches-add" ? "union" : "replace");
+      if (mode === "matches") {
+        const restoredMatches = prepareMatches(strategy);
+        applyMatches(restoredMatches);
         notification.success({
-          message: mode === "matches-add" ? "比赛数据新增完成" : "比赛数据覆盖完成",
+          message: strategy === "merge" ? "比赛数据新增完成" : "比赛数据覆盖完成",
           description: `当前共有 ${restoredMatches.length} 场 5 天内比赛`,
           placement: "bottomRight",
         });
@@ -1822,42 +1803,63 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
         if (!finance || !Number.isFinite(importedExpense) || !Number.isFinite(importedIncome) || importedExpense < 0 || importedIncome < 0) {
           throw new Error("完整数据中的 finance 账本无效");
         }
-        const restoredOrders = [...incomingOrders].sort((left, right) => new Date(right.savedAt).getTime() - new Date(left.savedAt).getTime());
-        const restoredSettings = normalizeAppSettings(data.settings);
+        const orderMerge = unionSavedOrders(savedSlips, incomingOrders);
+        const restoredOrders = strategy === "merge" ? orderMerge.nextOrders : sortSavedOrders(incomingOrders);
+        const restoredSettings = strategy === "merge"
+          ? unionAppSettings(appSettings, data.settings)
+          : normalizeAppSettings(data.settings);
         const rawMatches = data.matches;
         if (!Array.isArray(rawMatches) || !rawMatches.every(isExportedMatch)) throw new Error("完整数据中的 matches 比赛数据无效");
-        const restoredMatches = mergeSportteryMatchCache([], JSON.parse(JSON.stringify(rawMatches)) as MatchItem[], new Date());
+        const restoredMatches = prepareMatches(strategy);
+        const nextExpense = strategy === "merge" ? Math.max(0, expenseTotal + orderMerge.expenseDelta) : importedExpense;
+        const nextIncome = strategy === "merge" ? Math.max(0, incomeTotal + orderMerge.incomeDelta) : importedIncome;
         modal.confirm({
-          title: "恢复完整数据？",
-          content: `将覆盖当前本地订单、比赛、设置和账本，恢复 ${restoredOrders.length} 个订单与 ${restoredMatches.length} 场比赛。`,
-          okText: "覆盖恢复",
+          title: strategy === "merge" ? "新增完整数据？" : "覆盖完整数据？",
+          content: strategy === "merge"
+            ? `将保留本地数据，新增 ${orderMerge.added} 个订单并合并比赛与设置；本地账本只计入新增订单。`
+            : `将覆盖当前本地订单、比赛、设置和账本，恢复 ${restoredOrders.length} 个订单与 ${restoredMatches.length} 场比赛。`,
+          okText: strategy === "merge" ? "新增合并" : "覆盖恢复",
           cancelText: "取消",
-          okButtonProps: { danger: true },
+          okButtonProps: { danger: strategy === "replace" },
           onOk: () => {
             setSavedSlips(restoredOrders);
             setAppSettings(saveAppSettings(restoredSettings));
-            setExpenseTotal(importedExpense);
-            setIncomeTotal(importedIncome);
-            saveCachedMatches(restoredMatches);
-            matchesRef.current = restoredMatches;
-            if (!temporaryOrder) setMatches(restoredMatches);
-            setMatchDates(cachedMatchDates(restoredMatches));
-            setLeagueOptions(cachedLeagueOptions(restoredMatches));
+            setExpenseTotal(nextExpense);
+            setIncomeTotal(nextIncome);
+            applyMatches(restoredMatches);
             localStorage.setItem(SAVED_KEY, JSON.stringify(restoredOrders));
-            localStorage.setItem(EXPENSE_KEY, String(importedExpense));
-            localStorage.setItem(INCOME_KEY, String(importedIncome));
-            notification.success({ message: "完整数据恢复完成", description: `已恢复 ${restoredOrders.length} 个订单、${restoredMatches.length} 场比赛、设置与账本`, placement: "bottomRight" });
+            localStorage.setItem(EXPENSE_KEY, String(nextExpense));
+            localStorage.setItem(INCOME_KEY, String(nextIncome));
+            notification.success({
+              message: strategy === "merge" ? "完整数据新增完成" : "完整数据覆盖完成",
+              description: strategy === "merge"
+                ? `新增 ${orderMerge.added} 个订单，当前共 ${restoredOrders.length} 个订单、${restoredMatches.length} 场比赛`
+                : `已恢复 ${restoredOrders.length} 个订单、${restoredMatches.length} 场比赛、设置与账本`,
+              placement: "bottomRight",
+            });
           },
         });
         return;
       }
 
-      const { nextOrders, added, updated, expenseDelta, incomeDelta } = mergeOrders(incomingOrders);
-      setSavedSlips(nextOrders);
-      setExpenseTotal((current) => Math.max(0, current + expenseDelta));
-      setIncomeTotal((current) => Math.max(0, current + incomeDelta));
-      localStorage.setItem(SAVED_KEY, JSON.stringify(nextOrders));
-      notification.success({ message: "订单导入完成", description: `新增 ${added} 个，更新 ${updated} 个`, placement: "bottomRight" });
+      if (strategy === "merge") {
+        const { nextOrders, added, skipped, expenseDelta, incomeDelta } = unionSavedOrders(savedSlips, incomingOrders);
+        setSavedSlips(nextOrders);
+        setExpenseTotal((current) => Math.max(0, current + expenseDelta));
+        setIncomeTotal((current) => Math.max(0, current + incomeDelta));
+        localStorage.setItem(SAVED_KEY, JSON.stringify(nextOrders));
+        notification.success({ message: "订单新增完成", description: `新增 ${added} 个，跳过 ${skipped} 个同 ID 订单`, placement: "bottomRight" });
+        return;
+      }
+
+      const restoredOrders = sortSavedOrders(incomingOrders);
+      const currentTotals = orderLedgerTotals(savedSlips);
+      const restoredTotals = orderLedgerTotals(restoredOrders);
+      setSavedSlips(restoredOrders);
+      setExpenseTotal((current) => Math.max(0, current - currentTotals.expense + restoredTotals.expense));
+      setIncomeTotal((current) => Math.max(0, current - currentTotals.income + restoredTotals.income));
+      localStorage.setItem(SAVED_KEY, JSON.stringify(restoredOrders));
+      notification.success({ message: "订单覆盖完成", description: `已恢复 ${restoredOrders.length} 个订单`, placement: "bottomRight" });
     } catch (error) {
       notification.error({
         message: "JSON 导入失败",
@@ -1955,19 +1957,28 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
 
   const importMenu = (
     <div className="data-popover-menu">
-      <div className="data-popover-heading"><b>导入数据</b><span>选择要从 JSON 文件恢复的内容</span></div>
+      <div className="data-popover-heading"><b>导入数据</b><span>先选择导入方式，再选择 JSON 文件内容</span></div>
+      <Segmented
+        className="data-import-strategy"
+        block
+        value={importStrategy}
+        onChange={(value) => setImportStrategy(value as ImportStrategy)}
+        options={[
+          { label: "新增合并", value: "merge" },
+          { label: "覆盖恢复", value: "replace" },
+        ]}
+      />
       {([
-        ["orders", "导入订单", "按订单 ID 新增或更新，不改动设置"],
-        ["settings", "导入设置", "覆盖联赛颜色等应用设置"],
-        ["matches", "覆盖比赛数据", "用 JSON 比赛替换本地比赛缓存"],
-        ["matches-add", "新增比赛数据", "保留本地比赛，并加入 JSON 中的新比赛"],
-        ["full", "导入完整数据", "确认后覆盖订单、比赛、设置与账本"],
+        ["orders", "导入订单", importStrategy === "merge" ? "仅加入新订单，同 ID 保留本地订单" : "用 JSON 订单替换本地订单"],
+        ["settings", "导入设置", importStrategy === "merge" ? "保留现有颜色，仅加入新联赛颜色" : "用 JSON 设置替换本地设置"],
+        ["matches", "导入比赛数据", importStrategy === "merge" ? "保留本地比赛，仅加入新比赛" : "用 JSON 比赛替换本地比赛缓存"],
+        ["full", "导入完整数据", importStrategy === "merge" ? "合并订单、比赛和设置，保留本地账本" : "覆盖订单、比赛、设置与账本"],
       ] as const).map(([mode, title, description]) => (
         <Upload
           key={mode}
           accept=".json,application/json"
           showUploadList={false}
-          beforeUpload={(file) => { void importDataJson(file, mode); return Upload.LIST_IGNORE; }}
+          beforeUpload={(file) => { void importDataJson(file, mode, importStrategy); return Upload.LIST_IGNORE; }}
         >
           <Button type="text" block><span><b>{title}</b><small>{description}</small></span><RightOutlined /></Button>
         </Upload>

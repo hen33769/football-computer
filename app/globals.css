@@ -123,6 +123,7 @@ button, input, textarea { font: inherit; }
 .data-popover-heading { display: flex; flex-direction: column; gap: 2px; padding: 6px 10px 9px; border-bottom: 1px solid var(--line); }
 .data-popover-heading b { color: var(--ink); font-size: 14px; }
 .data-popover-heading span { color: var(--muted); font-size: 11px; }
+.data-import-strategy { margin: 7px 10px 5px; width: calc(100% - 20px); }
 .data-popover-menu .ant-upload-wrapper,
 .data-popover-menu .ant-upload-select { display: block; width: 100%; }
 .data-popover-menu .ant-btn { width: 100%; height: auto; min-height: 52px; display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; text-align: left; }

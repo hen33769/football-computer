@@ -63,6 +63,19 @@ export function normalizeAppSettings(value: unknown): AppSettings {
   };
 }
 
+/** 保留现有设置，只补入导入文件中新出现的联赛颜色。 */
+export function unionAppSettings(current: AppSettings, incoming: unknown): AppSettings {
+  const normalizedIncoming = normalizeAppSettings(incoming);
+  return normalizeAppSettings({
+    appearance: {
+      leagueTagColors: {
+        ...normalizedIncoming.appearance.leagueTagColors,
+        ...current.appearance.leagueTagColors,
+      },
+    },
+  });
+}
+
 export function loadAppSettings(storage: SettingsStorage = window.localStorage): AppSettings {
   try {
     const raw = storage.getItem(APP_SETTINGS_KEY);

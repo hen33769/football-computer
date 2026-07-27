@@ -16,8 +16,22 @@ import {
   MAX_SELECTED_MATCHES,
 } from "../app/calculator";
 import { cloneMatches, initialMatches } from "../app/data";
+import { unionSavedOrders } from "../app/imports";
 import { judgeSlipWithResults, repairSlipHandicapResults } from "../app/results";
 import type { SavedSlip } from "../app/types";
+
+test("新增导入订单按 ID 取并集并保留现有订单", () => {
+  const existing: SavedSlip = { id: "order-1", name: "本地订单", savedAt: "2026-07-27T01:00:00.000Z", matches: [], passes: [], multiple: 1 };
+  const duplicate: SavedSlip = { ...existing, name: "导入同 ID 订单" };
+  const added: SavedSlip = { ...existing, id: "order-2", name: "新订单", savedAt: "2026-07-27T02:00:00.000Z", settledPrize: 12 };
+
+  const result = unionSavedOrders([existing], [duplicate, added]);
+
+  assert.equal(result.added, 1);
+  assert.equal(result.skipped, 1);
+  assert.equal(result.incomeDelta, 12);
+  assert.deepEqual(result.nextOrders.map((order) => order.name), ["新订单", "本地订单"]);
+});
 
 function select(matches = cloneMatches(initialMatches.slice(0, 2))) {
   matches[0].markets[0].options[0].selected = true;

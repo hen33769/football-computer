@@ -5,6 +5,7 @@ import {
   getLeagueTagColor,
   normalizeAppSettings,
   readableTagTextColor,
+  unionAppSettings,
   withLeagueTagColor,
 } from "../app/settings";
 
@@ -24,6 +25,21 @@ test("导入设置会过滤非法颜色并补齐默认配置", () => {
   const settings = normalizeAppSettings({ appearance: { leagueTagColors: { 欧冠: "#ABC", 巴甲: "red", 新联赛: "#112233" } } });
   assert.equal(settings.appearance.leagueTagColors.欧冠, "#abc");
   assert.equal(settings.appearance.leagueTagColors.巴甲, "#d5ec76");
+  assert.equal(settings.appearance.leagueTagColors.新联赛, "#112233");
+});
+
+test("新增导入设置只补入新联赛颜色", () => {
+  const current = withLeagueTagColor(createDefaultSettings(), "欧冠", "#123456");
+  const settings = unionAppSettings(current, {
+    appearance: {
+      leagueTagColors: {
+        欧冠: "#abcdef",
+        新联赛: "#112233",
+      },
+    },
+  });
+
+  assert.equal(settings.appearance.leagueTagColors.欧冠, "#123456");
   assert.equal(settings.appearance.leagueTagColors.新联赛, "#112233");
 });
 
