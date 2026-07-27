@@ -215,6 +215,12 @@ const isOrderOddsLocked = (slip: Pick<SavedSlip, "oddsLocked" | "settledAt">) =>
 
 const formatHandicap = (handicap: number) => `${handicap > 0 ? "+" : ""}${handicap}`;
 
+const formatOrderOptionLabel = (market: Market, option: OddsOption) => {
+  if (market.type !== "rqspf" || typeof market.handicap !== "number") return option.label;
+  const resultLabel = option.label === "主胜" ? "胜" : option.label === "主负" ? "负" : option.label;
+  return `(${formatHandicap(market.handicap)})${resultLabel}`;
+};
+
 const matchResultOptionLabel = (match: MatchItem, type: MarketType, optionId?: string) => {
   if (!optionId) return null;
   return match.markets.find((market) => market.type === type)?.options.find((option) => option.id === optionId)?.label ?? optionId;
@@ -2556,7 +2562,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
                                         const isHit = slip.hits?.[match.id]?.[market.type] === option.id;
                                         return (
                                           <Fragment key={option.id}>
-                                            <span className={isHit ? "hit" : ""}>{option.label}{isHit && <b>@{option.odds.toFixed(2)}</b>}</span>
+                                            <span className={isHit ? "hit" : ""}>{formatOrderOptionLabel(market, option)}{isHit && <b>@{option.odds.toFixed(2)}</b>}</span>
                                             {optionIndex < pickedOptions.length - 1 && <Divider type="vertical" className="order-option-divider" />}
                                           </Fragment>
                                         );
@@ -2756,9 +2762,9 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
                   <div>
                     {market.options.filter((option) => option.selected).map((option) => (
                       <label key={option.id}>
-                        <span>{option.label}</span>
+                        <span>{formatOrderOptionLabel(market, option)}</span>
                         <InputNumber
-                          aria-label={`${match.home} VS ${match.away} ${MARKET_LABELS[market.type]} ${option.label} 倍率`}
+                          aria-label={`${match.home} VS ${match.away} ${MARKET_LABELS[market.type]} ${formatOrderOptionLabel(market, option)} 倍率`}
                           controls={false}
                           min={0.01}
                           max={9999}
@@ -2799,7 +2805,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
                 return (
                   <button type="button" className={active ? "hit" : ""} key={`${market.type}-${item.id}`} onClick={() => toggleHit(match.id, market.type, item.id)}>
                     <small>{MARKET_LABELS[market.type]}{market.type === "rqspf" ? ` ${(market.handicap ?? 0) > 0 ? "+" : ""}${market.handicap ?? 0}` : ""}</small>
-                    <span>{item.label}<b>@{item.odds.toFixed(2)}</b></span>
+                    <span>{formatOrderOptionLabel(market, item)}<b>@{item.odds.toFixed(2)}</b></span>
                     {active && <CheckOutlined />}
                   </button>
                 );
@@ -2859,7 +2865,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
                     return (
                       <button type="button" className={active ? "hit" : ""} disabled={Boolean(orderDetail.settledAt || matchFailed)} key={`${market.type}-${item.id}`} onClick={() => toggleOrderHit(match.id, market.type, item.id)}>
                         <small>{MARKET_LABELS[market.type]}{market.type === "rqspf" ? ` ${(market.handicap ?? 0) > 0 ? "+" : ""}${market.handicap ?? 0}` : ""}</small>
-                        <span>{item.label}<b>@{item.odds.toFixed(2)}</b></span>
+                        <span>{formatOrderOptionLabel(market, item)}<b>@{item.odds.toFixed(2)}</b></span>
                         {active && <CheckOutlined />}
                       </button>
                     );
