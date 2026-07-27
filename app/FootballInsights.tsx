@@ -646,7 +646,7 @@ export function MatchPreviewModal({
     <Modal
       open={open}
       onCancel={onClose}
-      width={1280}
+      width={1400}
       className="insight-modal"
       title={match ? `${match.weekday}${match.code} · ${match.home} VS ${match.away} · 赛事前瞻` : "赛事前瞻"}
       footer={<Button type="primary" onClick={onClose}>关闭</Button>}
