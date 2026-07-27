@@ -327,8 +327,20 @@ button, input, textarea { font: inherit; }
 .preview-summary .win { color: #d8424c; }
 .preview-summary .draw { color: #1673bd; }
 .preview-summary .loss { color: #218a73; }
-.match-history-table { min-width: 660px; }
-.recent-match-table .table-date { width: 100px; min-width: 100px; }
+.match-history-table { min-width: 660px; table-layout: fixed; }
+.match-history-table th:nth-child(1),
+.match-history-table td:nth-child(1) { width: 106px; }
+.match-history-table th:nth-child(2),
+.match-history-table td:nth-child(2) { width: 95px; }
+.match-history-table th:nth-child(3),
+.match-history-table td:nth-child(3),
+.match-history-table th:nth-child(5),
+.match-history-table td:nth-child(5) { width: 138px; }
+.match-history-table th:nth-child(4),
+.match-history-table td:nth-child(4) { width: 106px; }
+.match-history-table .table-date { min-width: 106px; }
+.recent-match-table th:last-child,
+.recent-match-table td:last-child { width: 77px; }
 .match-history-table .opponent-team { color: #96a3a6; }
 .match-history-table .score-result { color: #52676c; }
 .match-history-table .score-result.home { color: #d8424c; }
@@ -338,7 +350,7 @@ button, input, textarea { font: inherit; }
 .match-history-table .match-result.home { color: #d8424c; }
 .match-history-table .match-result.draw { color: #1673bd; }
 .match-history-table .match-result.away { color: #218a73; }
-.total-goals-trend { width: 116px; display: grid; grid-template-columns: minmax(0, 1fr) 20px; align-items: center; gap: 8px; margin: 0 auto; }
+.total-goals-trend { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 20px; align-items: center; gap: 8px; margin: 0 auto; }
 .total-goals-track { height: 7px; overflow: hidden; border-radius: 4px; background: #e8eeee; }
 .total-goals-track i { display: block; height: 100%; border-radius: inherit; background: #e15860; transition: width .2s ease; }
 .total-goals-trend b { color: #4f6267; font-variant-numeric: tabular-nums; text-align: right; }
