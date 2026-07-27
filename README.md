@@ -4,7 +4,7 @@
 
 ## 在线演示
 
-[点击打开 Demo](https://hen33769.github.io/football-computer/)
+[点击打开云同步版](https://football-order-simulator.aharn33769.chatgpt.site/)
 
 ## 功能
 
@@ -16,7 +16,10 @@
 - 每注 2 元，支持 1 至 50 倍
 - 计算大于 0 的最低中奖奖金、最高奖金及对应利润范围
 - 查看明细时点击已选项标记命中，实时计算当前奖金
-- 预测单及当前草稿保存在浏览器 `localStorage`
+- 使用 ChatGPT 无密码登录，并创建唯一应用账号
+- 订单、收支和设置通过 Cloudflare D1 绑定账号并跨设备同步
+- 比赛、赔率与赛果作为所有账号共用的数据，由管理员统一更新
+- 浏览器 `localStorage` 作为本机缓存，云端 D1 是账号数据的最终来源
 
 ## 本地运行
 

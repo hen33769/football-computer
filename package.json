@@ -1,6 +1,6 @@
 {
   "name": "football-simulator",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "private": true,
   "packageManager": "npm@11.6.2",
   "engines": {
@@ -11,7 +11,7 @@
     "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build",
     "build:html": "vite build --config standalone/vite.config.ts && node standalone/inline-build.mjs",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
-    "test": "tsx --test tests/calculator.test.ts tests/ocr-parser.test.ts tests/settings.test.ts tests/sporttery.test.ts tests/sporttery-insights.test.ts",
+    "test": "tsx --test tests/calculator.test.ts tests/cloud.test.ts tests/ocr-parser.test.ts tests/settings.test.ts tests/sporttery.test.ts tests/sporttery-insights.test.ts",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
   },

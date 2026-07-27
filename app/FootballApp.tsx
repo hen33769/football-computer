@@ -42,6 +42,7 @@ import {
   ImportOutlined,
   InfoCircleOutlined,
   LockOutlined,
+  LogoutOutlined,
   MinusOutlined,
   PlusOutlined,
   QuestionCircleOutlined,
@@ -52,6 +53,7 @@ import {
   SettingOutlined,
   UndoOutlined,
   UploadOutlined,
+  UserOutlined,
 } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement } from "react";
@@ -79,6 +81,12 @@ import {
   cloneMatches,
   MARKET_LABELS,
 } from "./data";
+import {
+  CLOUD_STORAGE_KEYS,
+  type CloudAccount,
+  type CloudPersonalState,
+  type CloudSyncStatus,
+} from "./cloud";
 import { APP_VERSION } from "./AppVersion";
 import { MatchPreviewModal, OfficialTrendModal } from "./FootballInsights";
 import { orderLedgerTotals, sortSavedOrders, unionSavedOrders } from "./imports";
@@ -123,15 +131,15 @@ import {
 } from "./settings";
 import type { CurrentHits, Market, MarketType, MatchItem, MatchResults, OddsOption, PrizeRange, SavedSlip } from "./types";
 
-const SAVED_KEY = "football-simulator-saved-slips-v1";
+const SAVED_KEY = CLOUD_STORAGE_KEYS.orders;
 const LEGACY_DRAFT_KEY = "football-simulator-current-draft-v1";
 const PROFIT_KEY = "football-simulator-current-profit-v1";
-const EXPENSE_KEY = "football-simulator-total-expense-v1";
-const INCOME_KEY = "football-simulator-total-income-v1";
+const EXPENSE_KEY = CLOUD_STORAGE_KEYS.expense;
+const INCOME_KEY = CLOUD_STORAGE_KEYS.income;
 const LOADED_ORDER_KEY = "football-simulator-loaded-order-v1";
-const MATCH_CACHE_KEY = "football-simulator-match-cache-v1";
+const MATCH_CACHE_KEY = CLOUD_STORAGE_KEYS.matches;
 const LEGACY_MATCH_RESULTS_KEY = "football-simulator-match-results-v1";
-const DEMO_URL = "https://hen33769.github.io/football-computer/";
+const DEMO_URL = "https://football-order-simulator.aharn33769.chatgpt.site/";
 
 export type AppView = "betting" | "orders" | "settings";
 type DataTransferMode = "orders" | "settings" | "matches" | "full";
@@ -689,7 +697,21 @@ function MatchCard({
   );
 }
 
-function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; onNavigate?: (view: AppView) => void }) {
+function InnerFootballApp({
+  initialView,
+  onNavigate,
+  cloudAccount,
+  cloudSyncStatus,
+  onCloudPersonalChange,
+  onCloudMatchesChange,
+}: {
+  initialView: AppView;
+  onNavigate?: (view: AppView) => void;
+  cloudAccount: CloudAccount;
+  cloudSyncStatus: CloudSyncStatus;
+  onCloudPersonalChange: (state: CloudPersonalState) => void;
+  onCloudMatchesChange: (matches: MatchItem[]) => void;
+}) {
   const { message, modal, notification } = App.useApp();
   const headerRef = useRef<HTMLElement | null>(null);
   const [loadedOrderDraft] = useState<LoadedOrderDraft | null>(() => {
@@ -793,6 +815,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
     const currentCache = updateVisibleMatches ? matchesRef.current : loadCachedMatches();
     const mergedMatches = mergeSportteryMatchCache(currentCache, snapshot.matches, new Date());
     saveCachedMatches(mergedMatches);
+    onCloudMatchesChange(mergedMatches);
     if (updateVisibleMatches) {
       const nextDates = cachedMatchDates(mergedMatches, snapshot.matchDates);
       const nextLeagues = cachedLeagueOptions(mergedMatches, snapshot.leagues);
@@ -806,7 +829,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
     setSportteryFetchMode(snapshot.mode);
     setSportteryLastUpdateTime(snapshot.lastUpdateTime);
     setSportteryLoaded(true);
-  }, [activeView, temporaryOrder]);
+  }, [activeView, onCloudMatchesChange, temporaryOrder]);
 
   useEffect(() => {
     localStorage.removeItem(LEGACY_DRAFT_KEY);
@@ -831,6 +854,17 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
   useEffect(() => {
     localStorage.setItem(INCOME_KEY, String(incomeTotal));
   }, [incomeTotal]);
+
+  useEffect(() => {
+    if (cloudAccount.id !== "local") {
+      localStorage.setItem(CLOUD_STORAGE_KEYS.pendingPersonal, cloudAccount.id);
+    }
+    onCloudPersonalChange({
+      orders: savedSlips,
+      finance: { expenseTotal, incomeTotal },
+      settings: appSettings,
+    });
+  }, [appSettings, cloudAccount.id, expenseTotal, incomeTotal, onCloudPersonalChange, savedSlips]);
 
   useEffect(() => {
     matchesRef.current = matches;
@@ -1152,21 +1186,6 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
       ...current,
       [matchId]: { ...current[matchId], [type]: undefined },
     } : current);
-  };
-
-  const removeBettingOption = (matchId: string, type: MarketType, optionId: string) => {
-    setMatches((current) => current.map((match) => match.id !== matchId ? match : {
-      ...match,
-      markets: match.markets.map((market) => market.type !== type ? market : {
-        ...market,
-        options: market.options.map((option) => option.id === optionId ? { ...option, selected: false } : option),
-      }),
-    }));
-    setHits((current) => {
-      if (current[matchId]?.[type] !== optionId) return current;
-      return { ...current, [matchId]: { ...current[matchId], [type]: undefined } };
-    });
-    if (pickedCount === 1) setDetailsOpen(false);
   };
 
   const clearBettingMatch = (matchId: string) => {
@@ -1916,6 +1935,9 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
 
   const importDataJson = async (file: File, mode: DataTransferMode, strategy: ImportStrategy) => {
     try {
+      if (mode === "matches" && cloudAccount.role !== "admin") {
+        throw new Error("只有管理员可以导入所有账号共用的比赛数据");
+      }
       if (file.size > 20 * 1024 * 1024) throw new Error("JSON 文件不能超过 20 MB");
       const rawPayload = JSON.parse(await file.text()) as unknown;
       if (!rawPayload || typeof rawPayload !== "object") throw new Error("JSON 文件内容无效");
@@ -1949,6 +1971,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
 
       const applyMatches = (restoredMatches: MatchItem[]) => {
         saveCachedMatches(restoredMatches);
+        onCloudMatchesChange(restoredMatches);
         matchesRef.current = restoredMatches;
         if (!temporaryOrder) setMatches(restoredMatches);
         setMatchDates(cachedMatchDates(restoredMatches));
@@ -1985,16 +2008,17 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
         const restoredSettings = strategy === "merge"
           ? unionAppSettings(appSettings, data.settings)
           : normalizeAppSettings(data.settings);
+        const canImportMatches = cloudAccount.role === "admin";
         const rawMatches = data.matches;
-        if (!Array.isArray(rawMatches) || !rawMatches.every(isExportedMatch)) throw new Error("完整数据中的 matches 比赛数据无效");
-        const restoredMatches = prepareMatches(strategy);
+        if (canImportMatches && (!Array.isArray(rawMatches) || !rawMatches.every(isExportedMatch))) throw new Error("完整数据中的 matches 比赛数据无效");
+        const restoredMatches = canImportMatches ? prepareMatches(strategy) : loadCachedMatches();
         const nextExpense = strategy === "merge" ? Math.max(0, expenseTotal + orderMerge.expenseDelta) : importedExpense;
         const nextIncome = strategy === "merge" ? Math.max(0, incomeTotal + orderMerge.incomeDelta) : importedIncome;
         modal.confirm({
           title: strategy === "merge" ? "新增完整数据？" : "覆盖完整数据？",
           content: strategy === "merge"
-            ? `将新增 ${orderMerge.added} 个、更新 ${orderMerge.updated} 个订单，并以 JSON 数据更新重复比赛与设置；文件缺项继续使用本地数据。`
-            : `将覆盖当前本地订单、比赛、设置和账本，恢复 ${restoredOrders.length} 个订单与 ${restoredMatches.length} 场比赛。`,
+            ? `将新增 ${orderMerge.added} 个、更新 ${orderMerge.updated} 个订单，并以 JSON 数据更新设置${canImportMatches ? "与公共比赛" : ""}；文件缺项继续使用云端数据。`
+            : `将覆盖当前账号的订单、设置和账本，恢复 ${restoredOrders.length} 个订单${canImportMatches ? `与 ${restoredMatches.length} 场公共比赛` : "；公共比赛保持不变"}。`,
           okText: strategy === "merge" ? "新增合并" : "覆盖恢复",
           cancelText: "取消",
           okButtonProps: { danger: strategy === "replace" },
@@ -2003,15 +2027,15 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
             setAppSettings(saveAppSettings(restoredSettings));
             setExpenseTotal(nextExpense);
             setIncomeTotal(nextIncome);
-            applyMatches(restoredMatches);
+            if (canImportMatches) applyMatches(restoredMatches);
             localStorage.setItem(SAVED_KEY, JSON.stringify(restoredOrders));
             localStorage.setItem(EXPENSE_KEY, String(nextExpense));
             localStorage.setItem(INCOME_KEY, String(nextIncome));
             notification.success({
               message: strategy === "merge" ? "完整数据合并完成" : "完整数据覆盖完成",
               description: strategy === "merge"
-                ? `新增 ${orderMerge.added} 个、更新 ${orderMerge.updated} 个订单，当前共 ${restoredOrders.length} 个订单、${restoredMatches.length} 场比赛`
-                : `已恢复 ${restoredOrders.length} 个订单、${restoredMatches.length} 场比赛、设置与账本`,
+                ? `新增 ${orderMerge.added} 个、更新 ${orderMerge.updated} 个订单，当前账号共有 ${restoredOrders.length} 个订单`
+                : `已恢复当前账号的 ${restoredOrders.length} 个订单、设置与账本${canImportMatches ? `，并更新 ${restoredMatches.length} 场公共比赛` : ""}`,
               placement: "bottomRight",
             });
           },
@@ -2148,18 +2172,26 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
       {([
         ["orders", "导入订单", importStrategy === "merge" ? "同 ID 用 JSON 更新，文件缺项保留本地值" : "用 JSON 订单替换本地订单"],
         ["settings", "导入设置", importStrategy === "merge" ? "同联赛用 JSON 更新，文件缺项保留本地值" : "用 JSON 设置替换本地设置"],
-        ["matches", "导入比赛数据", importStrategy === "merge" ? "同场用 JSON 更新，缺少的玩法与倍率保留本地值" : "用 JSON 比赛替换本地比赛缓存"],
-        ["full", "导入完整数据", importStrategy === "merge" ? "JSON 值优先更新，文件缺项保留本地值" : "覆盖订单、比赛、设置与账本"],
-      ] as const).map(([mode, title, description]) => (
-        <Upload
-          key={mode}
-          accept=".json,application/json"
-          showUploadList={false}
-          beforeUpload={(file) => { void importDataJson(file, mode, importStrategy); return Upload.LIST_IGNORE; }}
-        >
-          <Button type="text" block><span><b>{title}</b><small>{description}</small></span><RightOutlined /></Button>
-        </Upload>
-      ))}
+        ["matches", "导入公共比赛数据", cloudAccount.role === "admin"
+          ? importStrategy === "merge" ? "同场用 JSON 更新，缺少的玩法与倍率保留云端值" : "用 JSON 比赛替换所有账号的公共比赛"
+          : "仅管理员可以更新所有账号共用的比赛"],
+        ["full", "导入完整数据", cloudAccount.role === "admin"
+          ? importStrategy === "merge" ? "JSON 值优先更新，文件缺项保留云端值" : "覆盖当前账号数据与公共比赛"
+          : importStrategy === "merge" ? "合并当前账号数据，公共比赛保持不变" : "覆盖当前账号数据，公共比赛保持不变"],
+      ] as const).map(([mode, title, description]) => {
+        const disabled = mode === "matches" && cloudAccount.role !== "admin";
+        return (
+          <Upload
+            key={mode}
+            accept=".json,application/json"
+            disabled={disabled}
+            showUploadList={false}
+            beforeUpload={(file) => { void importDataJson(file, mode, importStrategy); return Upload.LIST_IGNORE; }}
+          >
+            <Button type="text" block disabled={disabled}><span><b>{title}</b><small>{description}</small></span><RightOutlined /></Button>
+          </Upload>
+        );
+      })}
     </div>
   );
 
@@ -2170,6 +2202,19 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
       <Button type="text" block onClick={() => exportData("settings")}><span><b>导出设置</b><small>联赛颜色等应用设置</small></span><DownloadOutlined /></Button>
       <Button type="text" block onClick={() => exportData("matches")}><span><b>导出比赛数据</b><small>5 天内比赛缓存</small></span><DownloadOutlined /></Button>
       <Button type="text" block onClick={() => exportData("full")}><span><b>导出完整数据</b><small>订单、比赛、设置与收支账本</small></span><DownloadOutlined /></Button>
+    </div>
+  );
+
+  const syncLabel = cloudSyncStatus === "saving"
+    ? "正在保存到云端"
+    : cloudSyncStatus === "error"
+      ? "云同步失败，本机数据仍已保留"
+      : "云端数据已同步";
+  const accountMenu = (
+    <div className="cloud-account-menu">
+      <div><b>{cloudAccount.account}</b><Tag color={cloudAccount.role === "admin" ? "gold" : "blue"}>{cloudAccount.role === "admin" ? "管理员" : "账号"}</Tag></div>
+      <span className={cloudSyncStatus === "error" ? "error" : ""}>{syncLabel}</span>
+      <Button href="/signout-with-chatgpt?return_to=%2F" icon={<LogoutOutlined />} block>退出登录</Button>
     </div>
   );
 
@@ -2198,6 +2243,11 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
             <Button className={activeView === "settings" ? "view-toggle active" : "view-toggle"} icon={<SettingOutlined />} onClick={() => navigateToView("settings")}>
               <span className="header-button-label">设置</span>
             </Button>
+            <Popover content={accountMenu} trigger="click" placement="bottomRight">
+              <Button className="cloud-account-button" icon={<UserOutlined />}>
+                <span className="header-button-label">{cloudAccount.account}</span>
+              </Button>
+            </Popover>
           </div>
         </div>
         <div className="responsible-note"><InfoCircleOutlined /> 非官方模拟工具 · 模拟器随便玩</div>
@@ -2426,7 +2476,10 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
                         { value: "settled", label: "已结账" },
                         { value: "unsettled", label: "未结账" },
                       ]}
-                      onChange={(value) => setOrderProgressFilter(value && value !== "all" ? value as Exclude<OrderProgressFilter, null> : null)}
+                      onChange={(value) => {
+                        const nextValue = String(value);
+                        setOrderProgressFilter(nextValue === "settled" || nextValue === "unsettled" ? nextValue : null);
+                      }}
                     />
                   </label>
                   <label className="order-filter-field">
@@ -2909,7 +2962,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
                   onClick={() => setMoreMatchId(match.id)}
                 />
               </Tooltip>
-              <Button className="clear-match-bets" type="text" danger size="small" icon={<DeleteOutlined />} onClick={() => clearBettingMatch(match.id)}>清除本场</Button>
+              <Button className="clear-match-bets" type="text" danger size="small" icon={<DeleteOutlined />} onClick={() => clearBettingMatch(match.id)} />
             </div>
             <div className="detail-options betting-detail-options">
               {match.markets.flatMap((market) => market.options.filter((item) => item.selected).map((item) => {
@@ -2921,15 +2974,6 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
                       <span>{formatOrderOptionLabel(market, item)}<b>@{item.odds.toFixed(2)}</b></span>
                       {active && <CheckOutlined />}
                     </button>
-                    <Button
-                      className="betting-detail-option-remove"
-                      type="text"
-                      danger
-                      size="small"
-                      icon={<CloseOutlined />}
-                      aria-label={`删除 ${MARKET_LABELS[market.type]} ${formatOrderOptionLabel(market, item)}`}
-                      onClick={() => removeBettingOption(match.id, market.type, item.id)}
-                    />
                   </div>
                 );
               }))}
@@ -3088,7 +3132,25 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
   );
 }
 
-export default function FootballApp({ initialView = "betting", onNavigate }: { initialView?: AppView; onNavigate?: (view: AppView) => void }) {
+const LOCAL_CLOUD_ACCOUNT: CloudAccount = { id: "local", account: "本机模式", role: "admin" };
+const ignoreCloudPersonalChange = () => undefined;
+const ignoreCloudMatchesChange = () => undefined;
+
+export default function FootballApp({
+  initialView = "betting",
+  onNavigate,
+  cloudAccount = LOCAL_CLOUD_ACCOUNT,
+  cloudSyncStatus = "saved",
+  onCloudPersonalChange = ignoreCloudPersonalChange,
+  onCloudMatchesChange = ignoreCloudMatchesChange,
+}: {
+  initialView?: AppView;
+  onNavigate?: (view: AppView) => void;
+  cloudAccount?: CloudAccount;
+  cloudSyncStatus?: CloudSyncStatus;
+  onCloudPersonalChange?: (state: CloudPersonalState) => void;
+  onCloudMatchesChange?: (matches: MatchItem[]) => void;
+}) {
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
     let cancelled = false;
@@ -3109,7 +3171,16 @@ export default function FootballApp({ initialView = "betting", onNavigate }: { i
       token: { colorPrimary: "#f04e55", borderRadius: 12, colorText: "#172a32", fontFamily: 'Inter, "PingFang SC", "Microsoft YaHei", sans-serif' },
       components: { Button: { controlHeight: 40 }, Modal: { borderRadiusLG: 18 } },
     }}>
-      <App notification={{ placement: "bottomRight", showProgress: true, pauseOnHover: true }}><InnerFootballApp initialView={initialView} onNavigate={onNavigate} /></App>
+      <App notification={{ placement: "bottomRight", showProgress: true, pauseOnHover: true }}>
+        <InnerFootballApp
+          initialView={initialView}
+          onNavigate={onNavigate}
+          cloudAccount={cloudAccount}
+          cloudSyncStatus={cloudSyncStatus}
+          onCloudPersonalChange={onCloudPersonalChange}
+          onCloudMatchesChange={onCloudMatchesChange}
+        />
+      </App>
     </ConfigProvider>
   );
 }
