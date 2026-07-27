@@ -98,6 +98,7 @@ import {
   normalizeSportteryMatchId,
   parseSportteryMatchScoreDetails,
   refreshSelectedOdds,
+  unionSportteryMatchCache,
   type SportteryLeague,
   type SportteryMatchFetchMode,
   type SportteryMatchSnapshot,
@@ -130,6 +131,7 @@ const DEMO_URL = "https://hen33769.github.io/football-computer/";
 
 export type AppView = "betting" | "orders" | "settings";
 type DataTransferMode = "orders" | "settings" | "matches" | "full";
+type ImportDataTransferMode = DataTransferMode | "matches-add";
 type OrderProgressFilter = "settled" | "unsettled" | null;
 type OrderStatusFilter = "success" | "hopeful" | "failed";
 type MatchSaleFilter = "all" | "non-stopped" | "stopped" | "selling" | "pending";
@@ -1763,7 +1765,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
     return { nextOrders, added, updated, expenseDelta, incomeDelta };
   };
 
-  const importDataJson = async (file: File, mode: DataTransferMode) => {
+  const importDataJson = async (file: File, mode: ImportDataTransferMode) => {
     try {
       if (file.size > 20 * 1024 * 1024) throw new Error("JSON 文件不能超过 20 MB");
       const rawPayload = JSON.parse(await file.text()) as unknown;
@@ -1779,11 +1781,15 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
         return;
       }
 
-      const restoreMatches = () => {
+      const restoreMatches = (strategy: "replace" | "union" = "replace") => {
         const rawMatches = data.matches;
         if (!Array.isArray(rawMatches)) throw new Error("文件中缺少 matches 数组");
         if (!rawMatches.every(isExportedMatch)) throw new Error("比赛数据结构与导出格式不一致");
-        const restoredMatches = mergeSportteryMatchCache([], JSON.parse(JSON.stringify(rawMatches)) as MatchItem[], new Date());
+        const incomingMatches = JSON.parse(JSON.stringify(rawMatches)) as MatchItem[];
+        const currentMatches = temporaryOrder ? loadCachedMatches() : matchesRef.current;
+        const restoredMatches = strategy === "union"
+          ? unionSportteryMatchCache(currentMatches, incomingMatches, new Date())
+          : mergeSportteryMatchCache([], incomingMatches, new Date());
         saveCachedMatches(restoredMatches);
         matchesRef.current = restoredMatches;
         if (!temporaryOrder) setMatches(restoredMatches);
@@ -1792,9 +1798,13 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
         return restoredMatches;
       };
 
-      if (mode === "matches") {
-        const restoredMatches = restoreMatches();
-        notification.success({ message: "比赛数据导入完成", description: `已恢复 ${restoredMatches.length} 场 5 天内比赛`, placement: "bottomRight" });
+      if (mode === "matches" || mode === "matches-add") {
+        const restoredMatches = restoreMatches(mode === "matches-add" ? "union" : "replace");
+        notification.success({
+          message: mode === "matches-add" ? "比赛数据新增完成" : "比赛数据覆盖完成",
+          description: `当前共有 ${restoredMatches.length} 场 5 天内比赛`,
+          placement: "bottomRight",
+        });
         return;
       }
 
@@ -1949,7 +1959,8 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
       {([
         ["orders", "导入订单", "按订单 ID 新增或更新，不改动设置"],
         ["settings", "导入设置", "覆盖联赛颜色等应用设置"],
-        ["matches", "导入比赛数据", "覆盖本地比赛缓存"],
+        ["matches", "覆盖比赛数据", "用 JSON 比赛替换本地比赛缓存"],
+        ["matches-add", "新增比赛数据", "保留本地比赛，并加入 JSON 中的新比赛"],
         ["full", "导入完整数据", "确认后覆盖订单、比赛、设置与账本"],
       ] as const).map(([mode, title, description]) => (
         <Upload

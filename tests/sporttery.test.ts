@@ -20,6 +20,7 @@ import {
   parseSportteryFixedBonus,
   refreshSelectedOdds,
   replaceSportteryMatches,
+  unionSportteryMatchCache,
   type SportteryMatchCalculatorResponse,
   type SportteryMatchListResponse,
 } from "../app/sporttery";
@@ -182,6 +183,27 @@ test("比赛缓存覆盖最新数据、停售旧比赛并清除五天前数据",
   assert.equal(cached[2].id, "2040002");
   assert.equal(cached[2].saleStatus, "pending");
   assert.equal(market(cached[2], "spf").options[0].selected, true);
+});
+
+test("新增导入比赛与现有缓存取并集，同场比赛保留现有数据", () => {
+  const existing = cloneMatches(convertSportteryMatches(payload, beforeKickoff))[0];
+  market(existing, "spf").options[0].odds = 9.99;
+  const duplicate = cloneMatches(convertSportteryMatches(payload, beforeKickoff))[0];
+  duplicate.id = "sporttery-2040585";
+  market(duplicate, "spf").options[0].odds = 1.11;
+  const added = { ...createEmptyMatch(2), id: "sporttery-2040002", date: "2026-07-24", code: "203" };
+  const expired = { ...createEmptyMatch(3), id: "2039999", date: "2026-07-17" };
+
+  const union = unionSportteryMatchCache(
+    [existing, expired],
+    [duplicate, added, cloneMatches([added])[0]],
+    new Date("2026-07-23T12:00:00"),
+  );
+
+  assert.equal(union.length, 2);
+  assert.equal(union[0].id, "2040585");
+  assert.equal(market(union[0], "spf").options[0].odds, 9.99);
+  assert.equal(union[1].id, "2040002");
 });
 
 test("固定奖金接口按比分和半场比分解析五类赛果", () => {

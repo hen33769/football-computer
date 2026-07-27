@@ -331,6 +331,28 @@ export function mergeSportteryMatchCache(
   ));
 }
 
+/** 保留现有比赛，只补入尚不存在的导入比赛，并清除五天前的数据。 */
+export function unionSportteryMatchCache(
+  current: MatchItem[],
+  incoming: MatchItem[],
+  referenceTime: string | Date,
+): MatchItem[] {
+  const today = referenceTime instanceof Date ? localDateKey(referenceTime) : referenceTime;
+  const cutoff = retainedDateCutoff(today);
+  const union: MatchItem[] = [];
+
+  [...current, ...incoming].forEach((match) => {
+    if (match.date < cutoff) return;
+    const normalized = { ...match, id: normalizeSportteryMatchId(match.id) };
+    if (!union.some((item) => sameMatch(item, normalized))) union.push(normalized);
+  });
+
+  return union.sort((left, right) => (
+    left.date.localeCompare(right.date)
+    || left.code.localeCompare(right.code, "zh-CN", { numeric: true, sensitivity: "base" })
+  ));
+}
+
 export type SelectedOddsRefreshResult = {
   matches: MatchItem[];
   matchedOptionCount: number;
