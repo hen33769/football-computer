@@ -41,10 +41,12 @@ import {
   HomeOutlined,
   ImportOutlined,
   InfoCircleOutlined,
+  LineChartOutlined,
   LockOutlined,
   MinusOutlined,
   PlusOutlined,
   QuestionCircleOutlined,
+  ReadOutlined,
   ReloadOutlined,
   RightOutlined,
   RollbackOutlined,
@@ -81,6 +83,7 @@ import {
   MARKET_LABELS,
 } from "./data";
 import AppVersion from "./AppVersion";
+import { MatchPreviewModal, OfficialTrendModal } from "./FootballInsights";
 import { orderLedgerTotals, sortSavedOrders, unionSavedOrders } from "./imports";
 import { parseRecognizedText } from "./ocr";
 import {
@@ -561,14 +564,18 @@ function MatchCard({
   match,
   now,
   onToggle,
+  onPreview,
   onMore,
+  onTrend,
   leagueColor,
   onLeagueColorSave,
 }: {
   match: MatchItem;
   now: Date;
   onToggle: (matchId: string, type: MarketType, optionId: string) => void;
+  onPreview: (matchId: string) => void;
   onMore: (matchId: string) => void;
+  onTrend: (matchId: string) => void;
   leagueColor: string;
   onLeagueColorSave: (league: string, color: string) => void;
 }) {
@@ -593,9 +600,13 @@ function MatchCard({
       </div>
       <MarketRow market={spf} matchId={match.id} onToggle={onToggle} disabled={!selectable} />
       <MarketRow market={rqspf} matchId={match.id} onToggle={onToggle} disabled={!selectable} />
-      <Button className="more-play-button" type={picked ? "primary" : "default"} ghost={Boolean(picked)} onClick={() => onMore(match.id)}>
-        更多玩法{picked ? ` · 已选 ${picked} 项` : ""}
-      </Button>
+      <div className="match-card-actions">
+        <Button icon={<ReadOutlined />} onClick={() => onPreview(match.id)}>赛事前瞻</Button>
+        <Button className="more-play-button" type={picked ? "primary" : "default"} ghost={Boolean(picked)} onClick={() => onMore(match.id)}>
+          更多玩法{picked ? ` · 已选 ${picked} 项` : ""}
+        </Button>
+        <Button icon={<LineChartOutlined />} onClick={() => onTrend(match.id)}>官方趋势</Button>
+      </div>
     </article>
   );
 }
@@ -618,7 +629,9 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
   const [multiple, setMultiple] = useState(() => loadedOrderDraft?.multiple ?? 1);
   const [temporaryOrder, setTemporaryOrder] = useState<{ id: string; name: string } | null>(() => loadedOrderDraft ? { id: loadedOrderDraft.id, name: loadedOrderDraft.name } : null);
   const [hits, setHits] = useState<CurrentHits>(() => cloneHits(loadedOrderDraft?.hits));
+  const [previewMatchId, setPreviewMatchId] = useState<string | null>(null);
   const [moreMatchId, setMoreMatchId] = useState<string | null>(null);
+  const [trendMatchId, setTrendMatchId] = useState<string | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const activeView = initialView;
   const [orderDetail, setOrderDetail] = useState<SavedSlip | null>(null);
@@ -683,7 +696,7 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
   const [sportteryLastUpdateTime, setSportteryLastUpdateTime] = useState("");
   const [sportteryFetchMode, setSportteryFetchMode] = useState<SportteryMatchFetchMode>(() => getSportteryRefreshPolicy().mode);
   const [saleClock, setSaleClock] = useState(() => Date.now());
-  const [matchDates, setMatchDates] = useState<SportteryMatchDate[]>(() => cachedMatchDates(matches));
+  const [, setMatchDates] = useState<SportteryMatchDate[]>(() => cachedMatchDates(matches));
   const [leagueOptions, setLeagueOptions] = useState<SportteryLeague[]>(() => cachedLeagueOptions(matches));
   const [selectedMatchDate, setSelectedMatchDate] = useState<string | null>(null);
   const [matchSaleFilter, setMatchSaleFilter] = useState<MatchSaleFilter>("non-stopped");
@@ -1000,9 +1013,10 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
     return sortMatchesForDisplay([...unique.values()]);
   }, [filteredSavedSlips, matches]);
 
-  const availableMatchDateSet = useMemo(() => new Set(matchDates
-    .filter((date) => matches.some((match) => match.date === date.businessDate && matchesSaleFilter(match, matchSaleFilter, saleNow)))
-    .map((item) => item.businessDate)), [matchDates, matches, matchSaleFilter, saleNow]);
+  const availableMatchDateSet = useMemo(
+    () => new Set(matches.map((match) => match.date).filter(Boolean)),
+    [matches],
+  );
   const visibleLeagueSet = useMemo(
     () => new Set(visibleLeagueNames ?? leagueOptions.map((item) => item.leagueNameAbbr)),
     [leagueOptions, visibleLeagueNames],
@@ -1025,6 +1039,8 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
   }, [filteredMatches]);
 
   const moreMatch = matches.find((match) => match.id === moreMatchId) ?? null;
+  const previewMatch = matches.find((match) => match.id === previewMatchId) ?? null;
+  const trendMatch = matches.find((match) => match.id === trendMatchId) ?? null;
 
   const toggleOption = (matchId: string, type: MarketType, optionId: string) => {
     const targetMatch = matches.find((match) => match.id === matchId);
@@ -2135,7 +2151,9 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
                       match={match}
                       now={saleNow}
                       onToggle={toggleOption}
+                      onPreview={setPreviewMatchId}
                       onMore={setMoreMatchId}
+                      onTrend={setTrendMatchId}
                       leagueColor={getLeagueTagColor(appSettings, match.league)}
                       onLeagueColorSave={updateLeagueTagColor}
                     />
@@ -2623,6 +2641,18 @@ function InnerFootballApp({ initialView, onNavigate }: { initialView: AppView; o
           </section>
         ))}
       </Modal>
+
+      <MatchPreviewModal
+        match={previewMatch}
+        open={Boolean(previewMatch)}
+        onClose={() => setPreviewMatchId(null)}
+      />
+
+      <OfficialTrendModal
+        match={trendMatch}
+        open={Boolean(trendMatch)}
+        onClose={() => setTrendMatchId(null)}
+      />
 
       <Modal
         open={Boolean(editingOrder)}
