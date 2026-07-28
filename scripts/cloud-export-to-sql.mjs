@@ -44,6 +44,16 @@ const allowedColumns = {
   ],
 };
 
+const primaryKeyColumns = {
+  users: ["id"],
+  user_states: ["user_id"],
+  user_orders: ["user_id", "order_id"],
+  shared_matches: ["match_id"],
+};
+
+const chunkableColumns = new Set(["settings_json", "data_json"]);
+const MAX_RAW_CHUNK_BYTES = 35_000;
+
 function sqlValue(value) {
   if (value === null || value === undefined) return "NULL";
   if (typeof value === "number") {
@@ -54,6 +64,26 @@ function sqlValue(value) {
     throw new Error(`Unsupported exported value type: ${typeof value}`);
   }
   return `'${value.replaceAll("'", "''")}'`;
+}
+
+function splitUtf8(value) {
+  const chunks = [];
+  let current = "";
+  let currentBytes = 0;
+
+  for (const character of value) {
+    const characterBytes = Buffer.byteLength(character);
+    if (current && currentBytes + characterBytes > MAX_RAW_CHUNK_BYTES) {
+      chunks.push(current);
+      current = "";
+      currentBytes = 0;
+    }
+    current += character;
+    currentBytes += characterBytes;
+  }
+
+  if (current || value === "") chunks.push(current);
+  return chunks;
 }
 
 const inputPath = resolve(inputArgument);
@@ -72,10 +102,33 @@ for (const [tableName, columns] of Object.entries(allowedColumns)) {
   if (!Array.isArray(rows)) throw new Error(`Export is missing table: ${tableName}`);
 
   for (const row of rows) {
-    const values = columns.map((column) => sqlValue(row[column]));
+    const chunkedValues = new Map();
+    const values = columns.map((column) => {
+      const value = row[column];
+      if (
+        chunkableColumns.has(column)
+        && typeof value === "string"
+        && Buffer.byteLength(value) > MAX_RAW_CHUNK_BYTES
+      ) {
+        chunkedValues.set(column, splitUtf8(value));
+        return "''";
+      }
+      return sqlValue(value);
+    });
     statements.push(
       `INSERT INTO ${tableName} (${columns.join(", ")}) VALUES (${values.join(", ")});`,
     );
+
+    const keyPredicate = primaryKeyColumns[tableName]
+      .map((column) => `${column} = ${sqlValue(row[column])}`)
+      .join(" AND ");
+    for (const [column, chunks] of chunkedValues) {
+      for (const chunk of chunks) {
+        statements.push(
+          `UPDATE ${tableName} SET ${column} = ${column} || ${sqlValue(chunk)} WHERE ${keyPredicate};`,
+        );
+      }
+    }
   }
 }
 

@@ -4,7 +4,7 @@
 
 ## 在线演示
 
-[点击打开云同步版](https://football-order-simulator.aharn33769.chatgpt.site/)
+[点击打开 Cloudflare Worker 云同步版](https://smgr-cloud.smgr-qd-je.workers.dev/)
 
 ## 功能
 
@@ -16,7 +16,7 @@
 - 每注 2 元，支持 1 至 50 倍
 - 计算大于 0 的最低中奖奖金、最高奖金及对应利润范围
 - 查看明细时点击已选项标记命中，实时计算当前奖金
-- 使用 ChatGPT 无密码登录，并创建唯一应用账号
+- 使用唯一应用账号无密码登录
 - 订单、收支和设置通过 Cloudflare D1 绑定账号并跨设备同步
 - 比赛、赔率与赛果作为所有账号共用的数据，由管理员统一更新
 - 浏览器 `localStorage` 作为本机缓存，云端 D1 是账号数据的最终来源
@@ -39,15 +39,21 @@ npm run build
 npm test
 ```
 
-## 发布
+## Cloudflare Worker / D1 发布
 
 ```bash
-make deploy
+npm run deploy:cloudflare
 ```
 
-该命令会自动递增补丁版本（例如 `v0.1.0` → `v0.1.1`），暂存并提交当前全部代码
-及版本变更，然后推送当前分支到 `origin`。如需使用其它远程仓库，可通过
-`DEPLOY_REMOTE` 指定。
+部署配置位于 `wrangler.jsonc`，Worker 使用 `DB` 绑定连接 `smgr-cloud`
+D1 数据库。首次创建数据库后，先执行：
+
+```bash
+npx wrangler d1 migrations apply smgr-cloud --remote
+```
+
+再运行发布命令。应用代码和静态资源部署在 Worker，账号、订单、收支、设置及
+公共比赛数据存放在 D1。
 
 OCR 的 Worker、WASM 和中英文语言模型已经放在 `public/ocr` 与 `public/tessdata`，正常本地运行时不会把上传图片发送到外部服务。
 
