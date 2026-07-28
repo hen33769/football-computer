@@ -55,6 +55,22 @@ npx wrangler d1 migrations apply smgr-cloud --remote
 再运行发布命令。应用代码和静态资源部署在 Worker，账号、订单、收支、设置及
 公共比赛数据存放在 D1。
 
+### 正式域名
+
+`smgr.online` 审核通过后：
+
+1. 在 Cloudflare 添加 `smgr.online`，套餐选择 Free。
+2. 将阿里云域名的名称服务器替换为 Cloudflare 分配的两条名称服务器。
+3. 等待 Cloudflare Zone 状态变成 Active。
+4. 执行以下命令，将正式域名绑定到现有 Worker：
+
+```bash
+npm run deploy:cloudflare:domain
+```
+
+该命令会保留 `workers.dev` 备用地址，并把 `smgr.online` 作为 Worker
+Custom Domain。域名审核或 Cloudflare Zone 激活前不要执行此命令。
+
 OCR 的 Worker、WASM 和中英文语言模型已经放在 `public/ocr` 与 `public/tessdata`，正常本地运行时不会把上传图片发送到外部服务。
 
 由于 OCR 需要 Web Worker 和 WASM，浏览器通常不允许它们从 `file://` 直接加载，因此本项目应通过 `npm run dev` 或本地静态服务器打开，不建议直接双击 HTML。
