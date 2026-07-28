@@ -4,7 +4,7 @@
 
 ## 在线演示
 
-[点击打开 Cloudflare Worker 云同步版](https://smgr-cloud.smgr-qd-je.workers.dev/)
+[点击打开 Cloudflare Worker 云同步版](https://smgr.online/)
 
 ## 功能
 
@@ -57,19 +57,9 @@ npx wrangler d1 migrations apply smgr-cloud --remote
 
 ### 正式域名
 
-`smgr.online` 审核通过后：
-
-1. 在 Cloudflare 添加 `smgr.online`，套餐选择 Free。
-2. 将阿里云域名的名称服务器替换为 Cloudflare 分配的两条名称服务器。
-3. 等待 Cloudflare Zone 状态变成 Active。
-4. 执行以下命令，将正式域名绑定到现有 Worker：
-
-```bash
-npm run deploy:cloudflare:domain
-```
-
-该命令会保留 `workers.dev` 备用地址，并把 `smgr.online` 作为 Worker
-Custom Domain。域名审核或 Cloudflare Zone 激活前不要执行此命令。
+`smgr.online` 已在 `wrangler.jsonc` 中配置为 Worker Custom Domain。
+运行 `npm run deploy:cloudflare` 会同时更新正式域名，并保留 `workers.dev`
+备用地址。
 
 OCR 的 Worker、WASM 和中英文语言模型已经放在 `public/ocr` 与 `public/tessdata`，正常本地运行时不会把上传图片发送到外部服务。
 

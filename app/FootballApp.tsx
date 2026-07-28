@@ -139,7 +139,7 @@ const INCOME_KEY = CLOUD_STORAGE_KEYS.income;
 const LOADED_ORDER_KEY = "football-simulator-loaded-order-v1";
 const MATCH_CACHE_KEY = CLOUD_STORAGE_KEYS.matches;
 const LEGACY_MATCH_RESULTS_KEY = "football-simulator-match-results-v1";
-const DEMO_URL = "https://smgr-cloud.smgr-qd-je.workers.dev/";
+const DEMO_URL = "https://smgr.online/";
 
 export type AppView = "betting" | "orders" | "settings";
 type DataTransferMode = "orders" | "settings" | "matches" | "full";

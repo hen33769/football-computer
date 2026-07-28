@@ -6,6 +6,12 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "smgr.online",
+      "custom_domain": true
+    }
+  ],
   "observability": {
     "enabled": true
   },
