@@ -287,10 +287,18 @@ function OddsTrendIndicator({ trend }: { trend?: -1 | 0 | 1 }) {
   );
 }
 
-function OddsHistoryTooltip({ option, children }: { option: OddsOption; children: ReactElement }) {
+function OddsHistoryTooltip({
+  option,
+  children,
+  disabled = false,
+}: {
+  option: OddsOption;
+  children: ReactElement;
+  disabled?: boolean;
+}) {
   const history = option.oddsHistory ?? [];
   const changeCount = Math.max(0, history.length - 1);
-  if (!history.length) return children;
+  if (disabled || !history.length) return children;
   const displayedHistory = history;
   const openingOdds = displayedHistory[0].odds;
   const content = (
@@ -571,11 +579,13 @@ function MarketRow({
   matchId,
   onToggle,
   disabled = false,
+  disableOddsTooltip = false,
 }: {
   market: Market;
   matchId: string;
   onToggle: (matchId: string, type: MarketType, optionId: string) => void;
   disabled?: boolean;
+  disableOddsTooltip?: boolean;
 }) {
   return (
     <div className="market-row">
@@ -584,7 +594,7 @@ function MarketRow({
       </div>
       <div className="market-options compact-options">
         {market.options.map((item) => (
-          <OddsHistoryTooltip option={item} key={item.id}>
+          <OddsHistoryTooltip option={item} disabled={disableOddsTooltip} key={item.id}>
             <button
               type="button"
               className={`odds-option ${!disabled && item.odds > 0 && item.selected ? "selected" : ""}`}
@@ -662,6 +672,7 @@ function MatchCard({
   onTrend,
   leagueColor,
   onLeagueColorSave,
+  disableOddsTooltip,
 }: {
   match: MatchItem;
   now: Date;
@@ -671,6 +682,7 @@ function MatchCard({
   onTrend: (matchId: string) => void;
   leagueColor: string;
   onLeagueColorSave: (league: string, color: string) => void;
+  disableOddsTooltip: boolean;
 }) {
   const picked = selectedOptions(match).length;
   const saleState = getMatchSaleState(match, now);
@@ -691,8 +703,8 @@ function MatchCard({
       <div className="teams-row">
         <div className="teams"><b>{match.home}</b><span>VS</span><b>{match.away}</b></div>
       </div>
-      <MarketRow market={spf} matchId={match.id} onToggle={onToggle} disabled={!selectable} />
-      <MarketRow market={rqspf} matchId={match.id} onToggle={onToggle} disabled={!selectable} />
+      <MarketRow market={spf} matchId={match.id} onToggle={onToggle} disabled={!selectable} disableOddsTooltip={disableOddsTooltip} />
+      <MarketRow market={rqspf} matchId={match.id} onToggle={onToggle} disabled={!selectable} disableOddsTooltip={disableOddsTooltip} />
       <div className="match-card-actions">
         <Button onClick={() => onPreview(match.id)}>赛事前瞻</Button>
         <Button className="more-play-button" type={picked ? "primary" : "default"} ghost={Boolean(picked)} onClick={() => onMore(match.id)}>
@@ -726,6 +738,7 @@ function InnerFootballApp({
   const { message, modal, notification } = App.useApp();
   const isGuestMode = cloudAccount?.id === "local";
   const headerRef = useRef<HTMLElement | null>(null);
+  const [isMobileViewport, setIsMobileViewport] = useState(false);
   const [accountLoginBetDraft] = useState<AccountLoginBetDraft | null>(() => {
     if (initialView !== "betting") return null;
     try {
@@ -875,6 +888,14 @@ function InnerFootballApp({
   useEffect(() => {
     localCache.removeItem(LEGACY_DRAFT_KEY);
     localCache.removeItem(LEGACY_MATCH_RESULTS_KEY);
+  }, []);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(max-width: 560px)");
+    const updateViewport = () => setIsMobileViewport(mediaQuery.matches);
+    updateViewport();
+    mediaQuery.addEventListener("change", updateViewport);
+    return () => mediaQuery.removeEventListener("change", updateViewport);
   }, []);
 
   useEffect(() => {
@@ -1092,6 +1113,8 @@ function InnerFootballApp({
       "--header-brand-width",
       "--header-brand-height",
       "--header-brand-translate",
+      "--header-tagline-height",
+      "--header-tagline-margin",
       "--header-content-gap",
       "--header-content-bottom",
       "--header-note-pad-top",
@@ -1101,21 +1124,24 @@ function InnerFootballApp({
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
         const progress = Math.min(1, Math.max(0, window.scrollY / 180));
+        const mobileHeader = window.matchMedia("(max-width: 560px)").matches;
         const root = document.documentElement;
         root.style.setProperty("--header-top-pad", `${26 - progress * 16}px`);
         root.style.setProperty("--header-bottom-pad", `${10 * progress}px`);
         root.style.setProperty("--header-content-height", `${84 - progress * 44}px`);
-        root.style.setProperty("--header-brand-size", `${64 - progress * 16}px`);
+        root.style.setProperty("--header-brand-size", `${64 - progress * (mobileHeader ? 16 : 36)}px`);
         root.style.setProperty("--header-title-size", `${36 - progress * 12}px`);
         root.style.setProperty("--header-note-opacity", `${1 - progress}`);
         root.style.setProperty("--header-note-height", `${44 * (1 - progress)}px`);
         root.style.setProperty("--header-note-margin", `${20 * (1 - progress)}px`);
         root.style.setProperty("--header-label-width", `${84 * (1 - progress)}px`);
         root.style.setProperty("--header-action-gap", `${10 - progress * 4}px`);
-        root.style.setProperty("--header-brand-opacity", `${1 - progress}`);
-        root.style.setProperty("--header-brand-width", `${560 * (1 - progress)}px`);
-        root.style.setProperty("--header-brand-height", `${68 * (1 - progress)}px`);
+        root.style.setProperty("--header-brand-opacity", `${mobileHeader ? 1 - progress : 1}`);
+        root.style.setProperty("--header-brand-width", `${mobileHeader ? 560 * (1 - progress) : 560 - progress * 250}px`);
+        root.style.setProperty("--header-brand-height", `${mobileHeader ? 68 * (1 - progress) : 68 - progress * 40}px`);
         root.style.setProperty("--header-brand-translate", `${-7 * progress}px`);
+        root.style.setProperty("--header-tagline-height", `${18 * (1 - progress)}px`);
+        root.style.setProperty("--header-tagline-margin", `${3 * (1 - progress)}px`);
         root.style.setProperty("--header-content-gap", `${24 * (1 - progress)}px`);
         root.style.setProperty("--header-content-bottom", `${12 * (1 - progress)}px`);
         root.style.setProperty("--header-note-pad-top", `${10 * (1 - progress)}px`);
@@ -1124,9 +1150,11 @@ function InnerFootballApp({
     };
     updateHeader();
     window.addEventListener("scroll", updateHeader, { passive: true });
+    window.addEventListener("resize", updateHeader);
     return () => {
       cancelAnimationFrame(frame);
       window.removeEventListener("scroll", updateHeader);
+      window.removeEventListener("resize", updateHeader);
       propertyNames.forEach((name) => document.documentElement.style.removeProperty(name));
     };
   }, []);
@@ -2442,6 +2470,7 @@ function InnerFootballApp({
                       onTrend={setTrendMatchId}
                       leagueColor={getLeagueTagColor(appSettings, match.league)}
                       onLeagueColorSave={updateLeagueTagColor}
+                      disableOddsTooltip={isMobileViewport}
                     />
                   ))}
                 </div>}
@@ -2924,15 +2953,15 @@ function InnerFootballApp({
         className="more-modal"
       >
         {moreMatch?.markets.map((market) => (
-          <section className="modal-market" key={market.type}>
+          <section className={`modal-market ${market.type}-market`} key={market.type}>
             <div className="modal-market-title"><span>{MARKET_LABELS[market.type]}{market.type === "rqspf" ? `（${(market.handicap ?? 0) > 0 ? "+" : ""}${market.handicap ?? 0}）` : ""}</span><Tag>{market.singleAvailable ? "单场 / 过关" : "过关"}</Tag></div>
             <div className="more-options-groups">
               {marketEditorGroups(market).map((group) => (
-                <div className="more-options-row" key={group.key}>
+                <div className={`more-options-row ${group.key}-group`} key={group.key}>
                   {group.options.map((item) => (
-                    <OddsHistoryTooltip option={item} key={item.id}>
-                      <button type="button" disabled={!isMatchSelectable(moreMatch, saleNow) || item.odds <= 0} className={`more-odds-option ${isMatchSelectable(moreMatch, saleNow) && item.odds > 0 && item.selected ? "selected" : ""}`} onClick={() => toggleOption(moreMatch.id, market.type, item.id)} aria-pressed={isMatchSelectable(moreMatch, saleNow) && item.odds > 0 && item.selected}>
-                        <span>{item.label}</span><strong>{item.odds > 0 ? <><OddsTrendIndicator trend={item.oddsTrend} />@{item.odds.toFixed(2)}</> : "--"}</strong>
+                    <OddsHistoryTooltip option={item} disabled={isMobileViewport} key={item.id}>
+                      <button type="button" disabled={!isMatchSelectable(moreMatch, saleNow) || item.odds <= 0} className={`more-odds-option ${item.id === "winOther" || item.id === "loseOther" ? "score-other" : ""} ${isMatchSelectable(moreMatch, saleNow) && item.odds > 0 && item.selected ? "selected" : ""}`} onClick={() => toggleOption(moreMatch.id, market.type, item.id)} aria-pressed={isMatchSelectable(moreMatch, saleNow) && item.odds > 0 && item.selected}>
+                        <span>{item.label}</span><strong>{item.odds > 0 ? <><i className="more-odds-at">@</i>{item.odds.toFixed(2)}<OddsTrendIndicator trend={item.oddsTrend} /></> : "--"}</strong>
                       </button>
                     </OddsHistoryTooltip>
                   ))}
@@ -3191,14 +3220,14 @@ function InnerFootballApp({
         className="more-modal manual-match-picker-modal"
       >
         {manualPickerMatch?.markets.map((market) => (
-          <section className="modal-market" key={market.type}>
+          <section className={`modal-market ${market.type}-market`} key={market.type}>
             <div className="modal-market-title"><span>{MARKET_LABELS[market.type]}{market.type === "rqspf" ? `（${(market.handicap ?? 0) > 0 ? "+" : ""}${market.handicap ?? 0}）` : ""}</span></div>
             <div className="more-options-groups">
               {marketEditorGroups(market).map((group) => (
-                <div className="more-options-row" key={group.key}>
+                <div className={`more-options-row ${group.key}-group`} key={group.key}>
                   {group.options.map((item) => (
-                    <button type="button" disabled={item.odds <= 0} className={`more-odds-option ${item.odds > 0 && item.selected ? "selected" : ""}`} key={item.id} onClick={() => toggleManualPickerOption(market.type, item.id)} aria-pressed={item.odds > 0 && item.selected}>
-                      <span>{item.label}</span><strong>{item.odds > 0 ? `@${item.odds.toFixed(2)}` : "--"}</strong>
+                    <button type="button" disabled={item.odds <= 0} className={`more-odds-option ${item.id === "winOther" || item.id === "loseOther" ? "score-other" : ""} ${item.odds > 0 && item.selected ? "selected" : ""}`} key={item.id} onClick={() => toggleManualPickerOption(market.type, item.id)} aria-pressed={item.odds > 0 && item.selected}>
+                      <span>{item.label}</span><strong>{item.odds > 0 ? <><i className="more-odds-at">@</i>{item.odds.toFixed(2)}</> : "--"}</strong>
                     </button>
                   ))}
                 </div>
