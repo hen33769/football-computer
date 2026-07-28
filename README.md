@@ -68,6 +68,10 @@ make release-major
 5. 应用远程 D1 迁移并发布 Cloudflare Worker；
 6. 请求 `https://smgr.online/api/cloud/bootstrap` 验证正式域名。
 
+若 macOS 本机 DNS 缓存暂时无法解析正式域名，发布脚本会自动尝试阿里、腾讯及
+Cloudflare 等公共 DNS 获取地址并继续验证；公共 DNS 也不可用时会跳过本机
+HTTP 检查，不会把已经成功的 Worker 部署误报为失败。
+
 首次使用前需确保 GitHub SSH 推送权限有效，并已通过 `npx wrangler login`
 登录 Cloudflare。可先运行 `make release-dry-run` 检查发布参数；该命令不会
 提交、推送或部署。若仓库没有代码改动，`make deploy` 会跳过版本更新与提交，

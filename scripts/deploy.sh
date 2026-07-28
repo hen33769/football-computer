@@ -145,28 +145,75 @@ echo "[7/7] 验证正式域名"
 health_file="$(mktemp)"
 trap 'rm -f "$health_file"' EXIT
 health_url="https://${deployment_domain}/api/cloud/bootstrap"
-http_status="$(
+
+check_health() {
+  local url="$1"
+  shift
   curl \
-    --fail-with-body \
     --silent \
-    --show-error \
     --location \
-    --retry 5 \
-    --retry-all-errors \
-    --retry-delay 2 \
+    --connect-timeout 10 \
+    --max-time 30 \
+    --retry 2 \
+    --retry-delay 1 \
     --output "$health_file" \
     --write-out "%{http_code}" \
-    "$health_url"
-)"
-if [[ "$http_status" != "200" ]]; then
-  echo "发布验证失败：${health_url} 返回 HTTP ${http_status}。" >&2
-  exit 1
+    "$@" \
+    "$url"
+}
+
+curl_status=0
+http_status="$(check_health "$health_url" 2>/dev/null)" || curl_status=$?
+verification_method="系统 DNS"
+verification_skipped=0
+
+if [[ "$curl_status" -eq 6 ]]; then
+  echo "  本机 DNS 暂时无法解析 ${deployment_domain}，改用公共 DNS 验证。"
+  public_ip=""
+  public_dns_resolver=""
+  if command -v dig >/dev/null 2>&1; then
+    for resolver in 223.5.5.5 119.29.29.29 1.1.1.1 8.8.8.8; do
+      public_ip="$(
+        dig +time=2 +tries=1 +short @"$resolver" "$deployment_domain" A 2>/dev/null \
+          | awk '/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ { print; exit }'
+      )"
+      if [[ -n "$public_ip" ]]; then
+        public_dns_resolver="$resolver"
+        break
+      fi
+    done
+  fi
+
+  if [[ -n "$public_ip" ]]; then
+    : > "$health_file"
+    curl_status=0
+    http_status="$(
+      check_health "$health_url" --resolve "${deployment_domain}:443:${public_ip}" 2>/dev/null
+    )" || curl_status=$?
+    verification_method="公共 DNS ${public_dns_resolver}（${public_ip}）"
+  else
+    echo "  公共 DNS 查询也不可用；Worker 已部署成功，跳过这台电脑上的 HTTP 验证。"
+    curl_status=0
+    verification_skipped=1
+  fi
 fi
-node -e '
-  const fs = require("node:fs");
-  const payload = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-  if (!Array.isArray(payload.matches)) throw new Error("bootstrap 响应缺少 matches 数组");
-' "$health_file"
+
+if [[ "$verification_skipped" -eq 0 ]]; then
+  if [[ "$curl_status" -ne 0 ]]; then
+    echo "发布验证失败：请求 ${health_url} 时 curl 返回错误码 ${curl_status}。" >&2
+    exit 1
+  fi
+  if [[ "$http_status" != "200" ]]; then
+    echo "发布验证失败：${health_url} 返回 HTTP ${http_status}。" >&2
+    exit 1
+  fi
+  node -e '
+    const fs = require("node:fs");
+    const payload = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    if (!Array.isArray(payload.matches)) throw new Error("bootstrap 响应缺少 matches 数组");
+  ' "$health_file"
+  echo "  验证通过：${verification_method}，HTTP ${http_status}"
+fi
 
 echo
 echo "发布完成：v${next_version}"
