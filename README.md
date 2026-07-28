@@ -30,6 +30,9 @@ npm install
 npm run dev
 ```
 
+`npm run dev` 会先自动应用本地 D1 迁移，再启动开发服务器，无需手动创建
+`shared_matches`、`users` 等表。
+
 终端出现地址后，用浏览器打开 `http://localhost:3000/`。
 
 ## 构建与测试

@@ -11,6 +11,7 @@ import {
   type CloudPersonalState,
   type CloudSyncStatus,
 } from "./cloud";
+import { localCache, sessionCache } from "./browser-storage";
 import FootballApp, { type AppView } from "./FootballApp";
 import { createDefaultSettings, normalizeAppSettings } from "./settings";
 import type { MatchItem, SavedSlip } from "./types";
@@ -31,7 +32,7 @@ function viewForPath(pathname: string): AppView {
 
 function readJson<T>(key: string, fallback: T): T {
   try {
-    const raw = localStorage.getItem(key);
+    const raw = localCache.getItem(key);
     return raw ? JSON.parse(raw) as T : fallback;
   } catch {
     return fallback;
@@ -41,8 +42,8 @@ function readJson<T>(key: string, fallback: T): T {
 function readLocalPersonalState(): CloudPersonalState {
   const rawOrders = readJson<unknown>(CLOUD_STORAGE_KEYS.orders, []);
   const orders = ensureOrderIds(Array.isArray(rawOrders) ? rawOrders as SavedSlip[] : []);
-  const expenseTotal = Number(localStorage.getItem(CLOUD_STORAGE_KEYS.expense));
-  const incomeTotal = Number(localStorage.getItem(CLOUD_STORAGE_KEYS.income));
+  const expenseTotal = Number(localCache.getItem(CLOUD_STORAGE_KEYS.expense));
+  const incomeTotal = Number(localCache.getItem(CLOUD_STORAGE_KEYS.income));
   return {
     orders,
     finance: {
@@ -57,24 +58,24 @@ function hasLocalPersonalData(state: CloudPersonalState) {
   return state.orders.length > 0
     || state.finance.expenseTotal > 0
     || state.finance.incomeTotal > 0
-    || localStorage.getItem(CLOUD_STORAGE_KEYS.settings) !== null;
+    || localCache.getItem(CLOUD_STORAGE_KEYS.settings) !== null;
 }
 
 function installPersonalState(state: CloudPersonalState, accountId: string) {
-  localStorage.setItem(CLOUD_STORAGE_KEYS.orders, JSON.stringify(ensureOrderIds(state.orders)));
-  localStorage.setItem(CLOUD_STORAGE_KEYS.expense, String(state.finance.expenseTotal));
-  localStorage.setItem(CLOUD_STORAGE_KEYS.income, String(state.finance.incomeTotal));
-  localStorage.setItem(CLOUD_STORAGE_KEYS.settings, JSON.stringify(normalizeAppSettings(state.settings)));
-  localStorage.setItem(CLOUD_STORAGE_KEYS.accountId, accountId);
+  localCache.setItem(CLOUD_STORAGE_KEYS.orders, JSON.stringify(ensureOrderIds(state.orders)));
+  localCache.setItem(CLOUD_STORAGE_KEYS.expense, String(state.finance.expenseTotal));
+  localCache.setItem(CLOUD_STORAGE_KEYS.income, String(state.finance.incomeTotal));
+  localCache.setItem(CLOUD_STORAGE_KEYS.settings, JSON.stringify(normalizeAppSettings(state.settings)));
+  localCache.setItem(CLOUD_STORAGE_KEYS.accountId, accountId);
 }
 
 function installPublicState() {
-  localStorage.setItem(CLOUD_STORAGE_KEYS.orders, "[]");
-  localStorage.setItem(CLOUD_STORAGE_KEYS.expense, "0");
-  localStorage.setItem(CLOUD_STORAGE_KEYS.income, "0");
-  localStorage.setItem(CLOUD_STORAGE_KEYS.settings, JSON.stringify(createDefaultSettings()));
-  localStorage.removeItem(CLOUD_STORAGE_KEYS.accountId);
-  localStorage.removeItem(CLOUD_STORAGE_KEYS.pendingPersonal);
+  localCache.setItem(CLOUD_STORAGE_KEYS.orders, "[]");
+  localCache.setItem(CLOUD_STORAGE_KEYS.expense, "0");
+  localCache.setItem(CLOUD_STORAGE_KEYS.income, "0");
+  localCache.setItem(CLOUD_STORAGE_KEYS.settings, JSON.stringify(createDefaultSettings()));
+  localCache.removeItem(CLOUD_STORAGE_KEYS.accountId);
+  localCache.removeItem(CLOUD_STORAGE_KEYS.pendingPersonal);
 }
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -138,14 +139,14 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
       const cloudMatches = result.matches ?? [];
       const localMatches = readJson<MatchItem[]>(CLOUD_STORAGE_KEYS.matches, []);
       if (cloudMatches.length > 0) {
-        localStorage.setItem(CLOUD_STORAGE_KEYS.matches, JSON.stringify(clearMatchSelections(cloudMatches)));
+        localCache.setItem(CLOUD_STORAGE_KEYS.matches, JSON.stringify(clearMatchSelections(cloudMatches)));
       }
 
       if (result.requiresAccount || !result.account || !result.personal) {
-        const localMarker = localStorage.getItem(CLOUD_STORAGE_KEYS.accountId);
+        const localMarker = localCache.getItem(CLOUD_STORAGE_KEYS.accountId);
         const localPersonal = readLocalPersonalState();
         if (!localMarker && hasLocalPersonalData(localPersonal)) {
-          localStorage.setItem(CLOUD_STORAGE_KEYS.pendingMigration, JSON.stringify(localPersonal));
+          localCache.setItem(CLOUD_STORAGE_KEYS.pendingMigration, JSON.stringify(localPersonal));
         }
         installPublicState();
         accountIdRef.current = null;
@@ -156,8 +157,8 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
       }
 
       const nextAccount = result.account;
-      const localMarker = localStorage.getItem(CLOUD_STORAGE_KEYS.accountId);
-      const hasPendingLocalWrite = localStorage.getItem(CLOUD_STORAGE_KEYS.pendingPersonal) === nextAccount.id;
+      const localMarker = localCache.getItem(CLOUD_STORAGE_KEYS.accountId);
+      const hasPendingLocalWrite = localCache.getItem(CLOUD_STORAGE_KEYS.pendingPersonal) === nextAccount.id;
       const localPersonal = readLocalPersonalState();
       const pendingMigration = readJson<CloudPersonalState | null>(CLOUD_STORAGE_KEYS.pendingMigration, null);
       let personal = result.personal;
@@ -170,8 +171,8 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
       ) {
         personal = await savePersonalImmediately(localPersonal);
       }
-      localStorage.removeItem(CLOUD_STORAGE_KEYS.pendingPersonal);
-      localStorage.removeItem(CLOUD_STORAGE_KEYS.pendingMigration);
+      localCache.removeItem(CLOUD_STORAGE_KEYS.pendingPersonal);
+      localCache.removeItem(CLOUD_STORAGE_KEYS.pendingMigration);
       installPersonalState(personal, nextAccount.id);
 
       if (cloudMatches.length === 0 && nextAccount.role === "admin" && localMatches.length > 0) {
@@ -227,7 +228,7 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
     pendingViewRef.current = null;
     setAccountDialogOpen(false);
     setAccountError("");
-    sessionStorage.removeItem(CLOUD_STORAGE_KEYS.loginBetDraft);
+    sessionCache.removeItem(CLOUD_STORAGE_KEYS.loginBetDraft);
     if (window.location.pathname !== "/") window.history.replaceState({}, "", "/");
   };
 
@@ -266,7 +267,7 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
       setSyncStatus("saved");
       setActiveView("betting");
       pendingViewRef.current = null;
-      sessionStorage.removeItem(CLOUD_STORAGE_KEYS.loginBetDraft);
+      sessionCache.removeItem(CLOUD_STORAGE_KEYS.loginBetDraft);
       window.history.replaceState({}, "", "/");
     }
   }, []);
@@ -300,7 +301,7 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
     enqueueWrite(async () => {
       await savePersonalImmediately(personal);
       if (personalGenerationRef.current === generation) {
-        localStorage.removeItem(CLOUD_STORAGE_KEYS.pendingPersonal);
+        localCache.removeItem(CLOUD_STORAGE_KEYS.pendingPersonal);
       }
     });
   }, [enqueueWrite, savePersonalImmediately]);

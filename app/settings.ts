@@ -1,3 +1,5 @@
+import { localCache } from "./browser-storage";
+
 export const APP_SETTINGS_KEY = "football-simulator-settings-v1";
 
 export const DEFAULT_LEAGUE_TAG_COLORS: Record<string, string> = {
@@ -79,7 +81,7 @@ export function unionAppSettings(current: AppSettings, incoming: unknown): AppSe
   });
 }
 
-export function loadAppSettings(storage: SettingsStorage = window.localStorage): AppSettings {
+export function loadAppSettings(storage: SettingsStorage = localCache): AppSettings {
   try {
     const raw = storage.getItem(APP_SETTINGS_KEY);
     return raw ? normalizeAppSettings(JSON.parse(raw) as unknown) : createDefaultSettings();
@@ -88,7 +90,7 @@ export function loadAppSettings(storage: SettingsStorage = window.localStorage):
   }
 }
 
-export function saveAppSettings(settings: AppSettings, storage: SettingsStorage = window.localStorage) {
+export function saveAppSettings(settings: AppSettings, storage: SettingsStorage = localCache) {
   const normalized = normalizeAppSettings(settings);
   storage.setItem(APP_SETTINGS_KEY, JSON.stringify(normalized));
   return normalized;
