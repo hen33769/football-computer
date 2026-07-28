@@ -600,10 +600,12 @@ button, input, textarea { font: inherit; }
 .order-filter-field { min-width: 0; display: flex; flex-direction: column; gap: 7px; }
 .order-filter-field > span { color: #61767b; font-size: 11px; font-weight: 700; }
 .order-filter-field .ant-picker, .order-filter-field .ant-select { width: 100%; }
-.order-filter-summary { display: grid; grid-template-columns: auto auto minmax(180px, 1fr); align-items: center; gap: 18px; margin-top: 16px; padding: 12px 14px; border-radius: 13px; background: linear-gradient(100deg, #f1f8f7, #f8fbfa); }
+.order-filter-summary { display: grid; grid-template-columns: auto auto auto minmax(180px, 1fr); align-items: center; gap: 18px; margin-top: 16px; padding: 12px 14px; border-radius: 13px; background: linear-gradient(100deg, #f1f8f7, #f8fbfa); }
 .order-filter-summary > div { display: flex; flex-direction: column; gap: 2px; }
 .order-filter-summary span { color: #789095; font-size: 10px; }
 .order-filter-summary b { color: #17383d; font-size: 18px; font-variant-numeric: tabular-nums; }
+.order-filter-summary .positive b { color: #128767; }
+.order-filter-summary .negative b { color: var(--accent-dark); }
 .order-filter-summary b small { color: #789095; font-size: 10px; font-weight: 500; }
 .order-filter-summary p { margin: 0; color: #789095; font-size: 10px; line-height: 1.5; text-align: right; }
 .order-statistics-grid { flex: 1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }

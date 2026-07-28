@@ -1,6 +1,6 @@
 {
   "name": "football-simulator",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "private": true,
   "packageManager": "npm@11.6.2",
   "engines": {

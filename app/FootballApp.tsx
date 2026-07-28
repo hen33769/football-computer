@@ -1166,10 +1166,9 @@ function InnerFootballApp({
     () => filteredSavedSlips.filter(isOrderSettleable),
     [filteredSavedSlips],
   );
-  const filteredOrderStake = useMemo(
-    () => filteredSavedSlips.reduce((total, slip) => total + calculateStake(slip.matches, slip.passes, slip.multiple), 0),
-    [filteredSavedSlips],
-  );
+  const filteredOrderLedger = useMemo(() => orderLedgerTotals(filteredSavedSlips), [filteredSavedSlips]);
+  const filteredOrderStake = filteredOrderLedger.expense;
+  const filteredOrderProfit = filteredOrderLedger.income - filteredOrderLedger.expense;
   const resultMatches = useMemo(() => {
     const unique = new Map<string, MatchItem>();
     const officialById = new Map(matches.map((match) => [normalizeSportteryMatchId(match.id), match]));
@@ -1981,7 +1980,7 @@ function InnerFootballApp({
       data,
     };
     const label = mode === "orders" ? "订单" : mode === "settings" ? "设置" : mode === "matches" ? "比赛数据" : "完整数据";
-    downloadJson(payload, `竞彩足球-${label}-${exportedAt.slice(0, 10)}.json`);
+    downloadJson(payload, `SMGR-${label}-${exportedAt.slice(0, 10)}.json`);
     notification.success({
       message: `${label}导出完成`,
       description: mode === "orders"
@@ -2575,6 +2574,10 @@ function InnerFootballApp({
                 <div className="order-filter-summary">
                   <div><span>筛选结果</span><b>{filteredSavedSlips.length}<small> 个订单</small></b></div>
                   <div><span>筛选投入</span><b>¥{currency(filteredOrderStake)}</b></div>
+                  <div className={filteredOrderProfit >= 0 ? "positive" : "negative"}>
+                    <span>筛选盈亏</span>
+                    <b>{filteredOrderProfit > 0 ? "+" : filteredOrderProfit < 0 ? "−" : ""}¥{currency(Math.abs(filteredOrderProfit))}</b>
+                  </div>
                   <p>“有希望”表示当前既未产生中奖金额，也未因失败场次失去全部串关机会。</p>
                 </div>
               </Card>
@@ -2905,6 +2908,7 @@ function InnerFootballApp({
 
       <Modal
         open={Boolean(moreMatch)}
+        zIndex={1050}
         onCancel={() => setMoreMatchId(null)}
         footer={<Button type="primary" onClick={() => setMoreMatchId(null)}>完成选择</Button>}
         width={980}
