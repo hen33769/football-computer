@@ -44,6 +44,37 @@ npm test
 
 ## Cloudflare Worker / D1 发布
 
+### 一键发布
+
+代码修改完成后，根据改动类型运行：
+
+```bash
+# 修复、样式或文案调整：1.0.0 -> 1.0.1
+make release-patch
+
+# 新增功能、删除功能或行为变化：1.0.0 -> 1.1.0
+make release-minor
+
+# 大改动：1.0.0 -> 2.0.0
+make release-major
+```
+
+也可以直接运行 `make deploy`，默认按 `patch` 更新版本。脚本会依次：
+
+1. 检查 `main` 分支、GitHub 远端及未解决冲突；
+2. 运行全部测试与 Cloudflare 构建；
+3. 同步更新 `package.json`、`package-lock.json` 和页面版本；
+4. 创建发布提交并推送到 GitHub；
+5. 应用远程 D1 迁移并发布 Cloudflare Worker；
+6. 请求 `https://smgr.online/api/cloud/bootstrap` 验证正式域名。
+
+首次使用前需确保 GitHub SSH 推送权限有效，并已通过 `npx wrangler login`
+登录 Cloudflare。可先运行 `make release-dry-run` 检查发布参数；该命令不会
+提交、推送或部署。若仓库没有代码改动，`make deploy` 会跳过版本更新与提交，
+直接重新发布当前版本。
+
+### 手动发布
+
 ```bash
 npm run deploy:cloudflare
 ```
