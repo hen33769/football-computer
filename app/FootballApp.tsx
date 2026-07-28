@@ -91,6 +91,7 @@ import { localCache, sessionCache } from "./browser-storage";
 import { APP_VERSION } from "./AppVersion";
 import { MatchPreviewModal, OfficialTrendModal } from "./FootballInsights";
 import { orderLedgerTotals, sortSavedOrders, unionSavedOrders } from "./imports";
+import { CLOUD_APP_URL } from "./links";
 import { parseRecognizedText } from "./ocr";
 import {
   convertSportteryMatches,
@@ -140,7 +141,6 @@ const INCOME_KEY = CLOUD_STORAGE_KEYS.income;
 const LOADED_ORDER_KEY = "football-simulator-loaded-order-v1";
 const MATCH_CACHE_KEY = CLOUD_STORAGE_KEYS.matches;
 const LEGACY_MATCH_RESULTS_KEY = "football-simulator-match-results-v1";
-const DEMO_URL = "https://smgr.online/";
 
 export type AppView = "betting" | "orders" | "settings";
 type DataTransferMode = "orders" | "settings" | "matches" | "full";
@@ -724,6 +724,7 @@ function InnerFootballApp({
   onLogout: () => Promise<void>;
 }) {
   const { message, modal, notification } = App.useApp();
+  const isGuestMode = cloudAccount?.id === "local";
   const headerRef = useRef<HTMLElement | null>(null);
   const [accountLoginBetDraft] = useState<AccountLoginBetDraft | null>(() => {
     if (initialView !== "betting") return null;
@@ -1945,18 +1946,18 @@ function InnerFootballApp({
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta http-equiv="refresh" content="0; url=${DEMO_URL}" />
+    <meta http-equiv="refresh" content="0; url=${CLOUD_APP_URL}" />
     <title>打开 SMGR</title>
   </head>
   <body>
     <p>正在打开 SMGR……</p>
-    <p><a href="${DEMO_URL}">如果没有自动跳转，请点击这里</a></p>
-    <script>window.location.replace(${JSON.stringify(DEMO_URL)});</script>
+    <p><a href="${CLOUD_APP_URL}">如果没有自动跳转，请点击这里</a></p>
+    <script>window.location.replace(${JSON.stringify(CLOUD_APP_URL)});</script>
   </body>
 </html>
 `;
     downloadBlob(new Blob([html], { type: "text/html;charset=utf-8" }), "SMGR.html");
-    message.success("页面已保存，打开 HTML 文件即可进入在线 Demo");
+    message.success("页面已保存，打开 HTML 文件即可进入在线正式版");
   };
 
   const exportData = (mode: DataTransferMode) => {
@@ -1997,8 +1998,8 @@ function InnerFootballApp({
 
   const importDataJson = async (file: File, mode: DataTransferMode, strategy: ImportStrategy) => {
     try {
-      if (mode === "matches" && cloudAccount?.role !== "admin") {
-        throw new Error("只有管理员可以导入所有账号共用的比赛数据");
+      if (mode === "matches" && !cloudAccount) {
+        throw new Error("请先登录账号或进入游客 Demo");
       }
       if (file.size > 20 * 1024 * 1024) throw new Error("JSON 文件不能超过 20 MB");
       const rawPayload = JSON.parse(await file.text()) as unknown;
@@ -2070,7 +2071,7 @@ function InnerFootballApp({
         const restoredSettings = strategy === "merge"
           ? unionAppSettings(appSettings, data.settings)
           : normalizeAppSettings(data.settings);
-        const canImportMatches = cloudAccount?.role === "admin";
+        const canImportMatches = Boolean(cloudAccount);
         const rawMatches = data.matches;
         if (canImportMatches && (!Array.isArray(rawMatches) || !rawMatches.every(isExportedMatch))) throw new Error("完整数据中的 matches 比赛数据无效");
         const restoredMatches = canImportMatches ? prepareMatches(strategy) : loadCachedMatches();
@@ -2079,8 +2080,8 @@ function InnerFootballApp({
         modal.confirm({
           title: strategy === "merge" ? "新增完整数据？" : "覆盖完整数据？",
           content: strategy === "merge"
-            ? `将新增 ${orderMerge.added} 个、更新 ${orderMerge.updated} 个订单，并以 JSON 数据更新设置${canImportMatches ? "与公共比赛" : ""}；文件缺项继续使用云端数据。`
-            : `将覆盖当前账号的订单、设置和账本，恢复 ${restoredOrders.length} 个订单${canImportMatches ? `与 ${restoredMatches.length} 场公共比赛` : "；公共比赛保持不变"}。`,
+            ? `将新增 ${orderMerge.added} 个、更新 ${orderMerge.updated} 个订单，并以 JSON 数据更新设置${canImportMatches ? isGuestMode ? "与本地比赛" : "与公共比赛" : ""}；文件缺项继续使用现有数据。`
+            : `将覆盖当前${isGuestMode ? "游客" : "账号"}的订单、设置和账本，恢复 ${restoredOrders.length} 个订单${canImportMatches ? `与 ${restoredMatches.length} 场${isGuestMode ? "本地" : "公共"}比赛` : "；比赛保持不变"}。`,
           okText: strategy === "merge" ? "新增合并" : "覆盖恢复",
           cancelText: "取消",
           okButtonProps: { danger: strategy === "replace" },
@@ -2096,8 +2097,8 @@ function InnerFootballApp({
             notification.success({
               message: strategy === "merge" ? "完整数据合并完成" : "完整数据覆盖完成",
               description: strategy === "merge"
-                ? `新增 ${orderMerge.added} 个、更新 ${orderMerge.updated} 个订单，当前账号共有 ${restoredOrders.length} 个订单`
-                : `已恢复当前账号的 ${restoredOrders.length} 个订单、设置与账本${canImportMatches ? `，并更新 ${restoredMatches.length} 场公共比赛` : ""}`,
+                ? `新增 ${orderMerge.added} 个、更新 ${orderMerge.updated} 个订单，当前${isGuestMode ? "游客" : "账号"}共有 ${restoredOrders.length} 个订单`
+                : `已恢复当前${isGuestMode ? "游客" : "账号"}的 ${restoredOrders.length} 个订单、设置与账本${canImportMatches ? `，并更新 ${restoredMatches.length} 场${isGuestMode ? "本地" : "公共"}比赛` : ""}`,
               placement: "bottomRight",
             });
           },
@@ -2234,14 +2235,16 @@ function InnerFootballApp({
       {([
         ["orders", "导入订单", importStrategy === "merge" ? "同 ID 用 JSON 更新，文件缺项保留本地值" : "用 JSON 订单替换本地订单"],
         ["settings", "导入设置", importStrategy === "merge" ? "同联赛用 JSON 更新，文件缺项保留本地值" : "用 JSON 设置替换本地设置"],
-        ["matches", "导入公共比赛数据", cloudAccount?.role === "admin"
-          ? importStrategy === "merge" ? "同场用 JSON 更新，缺少的玩法与倍率保留云端值" : "用 JSON 比赛替换所有账号的公共比赛"
-          : "仅管理员可以更新所有账号共用的比赛"],
-        ["full", "导入完整数据", cloudAccount?.role === "admin"
-          ? importStrategy === "merge" ? "JSON 值优先更新，文件缺项保留云端值" : "覆盖当前账号数据与公共比赛"
-          : importStrategy === "merge" ? "合并当前账号数据，公共比赛保持不变" : "覆盖当前账号数据，公共比赛保持不变"],
+        ["matches", isGuestMode ? "导入本地比赛数据" : "导入公共比赛数据",
+          importStrategy === "merge"
+            ? `同场用 JSON 更新，缺少的玩法与倍率保留${isGuestMode ? "本地" : "云端"}值`
+            : `用 JSON 比赛替换${isGuestMode ? "当前浏览器" : "所有账号"}的比赛数据`],
+        ["full", "导入完整数据",
+          importStrategy === "merge"
+            ? `JSON 值优先更新，文件缺项保留${isGuestMode ? "本地" : "云端"}值`
+            : `覆盖当前${isGuestMode ? "游客" : "账号"}数据与${isGuestMode ? "本地" : "公共"}比赛`],
       ] as const).map(([mode, title, description]) => {
-        const disabled = mode === "matches" && cloudAccount?.role !== "admin";
+        const disabled = mode === "matches" && !cloudAccount;
         return (
           <Upload
             key={mode}
@@ -2267,16 +2270,20 @@ function InnerFootballApp({
     </div>
   );
 
-  const syncLabel = cloudSyncStatus === "saving"
-    ? "正在保存到云端"
-    : cloudSyncStatus === "error"
-      ? "云同步失败，本机数据仍已保留"
-      : "云端数据已同步";
+  const syncLabel = isGuestMode
+    ? "游客数据仅保存在当前浏览器"
+    : cloudSyncStatus === "saving"
+      ? "正在保存到云端"
+      : cloudSyncStatus === "error"
+        ? "云同步失败，本机数据仍已保留"
+        : "云端数据已同步";
   const accountMenu = cloudAccount ? (
     <div className="cloud-account-menu">
-      <div><b>{cloudAccount.account}</b><Tag color={cloudAccount.role === "admin" ? "gold" : "blue"}>{cloudAccount.role === "admin" ? "管理员" : "账号"}</Tag></div>
+      <div><b>{cloudAccount.account}</b><Tag color={isGuestMode ? "default" : cloudAccount.role === "admin" ? "gold" : "blue"}>{isGuestMode ? "本地模式" : cloudAccount.role === "admin" ? "管理员" : "账号"}</Tag></div>
       <span className={cloudSyncStatus === "error" ? "error" : ""}>{syncLabel}</span>
-      <Button icon={<LogoutOutlined />} block onClick={() => { void onLogout(); }}>退出账号</Button>
+      {isGuestMode
+        ? <Button icon={<UserOutlined />} block href={CLOUD_APP_URL}>登录云端账号</Button>
+        : <Button icon={<LogoutOutlined />} block onClick={() => { void onLogout(); }}>退出账号</Button>}
     </div>
   ) : null;
 
@@ -2494,7 +2501,7 @@ function InnerFootballApp({
         <main className="page-shell orders-shell">
           <section className="orders-page">
             <div className="section-heading orders-heading">
-              <div><span className="eyebrow">CLOUD ORDERS</span><h2>订单列表</h2><p>订单、累计收支会保存到当前账号，并在其他设备登录后自动同步。</p></div>
+              <div><span className="eyebrow">{isGuestMode ? "LOCAL ORDERS" : "CLOUD ORDERS"}</span><h2>订单列表</h2><p>{isGuestMode ? "游客订单和累计收支只保存在当前浏览器，不会上传服务器或跨设备同步。" : "订单、累计收支会保存到当前账号，并在其他设备登录后自动同步。"}</p></div>
               <Space wrap>
                 <Tag color="cyan">显示 {filteredSavedSlips.length} / 共 {savedSlips.length} 个订单</Tag>
                 <Button icon={<ExpandOutlined />} disabled={filteredSavedSlips.length === 0} onClick={expandAllOrderOptions}>展开全部选项</Button>
@@ -2844,7 +2851,7 @@ function InnerFootballApp({
         <main className="page-shell settings-shell">
           <section className="settings-page">
             <div className="section-heading settings-heading">
-              <div><span className="eyebrow">CLOUD SETTINGS</span><h2>设置</h2><p>应用设置与当前账号绑定，并在其他设备登录后自动同步。</p></div>
+              <div><span className="eyebrow">{isGuestMode ? "LOCAL SETTINGS" : "CLOUD SETTINGS"}</span><h2>设置</h2><p>{isGuestMode ? "游客设置只保存在当前浏览器，清理浏览器数据后将无法恢复。" : "应用设置与当前账号绑定，并在其他设备登录后自动同步。"}</p></div>
               <Space wrap>
                 <Tag color="cyan">{settingsLeagueNames.length} 个联赛颜色</Tag>
                 <Button type="primary" icon={<HomeOutlined />} onClick={() => navigateToView("betting")}>返回投注</Button>
@@ -3205,7 +3212,7 @@ function InnerFootballApp({
   );
 }
 
-const LOCAL_CLOUD_ACCOUNT: CloudAccount = { id: "local", account: "本机模式", role: "admin" };
+const LOCAL_CLOUD_ACCOUNT: CloudAccount = { id: "local", account: "游客", role: "user" };
 const ignoreCloudPersonalChange = () => undefined;
 const ignoreCloudMatchesChange = () => undefined;
 

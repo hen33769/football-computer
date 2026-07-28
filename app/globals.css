@@ -80,6 +80,32 @@ button, input, textarea { font: inherit; }
 .cloud-gate-primary:hover { color: #12363a; filter: brightness(1.04); }
 .cloud-gate-card small { color: rgba(255,255,255,.48); line-height: 1.6; }
 .cloud-gate-error { padding: 9px 11px; border-radius: 10px; color: #ffd8da; font-size: 12px; background: rgba(240,78,85,.18); }
+.cloud-account-mode-note {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 11px 13px;
+  border: 1px solid rgba(121,222,210,.18);
+  border-radius: 12px;
+  background: rgba(121,222,210,.08);
+}
+.cloud-account-mode-note b { color: #9be9df; font-size: 13px; }
+.cloud-account-mode-note span { color: rgba(255,255,255,.64); font-size: 12px; line-height: 1.6; }
+.cloud-account-divider { display: flex; align-items: center; gap: 12px; color: rgba(255,255,255,.36); font-size: 11px; }
+.cloud-account-divider::before, .cloud-account-divider::after { height: 1px; flex: 1; content: ""; background: rgba(255,255,255,.12); }
+.cloud-gate-secondary {
+  min-height: 46px;
+  display: grid;
+  place-items: center;
+  padding: 0 18px;
+  border: 1px solid rgba(121,222,210,.38);
+  border-radius: 12px;
+  color: #9be9df;
+  font-weight: 800;
+  text-decoration: none;
+  background: rgba(121,222,210,.08);
+}
+.cloud-gate-secondary:hover { color: #c7fff8; border-color: rgba(121,222,210,.7); background: rgba(121,222,210,.14); }
 .cloud-account-backdrop {
   position: fixed;
   inset: 0;

@@ -20,9 +20,6 @@ export async function PUT(request: Request) {
   try {
     const authenticated = await requireAuthenticatedCloudAccount(request);
     if (!authenticated.value) return authenticated.response!;
-    if (authenticated.value.account.role !== "admin") {
-      return Response.json({ error: "只有管理员可以更新公共比赛数据" }, { status: 403 });
-    }
 
     const payload = await request.json() as { matches?: unknown };
     if (!Array.isArray(payload.matches) || payload.matches.length > MAX_MATCHES || !payload.matches.every(isMatch)) {

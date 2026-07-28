@@ -13,6 +13,7 @@ import {
 } from "./cloud";
 import { localCache, sessionCache } from "./browser-storage";
 import FootballApp, { type AppView } from "./FootballApp";
+import { DEMO_APP_URL } from "./links";
 import { createDefaultSettings, normalizeAppSettings } from "./settings";
 import type { MatchItem, SavedSlip } from "./types";
 
@@ -175,7 +176,7 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
       localCache.removeItem(CLOUD_STORAGE_KEYS.pendingMigration);
       installPersonalState(personal, nextAccount.id);
 
-      if (cloudMatches.length === 0 && nextAccount.role === "admin" && localMatches.length > 0) {
+      if (cloudMatches.length === 0 && localMatches.length > 0) {
         await saveMatchesImmediately(localMatches);
       }
 
@@ -307,11 +308,11 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
   }, [enqueueWrite, savePersonalImmediately]);
 
   const syncMatches = useCallback((matches: MatchItem[]) => {
-    if (account?.role !== "admin") return;
+    if (!account) return;
     enqueueWrite(async () => {
       await saveMatchesImmediately(matches);
     });
-  }, [account?.role, enqueueWrite, saveMatchesImmediately]);
+  }, [account, enqueueWrite, saveMatchesImmediately]);
 
   const navigate = (view: AppView) => {
     if (view !== "betting" && !account) {
@@ -367,7 +368,10 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
             <div className="cloud-gate-logo cloud-gate-brand-logo" role="img" aria-label="SMGR" />
             <span className="cloud-gate-kicker">SMGR ACCOUNT</span>
             <h1 id="cloud-account-title">输入账号进入</h1>
-            <p>已有账号会直接登录；新账号会自动创建。订单、收支和设置将同步到这个账号。</p>
+            <div className="cloud-account-mode-note">
+              <b>账号模式 · 使用云端</b>
+              <span>已有账号会直接登录，新账号会自动创建。订单、收支、设置和官方比赛将通过 D1 跨设备同步。</span>
+            </div>
             <label htmlFor="cloud-account">账号</label>
             <input
               id="cloud-account"
@@ -382,7 +386,12 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
             <button className="cloud-gate-primary" type="submit" disabled={accountSubmitting}>
               {accountSubmitting ? "正在进入…" : "登录或创建账号"}
             </button>
-            <small>无需密码。关闭此窗口仍可查看公共比赛；请勿使用包含隐私信息的账号名。</small>
+            <small>无需密码。请勿使用包含隐私信息的账号名。</small>
+            <div className="cloud-account-divider"><span>或者</span></div>
+            <a className="cloud-gate-secondary" href={DEMO_APP_URL}>
+              游客登录 · 进入 Demo
+            </a>
+            <small>游客版不连接账号服务器，订单、收支和设置只保存在当前浏览器；清理浏览器数据或更换设备后不会同步。当前页面的选择不会带到游客版。</small>
           </form>
         </div>
       )}
