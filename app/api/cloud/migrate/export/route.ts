@@ -17,9 +17,13 @@ async function readTable(name: ExportTable["name"]): Promise<ExportTable> {
 export async function GET(request: Request) {
   try {
     const expectedToken = env.MIGRATION_EXPORT_TOKEN?.trim();
+    const url = new URL(request.url);
     const authorization = request.headers.get("authorization");
+    const suppliedToken = authorization?.startsWith("Bearer ")
+      ? authorization.slice("Bearer ".length)
+      : url.searchParams.get("token");
 
-    if (!expectedToken || authorization !== `Bearer ${expectedToken}`) {
+    if (!expectedToken || suppliedToken !== expectedToken) {
       return new Response("Not found", { status: 404 });
     }
 
@@ -38,7 +42,6 @@ export async function GET(request: Request) {
     }), {
       headers: {
         "Cache-Control": "no-store",
-        "Content-Disposition": 'attachment; filename="smgr-d1-export.json"',
         "Content-Type": "application/json; charset=utf-8",
       },
     });
