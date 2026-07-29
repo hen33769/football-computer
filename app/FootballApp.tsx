@@ -2853,7 +2853,7 @@ function InnerFootballApp({
                         </div>
                         <div className="order-card-title-line">
                           <h3>{slip.name}</h3>
-                          <span className="order-card-prize-range">实时中奖奖金范围 {orderPrizeRangeText}</span>
+                          <span className="order-card-prize-range"> {orderPrizeRangeText}</span>
                         </div>
                       </div>
                       <div className="order-metrics">
