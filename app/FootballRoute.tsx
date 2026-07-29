@@ -8,16 +8,34 @@ import {
   ensureOrderIds,
   type CloudAccount,
   type CloudBootstrapResponse,
-  type CloudPersonalState,
+  type CloudPersonalData,
   type CloudSyncStatus,
 } from "./cloud";
 import { localCache, sessionCache } from "./browser-storage";
 import FootballApp, { type AppView } from "./FootballApp";
 import { DEMO_APP_URL } from "./links";
+import {
+  applyPersonalSyncIntent,
+  createNonDestructivePersonalSyncIntent,
+  createPersonalSyncIntent,
+  fullPersonalSyncIntent,
+  hasPersonalSyncIntent,
+  mergePersonalSyncIntents,
+  type CloudPersonalMutation,
+  type PersonalSyncIntent,
+} from "./personal-sync";
 import { createDefaultSettings, normalizeAppSettings } from "./settings";
 import type { MatchItem, SavedSlip } from "./types";
 
 type RouteStatus = "loading" | "ready" | "error";
+type PendingPersonalChanges = {
+  accountId: string;
+  intent: PersonalSyncIntent;
+};
+
+function emptyPersonalSyncIntent(): PersonalSyncIntent {
+  return { upsertOrders: [], deleteOrderIds: [] };
+}
 
 function pathForView(view: AppView) {
   return view === "orders" ? "/orders" : view === "settings" ? "/settings" : "/";
@@ -40,7 +58,7 @@ function readJson<T>(key: string, fallback: T): T {
   }
 }
 
-function readLocalPersonalState(): CloudPersonalState {
+function readLocalPersonalState(): CloudPersonalData {
   const rawOrders = readJson<unknown>(CLOUD_STORAGE_KEYS.orders, []);
   const orders = ensureOrderIds(Array.isArray(rawOrders) ? rawOrders as SavedSlip[] : []);
   const expenseTotal = Number(localCache.getItem(CLOUD_STORAGE_KEYS.expense));
@@ -55,14 +73,14 @@ function readLocalPersonalState(): CloudPersonalState {
   };
 }
 
-function hasLocalPersonalData(state: CloudPersonalState) {
+function hasLocalPersonalData(state: CloudPersonalData) {
   return state.orders.length > 0
     || state.finance.expenseTotal > 0
     || state.finance.incomeTotal > 0
     || localCache.getItem(CLOUD_STORAGE_KEYS.settings) !== null;
 }
 
-function installPersonalState(state: CloudPersonalState, accountId: string) {
+function installPersonalState(state: CloudPersonalData, accountId: string) {
   localCache.setItem(CLOUD_STORAGE_KEYS.orders, JSON.stringify(ensureOrderIds(state.orders)));
   localCache.setItem(CLOUD_STORAGE_KEYS.expense, String(state.finance.expenseTotal));
   localCache.setItem(CLOUD_STORAGE_KEYS.income, String(state.finance.incomeTotal));
@@ -79,6 +97,30 @@ function installPublicState() {
   localCache.removeItem(CLOUD_STORAGE_KEYS.pendingPersonal);
 }
 
+function readPendingPersonalChanges(accountId: string): PersonalSyncIntent | null {
+  const pending = readJson<PendingPersonalChanges | null>(CLOUD_STORAGE_KEYS.pendingPersonalChanges, null);
+  if (
+    !pending
+    || pending.accountId !== accountId
+    || !Array.isArray(pending.intent?.upsertOrders)
+    || !Array.isArray(pending.intent?.deleteOrderIds)
+  ) {
+    return null;
+  }
+  return pending.intent;
+}
+
+function writePendingPersonalChanges(accountId: string, intent: PersonalSyncIntent) {
+  if (!hasPersonalSyncIntent(intent)) {
+    localCache.removeItem(CLOUD_STORAGE_KEYS.pendingPersonalChanges);
+    return;
+  }
+  localCache.setItem(
+    CLOUD_STORAGE_KEYS.pendingPersonalChanges,
+    JSON.stringify({ accountId, intent } satisfies PendingPersonalChanges),
+  );
+}
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...init,
@@ -91,7 +133,7 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const payload = await response.json().catch(() => ({})) as { error?: string } & T;
   if (!response.ok) {
     const error = new Error(payload.error || "云端请求失败");
-    Object.assign(error, { status: response.status });
+    Object.assign(error, { status: response.status, payload });
     throw error;
   }
   return payload;
@@ -110,19 +152,47 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
   const [syncStatus, setSyncStatus] = useState<CloudSyncStatus>("saved");
   const syncQueueRef = useRef<Promise<void>>(Promise.resolve());
   const pendingWritesRef = useRef(0);
-  const personalGenerationRef = useRef(0);
+  const personalSyncRunningRef = useRef(false);
+  const pendingPersonalIntentRef = useRef<PersonalSyncIntent>(emptyPersonalSyncIntent());
+  const pendingPersonalVersionRef = useRef(0);
+  const clientPersonalRef = useRef<CloudPersonalData | null>(null);
+  const serverRevisionRef = useRef(0);
   const accountIdRef = useRef<string | null>(null);
   const pendingViewRef = useRef<AppView | null>(initialPersonalView);
 
-  const savePersonalImmediately = useCallback(async (personal: CloudPersonalState) => {
-    const response = await requestJson<{ orders?: SavedSlip[] }>("/api/cloud/personal", {
-      method: "PUT",
-      body: JSON.stringify({
-        ...personal,
-        orders: ensureOrderIds(personal.orders),
-      }),
-    });
-    return response.orders ? { ...personal, orders: response.orders } : personal;
+  const sendPersonalMutation = useCallback(async (intent: PersonalSyncIntent) => {
+    let conflictCount = 0;
+    while (conflictCount < 6) {
+      const mutation: CloudPersonalMutation = {
+        ...intent,
+        upsertOrders: ensureOrderIds(intent.upsertOrders),
+        expectedRevision: serverRevisionRef.current,
+      };
+      try {
+        const response = await requestJson<{ revision: number }>("/api/cloud/personal", {
+          method: "PUT",
+          body: JSON.stringify(mutation),
+        });
+        serverRevisionRef.current = response.revision;
+        return;
+      } catch (error) {
+        const requestError = error as Error & {
+          status?: number;
+          payload?: { revision?: unknown };
+        };
+        const conflictRevision = Number(requestError.payload?.revision);
+        if (
+          requestError.status !== 409
+          || !Number.isInteger(conflictRevision)
+          || conflictRevision < 0
+        ) {
+          throw error;
+        }
+        serverRevisionRef.current = conflictRevision;
+        conflictCount += 1;
+      }
+    }
+    throw new Error("云端数据持续被其他设备更新，请稍后重试");
   }, []);
 
   const saveMatchesImmediately = useCallback(async (matches: MatchItem[]) => {
@@ -151,6 +221,10 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
         }
         installPublicState();
         accountIdRef.current = null;
+        clientPersonalRef.current = null;
+        serverRevisionRef.current = 0;
+        pendingPersonalIntentRef.current = emptyPersonalSyncIntent();
+        personalSyncRunningRef.current = false;
         setAccount(null);
         setSyncStatus("saved");
         setRouteStatus("ready");
@@ -159,21 +233,35 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
 
       const nextAccount = result.account;
       const localMarker = localCache.getItem(CLOUD_STORAGE_KEYS.accountId);
-      const hasPendingLocalWrite = localCache.getItem(CLOUD_STORAGE_KEYS.pendingPersonal) === nextAccount.id;
+      const hasLegacyPendingWrite = localCache.getItem(CLOUD_STORAGE_KEYS.pendingPersonal) === nextAccount.id;
       const localPersonal = readLocalPersonalState();
-      const pendingMigration = readJson<CloudPersonalState | null>(CLOUD_STORAGE_KEYS.pendingMigration, null);
-      let personal = result.personal;
-      if (!result.hasPersonalData && pendingMigration) {
-        personal = await savePersonalImmediately(pendingMigration);
+      const pendingMigration = readJson<CloudPersonalData | null>(CLOUD_STORAGE_KEYS.pendingMigration, null);
+      const serverPersonal: CloudPersonalData = {
+        orders: ensureOrderIds(result.personal.orders),
+        finance: result.personal.finance,
+        settings: result.personal.settings,
+      };
+      let pendingIntent = readPendingPersonalChanges(nextAccount.id) ?? emptyPersonalSyncIntent();
+      if (!result.hasPersonalData && !hasPersonalSyncIntent(pendingIntent) && pendingMigration) {
+        pendingIntent = fullPersonalSyncIntent(pendingMigration);
       } else if (
-        (hasPendingLocalWrite || !result.hasPersonalData)
+        !hasPersonalSyncIntent(pendingIntent)
+        && hasLegacyPendingWrite
+        && localMarker === nextAccount.id
+      ) {
+        pendingIntent = createNonDestructivePersonalSyncIntent(serverPersonal, localPersonal);
+      } else if (
+        !result.hasPersonalData
+        && !hasPersonalSyncIntent(pendingIntent)
         && (!localMarker || localMarker === nextAccount.id)
         && hasLocalPersonalData(localPersonal)
       ) {
-        personal = await savePersonalImmediately(localPersonal);
+        pendingIntent = fullPersonalSyncIntent(localPersonal);
       }
+      const personal = applyPersonalSyncIntent(serverPersonal, pendingIntent);
       localCache.removeItem(CLOUD_STORAGE_KEYS.pendingPersonal);
       localCache.removeItem(CLOUD_STORAGE_KEYS.pendingMigration);
+      writePendingPersonalChanges(nextAccount.id, pendingIntent);
       installPersonalState(personal, nextAccount.id);
 
       if (cloudMatches.length === 0 && localMatches.length > 0) {
@@ -181,8 +269,13 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
       }
 
       accountIdRef.current = nextAccount.id;
+      clientPersonalRef.current = personal;
+      serverRevisionRef.current = result.personal.revision;
+      pendingPersonalIntentRef.current = pendingIntent;
+      pendingPersonalVersionRef.current += 1;
+      personalSyncRunningRef.current = false;
       setAccount(nextAccount);
-      setSyncStatus("saved");
+      setSyncStatus(hasPersonalSyncIntent(pendingIntent) ? "saving" : "saved");
       const pendingView = pendingViewRef.current;
       if (pendingView) {
         pendingViewRef.current = null;
@@ -195,7 +288,7 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
       setRouteErrorMessage(error instanceof Error ? error.message : "云端连接失败");
       setRouteStatus("error");
     }
-  }, [saveMatchesImmediately, savePersonalImmediately]);
+  }, [saveMatchesImmediately]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -263,6 +356,10 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
       await requestJson("/api/cloud/account", { method: "DELETE" });
     } finally {
       accountIdRef.current = null;
+      clientPersonalRef.current = null;
+      serverRevisionRef.current = 0;
+      pendingPersonalIntentRef.current = emptyPersonalSyncIntent();
+      personalSyncRunningRef.current = false;
       installPublicState();
       setAccount(null);
       setSyncStatus("saved");
@@ -287,6 +384,10 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
       setSyncStatus("error");
       if ((error as Error & { status?: number }).status === 401) {
         accountIdRef.current = null;
+        clientPersonalRef.current = null;
+        serverRevisionRef.current = 0;
+        pendingPersonalIntentRef.current = emptyPersonalSyncIntent();
+        personalSyncRunningRef.current = false;
         installPublicState();
         setAccount(null);
         setActiveView("betting");
@@ -295,17 +396,60 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
     });
   }, []);
 
-  const syncPersonal = useCallback((personal: CloudPersonalState) => {
-    if (!accountIdRef.current) return;
-    const generation = personalGenerationRef.current + 1;
-    personalGenerationRef.current = generation;
+  const schedulePersonalSync = useCallback(() => {
+    const accountId = accountIdRef.current;
+    if (
+      !accountId
+      || personalSyncRunningRef.current
+      || !hasPersonalSyncIntent(pendingPersonalIntentRef.current)
+    ) {
+      return;
+    }
+    personalSyncRunningRef.current = true;
     enqueueWrite(async () => {
-      await savePersonalImmediately(personal);
-      if (personalGenerationRef.current === generation) {
-        localCache.removeItem(CLOUD_STORAGE_KEYS.pendingPersonal);
+      try {
+        while (
+          accountIdRef.current === accountId
+          && hasPersonalSyncIntent(pendingPersonalIntentRef.current)
+        ) {
+          const sentVersion = pendingPersonalVersionRef.current;
+          const sentIntent = structuredClone(pendingPersonalIntentRef.current);
+          await sendPersonalMutation(sentIntent);
+          if (accountIdRef.current !== accountId) return;
+
+          if (pendingPersonalVersionRef.current === sentVersion) {
+            pendingPersonalIntentRef.current = emptyPersonalSyncIntent();
+          }
+          writePendingPersonalChanges(accountId, pendingPersonalIntentRef.current);
+        }
+      } finally {
+        personalSyncRunningRef.current = false;
       }
     });
-  }, [enqueueWrite, savePersonalImmediately]);
+  }, [enqueueWrite, sendPersonalMutation]);
+
+  const syncPersonal = useCallback((personal: CloudPersonalData) => {
+    const accountId = accountIdRef.current;
+    if (!accountId) return;
+    const nextPersonal: CloudPersonalData = {
+      ...personal,
+      orders: ensureOrderIds(personal.orders),
+    };
+    const previous = clientPersonalRef.current;
+    clientPersonalRef.current = nextPersonal;
+    if (previous) {
+      const incomingIntent = createPersonalSyncIntent(previous, nextPersonal);
+      if (hasPersonalSyncIntent(incomingIntent)) {
+        pendingPersonalIntentRef.current = mergePersonalSyncIntents(
+          pendingPersonalIntentRef.current,
+          incomingIntent,
+        );
+        pendingPersonalVersionRef.current += 1;
+        writePendingPersonalChanges(accountId, pendingPersonalIntentRef.current);
+      }
+    }
+    schedulePersonalSync();
+  }, [schedulePersonalSync]);
 
   const syncMatches = useCallback((matches: MatchItem[]) => {
     if (!account) return;

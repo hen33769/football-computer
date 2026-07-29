@@ -40,6 +40,7 @@ export async function GET(request: Request) {
       account,
       hasPersonalData: Boolean(state) || orders.length > 0,
       personal: {
+        revision: state?.revision ?? 0,
         orders,
         finance: {
           expenseTotal: (state?.expenseCents ?? 0) / 100,

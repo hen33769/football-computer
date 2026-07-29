@@ -5,7 +5,15 @@ import {
   clearMatchSelections,
   ensureOrderIds,
   normalizeAccountName,
+  type CloudPersonalData,
 } from "../app/cloud";
+import {
+  applyPersonalSyncIntent,
+  createNonDestructivePersonalSyncIntent,
+  createPersonalSyncIntent,
+  mergePersonalSyncIntents,
+} from "../app/personal-sync";
+import { createDefaultSettings } from "../app/settings";
 import type { MatchItem, SavedSlip } from "../app/types";
 
 test("账号标准化保证大小写与全角字符不会绕过唯一约束", () => {
@@ -50,4 +58,80 @@ test("公共比赛同步会清除所有账号私有的选择状态", () => {
   const [shared] = clearMatchSelections([match]);
   assert.equal(shared.markets[0].options[0].selected, false);
   assert.equal(match.markets[0].options[0].selected, true);
+});
+
+function personalState(orders: SavedSlip[]): CloudPersonalData {
+  return {
+    orders,
+    finance: { expenseTotal: 10, incomeTotal: 0 },
+    settings: createDefaultSettings(),
+  };
+}
+
+function savedOrder(id: string, name = id): SavedSlip {
+  return {
+    id,
+    name,
+    savedAt: "2026-07-28T10:00:00.000Z",
+    matches: [],
+    passes: [],
+    multiple: 1,
+  };
+}
+
+test("新增和编辑订单只生成对应订单的 upsert，不替换整张订单表", () => {
+  const first = savedOrder("order-1");
+  const added = savedOrder("order-2");
+  const addIntent = createPersonalSyncIntent(personalState([first]), personalState([first, added]));
+  assert.deepEqual(addIntent.upsertOrders.map((order) => order.id), ["order-2"]);
+  assert.deepEqual(addIntent.deleteOrderIds, []);
+
+  const edited = { ...first, name: "已编辑" };
+  const editIntent = createPersonalSyncIntent(personalState([first, added]), personalState([edited, added]));
+  assert.deepEqual(editIntent.upsertOrders.map((order) => order.id), ["order-1"]);
+  assert.deepEqual(editIntent.deleteOrderIds, []);
+});
+
+test("删除订单只生成明确的订单 ID", () => {
+  const first = savedOrder("order-1");
+  const second = savedOrder("order-2");
+  const intent = createPersonalSyncIntent(personalState([first, second]), personalState([second]));
+  assert.deepEqual(intent.upsertOrders, []);
+  assert.deepEqual(intent.deleteOrderIds, ["order-1"]);
+});
+
+test("旧版客户端的空快照迁移不会推断删除云端订单", () => {
+  const remoteOrder = savedOrder("remote-order");
+  const intent = createNonDestructivePersonalSyncIntent(
+    personalState([remoteOrder]),
+    personalState([]),
+  );
+  assert.deepEqual(intent.upsertOrders, []);
+  assert.deepEqual(intent.deleteOrderIds, []);
+});
+
+test("并发设备新增的未知订单不会被旧设备的增量同步删除", () => {
+  const original = savedOrder("order-1");
+  const remoteAdded = savedOrder("remote-order");
+  const localEdited = { ...original, name: "本机编辑" };
+  const localIntent = createPersonalSyncIntent(personalState([original]), personalState([localEdited]));
+  const merged = applyPersonalSyncIntent(personalState([original, remoteAdded]), localIntent);
+
+  assert.deepEqual(merged.orders.map((order) => order.id).sort(), ["order-1", "remote-order"]);
+  assert.equal(merged.orders.find((order) => order.id === "order-1")?.name, "本机编辑");
+});
+
+test("同步失败期间的多次操作会合并为最后一次明确意图", () => {
+  const first = savedOrder("order-1");
+  const edited = { ...first, name: "第二版" };
+  const firstIntent = createPersonalSyncIntent(personalState([]), personalState([first]));
+  const secondIntent = createPersonalSyncIntent(personalState([first]), personalState([edited]));
+  const deleteIntent = createPersonalSyncIntent(personalState([edited]), personalState([]));
+  const pending = mergePersonalSyncIntents(
+    mergePersonalSyncIntents(firstIntent, secondIntent),
+    deleteIntent,
+  );
+
+  assert.deepEqual(pending.upsertOrders, []);
+  assert.deepEqual(pending.deleteOrderIds, ["order-1"]);
 });

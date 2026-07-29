@@ -84,7 +84,7 @@ import {
 import {
   CLOUD_STORAGE_KEYS,
   type CloudAccount,
-  type CloudPersonalState,
+  type CloudPersonalData,
   type CloudSyncStatus,
 } from "./cloud";
 import { localCache, sessionCache } from "./browser-storage";
@@ -730,7 +730,7 @@ function InnerFootballApp({
   onNavigate?: (view: AppView) => void;
   cloudAccount: CloudAccount | null;
   cloudSyncStatus: CloudSyncStatus;
-  onCloudPersonalChange: (state: CloudPersonalState) => void;
+  onCloudPersonalChange: (state: CloudPersonalData) => void;
   onCloudMatchesChange: (matches: MatchItem[]) => void;
   onRequireAccount: (view?: AppView) => void;
   onLogout: () => Promise<void>;
@@ -3259,7 +3259,7 @@ export default function FootballApp({
   onNavigate?: (view: AppView) => void;
   cloudAccount?: CloudAccount | null;
   cloudSyncStatus?: CloudSyncStatus;
-  onCloudPersonalChange?: (state: CloudPersonalState) => void;
+  onCloudPersonalChange?: (state: CloudPersonalData) => void;
   onCloudMatchesChange?: (matches: MatchItem[]) => void;
   onRequireAccount?: (view?: AppView) => void;
   onLogout?: () => Promise<void>;

@@ -9,6 +9,7 @@ export const CLOUD_STORAGE_KEYS = {
   matches: "football-simulator-match-cache-v1",
   accountId: "football-simulator-cloud-account-id-v1",
   pendingPersonal: "football-simulator-cloud-pending-personal-v1",
+  pendingPersonalChanges: "football-simulator-cloud-pending-personal-changes-v2",
   pendingMigration: "football-simulator-cloud-pending-migration-v1",
   loginBetDraft: "football-simulator-cloud-login-bet-draft-v1",
 } as const;
@@ -22,13 +23,17 @@ export type CloudAccount = {
   role: CloudRole;
 };
 
-export type CloudPersonalState = {
+export type CloudPersonalData = {
   orders: SavedSlip[];
   finance: {
     expenseTotal: number;
     incomeTotal: number;
   };
   settings: AppSettings;
+};
+
+export type CloudPersonalState = CloudPersonalData & {
+  revision: number;
 };
 
 export type CloudBootstrapResponse = {
