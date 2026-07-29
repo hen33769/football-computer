@@ -1,6 +1,40 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { formatManualOrderText } from "../app/manual-order-format";
 import { parseRecognizedText } from "../app/ocr";
+import type { MatchItem } from "../app/types";
+
+test("订单导出为手动添加格式并保留让球选项标签", () => {
+  const matches: MatchItem[] = [{
+    id: "2040459",
+    date: "2026-07-11",
+    league: "世界杯",
+    time: "2026-07-12 05:00",
+    weekday: "周六",
+    code: "099",
+    home: "挪威",
+    away: "英格兰",
+    markets: [{
+      type: "rqspf",
+      handicap: 1,
+      options: [
+        { id: "win", label: "主胜", odds: 1.85, selected: true },
+        { id: "draw", label: "平", odds: 3.4, selected: true },
+        { id: "lose", label: "主负", odds: 4.1, selected: false },
+      ],
+    }],
+  }];
+
+  const text = formatManualOrderText(matches);
+  assert.match(text, /比赛 ID：2040459/);
+  assert.match(text, /周六099  挪威 VS 英格兰/);
+  assert.match(text, /让球胜平负（\+1） \(\+1\)主胜 @1\.85 \| \(\+1\)平 @3\.40/);
+
+  const parsed = parseRecognizedText(text);
+  const rqspf = parsed[0].markets.find((market) => market.type === "rqspf");
+  assert.equal(rqspf?.handicap, 1);
+  assert.deepEqual(rqspf?.options.filter((option) => option.selected).map((option) => option.odds), [1.85, 3.4]);
+});
 
 test("解析常见体彩已选项截图文本", () => {
   const parsed = parseRecognizedText(`

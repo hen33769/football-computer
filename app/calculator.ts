@@ -254,7 +254,20 @@ export function isOrderSettleable(slip: SavedSlip): boolean {
   return !slip.settledAt && getOrderStatus(slip) !== "hopeful";
 }
 
-function scenarioWinningOdds(match: MatchItem): number[][] {
+function selectedHitOdds(match: MatchItem, hits: CurrentHits): number[] {
+  const matchHits = hits[match.id] ?? {};
+  return match.markets.flatMap((market) => {
+    const hitId = matchHits[market.type];
+    if (!hitId) return [];
+    const hit = market.options.find((option) => option.selected && option.id === hitId);
+    return hit ? [hit.odds] : [];
+  });
+}
+
+function scenarioWinningOdds(match: MatchItem, hits: CurrentHits): number[][] {
+  const confirmedWinningOdds = selectedHitOdds(match, hits);
+  if (confirmedWinningOdds.length > 0) return [confirmedWinningOdds];
+
   const selectedByKey = new Map<string, OddsOption>();
   match.markets.forEach((market) => market.options.forEach((item) => {
     if (item.selected) selectedByKey.set(`${market.type}:${item.id}`, item);
@@ -296,10 +309,10 @@ export function calculateCurrentPrize(matches: MatchItem[], passes: number[], mu
   return payoutForWinningOdds(winning, passes, multiple, true);
 }
 
-export function calculatePrizeRange(matches: MatchItem[], passes: number[], multiple: number): PrizeRange {
+export function calculatePrizeRange(matches: MatchItem[], passes: number[], multiple: number, hits: CurrentHits = {}): PrizeRange {
   const chosen = selectedMatches(matches);
   if (chosen.length === 0 || passes.length === 0) return { min: 0, max: 0, uncappedMax: 0 };
-  const scenarios = chosen.map(scenarioWinningOdds);
+  const scenarios = chosen.map((match) => scenarioWinningOdds(match, hits));
   const maxWinning = scenarios.map((items) => [...items].sort((left, right) => sum(right) - sum(left))[0] ?? []);
   const max = payoutForWinningOdds(maxWinning, passes, multiple, true);
   const uncappedMax = payoutForWinningOdds(maxWinning, passes, multiple, false);

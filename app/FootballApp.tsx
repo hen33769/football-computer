@@ -78,6 +78,7 @@ import {
   type PrizeRangeMetrics,
 } from "./calculator";
 import { appendOrderPassValue, formatOrderPassValue, inferOrderPasses } from "./order-passes";
+import { sortMatchesForManualOrder } from "./sorting";
 import {
   cloneMatches,
   MARKET_LABELS,
@@ -93,6 +94,7 @@ import { APP_VERSION } from "./AppVersion";
 import { MatchPreviewModal, OfficialTrendModal } from "./FootballInsights";
 import { orderLedgerTotals, sortSavedOrders, unionSavedOrders } from "./imports";
 import { CLOUD_APP_URL } from "./links";
+import { formatManualMatchText, formatManualOrderText } from "./manual-order-format";
 import { parseRecognizedText } from "./ocr";
 import {
   convertSportteryMatches,
@@ -223,11 +225,6 @@ const compareMatchDisplayOrder = (left: MatchItem, right: MatchItem) => (
 
 const sortMatchesForDisplay = (items: MatchItem[]) => [...items].sort(compareMatchDisplayOrder);
 
-const sortMatchesForManualOrder = (items: MatchItem[]) => [...items].sort((left, right) => (
-  right.date.localeCompare(left.date)
-  || left.code.localeCompare(right.code, "zh-CN", { numeric: true, sensitivity: "base" })
-));
-
 const countSelectedOptions = (items: MatchItem[]) => items.reduce((total, match) => total + selectedOptions(match).length, 0);
 
 const matchesSaleFilter = (match: MatchItem, filter: MatchSaleFilter, now: Date) => {
@@ -280,23 +277,6 @@ const matchWithClearedSelections = (match: MatchItem): MatchItem => ({
     options: market.options.map((option) => ({ ...option, selected: false })),
   })),
 });
-
-const formatManualMatchText = (match: MatchItem) => {
-  const selectionLines = match.markets.flatMap((market) => {
-    const selected = market.options.filter((option) => option.selected);
-    if (selected.length === 0) return [];
-    const marketLabel = `${MARKET_LABELS[market.type]}${market.type === "rqspf" && typeof market.handicap === "number" ? `（${market.handicap > 0 ? "+" : ""}${market.handicap}）` : ""}`;
-    return [`${marketLabel} ${selected.map((option) => `${option.label} @${option.odds.toFixed(2)}`).join(" | ")}`];
-  });
-  return [
-    `比赛 ID：${normalizeSportteryMatchId(match.id)}`,
-    `比赛日期：${match.date}`,
-    `联赛：${match.league || "未填写"}`,
-    `开赛时间：${match.time || match.date}`,
-    `${match.weekday}${match.code} ${match.home} VS ${match.away}`,
-    ...selectionLines,
-  ].join("\n");
-};
 
 function OddsTrendIndicator({ trend }: { trend?: -1 | 0 | 1 }) {
   if (!trend) return null;
@@ -373,13 +353,13 @@ const winningMultiplierRange = (range: PrizeRangeMetrics["multiplier"]) => {
   return `${format(range.min)} – ${format(range.max)} 倍`;
 };
 
-function DetailPrizeRange({ range, metrics }: { range: PrizeRange; metrics: PrizeRangeMetrics }) {
+function DetailPrizeRange({ range, metrics, live = false }: { range: PrizeRange; metrics: PrizeRangeMetrics; live?: boolean }) {
   return (
     <div className="detail-range-card">
       <div className="detail-range-prize">
-        <span>中奖奖金范围</span>
+        <span>{live ? "实时中奖奖金范围" : "中奖奖金范围"}</span>
         <strong>{metrics.available ? `¥${currency(metrics.prize.min)} – ¥${currency(metrics.prize.max)}` : "—"}</strong>
-        <small>最低值排除未中奖的 0 元结果</small>
+        <small>{live ? "已有成功投注项的比赛仅按成功项计算；最低值排除未中奖的 0 元结果" : "最低值排除未中奖的 0 元结果"}</small>
         <div className="detail-range-metrics">
           <div>
             <span>中奖时利润范围</span>
@@ -806,6 +786,7 @@ function InnerFootballApp({
   const [orderEditTime, setOrderEditTime] = useState("");
   const [orderEditMatches, setOrderEditMatches] = useState<MatchItem[]>([]);
   const [orderEditPasses, setOrderEditPasses] = useState<number[]>([]);
+  const [orderEditMultiple, setOrderEditMultiple] = useState(1);
   const [orderEditOddsLocked, setOrderEditOddsLocked] = useState(false);
   const [expandedOrderIds, setExpandedOrderIds] = useState<string[]>([]);
   const [orderOddsRefreshing, setOrderOddsRefreshing] = useState(false);
@@ -856,6 +837,8 @@ function InnerFootballApp({
   const manualOrderPassInputClickRef = useRef(false);
   const [manualOrderMultiple, setManualOrderMultiple] = useState(1);
   const [manualOrderEntries, setManualOrderEntries] = useState<ManualOrderEntry[]>(() => [createManualOrderEntry()]);
+  const manualOrderMatchPickerRowRefs = useRef(new Map<string, HTMLDivElement>());
+  const pendingManualOrderScrollRef = useRef(false);
   const [manualPickerEntryKey, setManualPickerEntryKey] = useState<string | null>(null);
   const [manualPickerMatch, setManualPickerMatch] = useState<MatchItem | null>(null);
   const [sportteryLoaded, setSportteryLoaded] = useState(false);
@@ -1093,6 +1076,22 @@ function InnerFootballApp({
     .filter((value) => Number.isInteger(value) && value >= 1 && value <= MAX_SELECTED_MATCHES)
     .sort((left, right) => left - right), [editingOrder, orderEditMatches]);
 
+  useLayoutEffect(() => {
+    if (!pendingManualOrderScrollRef.current) return;
+    const targetEntry = manualOrderEntries.find((entry) => !entry.matchId);
+    if (!targetEntry) return;
+    const frame = window.requestAnimationFrame(() => {
+      const row = manualOrderMatchPickerRowRefs.current.get(targetEntry.key);
+      if (!row) return;
+      pendingManualOrderScrollRef.current = false;
+      (row.querySelector<HTMLElement>(".ant-select") ?? row).scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [manualOrderEntries]);
+
   const navigateToView = (view: AppView) => {
     if (!cloudAccount && view !== "betting") {
       onRequireAccount(view);
@@ -1200,11 +1199,11 @@ function InnerFootballApp({
   const orderDetailStake = orderDetail ? calculateStake(orderDetail.matches, orderDetail.passes, orderDetail.multiple) : 0;
   const orderDetailPrize = orderDetail ? calculateCurrentPrize(orderDetail.matches, orderDetail.passes, orderDetail.multiple, orderHits) : 0;
   const orderDetailProfit = orderDetailPrize - orderDetailStake;
-  const orderDetailRange = orderDetail ? calculatePrizeRange(orderDetail.matches, orderDetail.passes, orderDetail.multiple) : { min: 0, max: 0, uncappedMax: 0 };
+  const orderDetailRange = orderDetail ? calculatePrizeRange(orderDetail.matches, orderDetail.passes, orderDetail.multiple, orderHits) : { min: 0, max: 0, uncappedMax: 0 };
   const orderDetailRangeMetrics = calculatePrizeRangeMetrics(orderDetailRange, orderDetailStake, orderDetail?.multiple ?? 0);
   const orderDetailMatches = orderDetail ? sortMatchesForDisplay(selectedMatches(orderDetail.matches)) : [];
   const orderDetailPickedCount = orderDetailMatches.reduce((total, match) => total + selectedOptions(match).length, 0);
-  const filteredSavedSlips = useMemo(() => savedSlips
+  const filteredSavedSlips = useMemo(() => sortSavedOrders(savedSlips
     .filter((slip) => {
       if (orderProgressFilter === "settled" && !slip.settledAt) return false;
       if (orderProgressFilter === "unsettled" && slip.settledAt) return false;
@@ -1212,12 +1211,7 @@ function InnerFootballApp({
       if (!orderDateRange) return true;
       const savedDate = savedSlipDateKey(slip.savedAt);
       return savedDate >= orderDateRange[0] && savedDate <= orderDateRange[1];
-    })
-    .sort((left, right) => {
-      const leftTime = new Date(left.savedAt).getTime();
-      const rightTime = new Date(right.savedAt).getTime();
-      return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0);
-    }), [savedSlips, orderDateRange, orderProgressFilter, orderStatusFilters]);
+    })), [savedSlips, orderDateRange, orderProgressFilter, orderStatusFilters]);
   const unsettledOrderCount = useMemo(() => savedSlips.filter((slip) => !slip.settledAt).length, [savedSlips]);
   const visibleUnlockedOrderCount = useMemo(
     () => filteredSavedSlips.filter((slip) => !isOrderOddsLocked(slip)).length,
@@ -1391,6 +1385,7 @@ function InnerFootballApp({
       message.warning(`最多可选择 ${MAX_SELECTED_MATCHES} 场比赛`);
       return;
     }
+    pendingManualOrderScrollRef.current = true;
     setManualOrderEntries((current) => [...current, createManualOrderEntry()]);
   };
 
@@ -1699,6 +1694,7 @@ function InnerFootballApp({
     setOrderEditTime(slip.savedAt);
     setOrderEditMatches(cloneMatches(slip.matches));
     setOrderEditPasses([...slip.passes]);
+    setOrderEditMultiple(slip.multiple);
     setOrderEditOddsLocked(isOrderOddsLocked(slip));
   };
 
@@ -1708,6 +1704,7 @@ function InnerFootballApp({
     setOrderEditTime("");
     setOrderEditMatches([]);
     setOrderEditPasses([]);
+    setOrderEditMultiple(1);
     setOrderEditOddsLocked(false);
   };
 
@@ -1937,6 +1934,7 @@ function InnerFootballApp({
       savedAt: nextTime.millisecond(0).toISOString(),
       matches: editingOrder.settledAt ? cloneMatches(editingOrder.matches) : cloneMatches(orderEditMatches),
       passes: nextPasses,
+      multiple: editingOrder.settledAt ? editingOrder.multiple : orderEditMultiple,
       oddsLocked: Boolean(editingOrder.settledAt || orderEditOddsLocked),
     };
     const sameOrder = (slip: SavedSlip) => slip === editingOrder || Boolean(editingOrder.id && slip.id === editingOrder.id);
@@ -1952,10 +1950,11 @@ function InnerFootballApp({
     if (temporaryOrder?.id === updated.id) {
       setMatches(cloneMatches(updated.matches));
       setPasses([...updated.passes]);
+      setMultiple(updated.multiple);
       setTemporaryOrder({ id: updated.id!, name: updated.name });
     }
     closeOrderEditor();
-    notification.success({ message: "订单已更新", description: `已保存“${updated.name}”的${editingOrder.settledAt ? "名称和时间" : "名称、时间、串关和倍率"}`, placement: "bottomRight" });
+    notification.success({ message: "订单已更新", description: `已保存“${updated.name}”的${editingOrder.settledAt ? "名称和时间" : "名称、时间、投注倍数、串关和赔率"}`, placement: "bottomRight" });
   };
 
   const settleOrders = (targets: SavedSlip[]) => {
@@ -2023,6 +2022,18 @@ function InnerFootballApp({
 
   const downloadJson = (payload: object, filename: string) => {
     downloadBlob(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" }), filename);
+  };
+
+  const exportEditingOrder = () => {
+    if (!editingOrder) return;
+    const text = formatManualOrderText(orderEditMatches);
+    if (!text) {
+      message.warning("当前订单没有可导出的已选比赛");
+      return;
+    }
+    const filename = (orderEditName.trim() || editingOrder.name || "订单").replace(/[\\/:*?"<>|]/g, "-");
+    downloadBlob(new Blob([`\uFEFF${text}`], { type: "text/plain;charset=utf-8" }), `${filename}.txt`);
+    message.success("订单已按手动添加格式导出");
   };
 
   const saveRepositoryPage = () => {
@@ -2814,6 +2825,10 @@ function InnerFootballApp({
                   const orderMatches = sortMatchesForDisplay(selectedMatches(slip.matches));
                   const orderBets = countBets(slip.matches, slip.passes);
                   const orderStake = calculateStake(slip.matches, slip.passes, slip.multiple);
+                  const orderPrizeRange = calculatePrizeRange(slip.matches, slip.passes, slip.multiple, slip.hits ?? {});
+                  const orderPrizeRangeText = orderPrizeRange.max > 0
+                    ? `¥${currency(orderPrizeRange.min)} – ¥${currency(orderPrizeRange.max)}`
+                    : "—";
                   const orderKey = slip.id || `legacy-${slip.savedAt}-${slipIndex}`;
                   const expanded = expandedOrderIds.includes(orderKey);
                   const savedHitCount = Object.values(slip.hits ?? {}).reduce((total, values) => total + Object.values(values).filter(Boolean).length, 0);
@@ -2836,7 +2851,10 @@ function InnerFootballApp({
                           </div>
                           <time>{new Date(slip.savedAt).toLocaleString("zh-CN")}</time>
                         </div>
-                        <h3>{slip.name}</h3>
+                        <div className="order-card-title-line">
+                          <h3>{slip.name}</h3>
+                          <span className="order-card-prize-range">实时中奖奖金范围 {orderPrizeRangeText}</span>
+                        </div>
                       </div>
                       <div className="order-metrics">
                         <div><strong>{orderMatches.length}</strong><span>场比赛</span></div>
@@ -3049,6 +3067,13 @@ function InnerFootballApp({
         cancelText="取消"
         onCancel={closeOrderEditor}
         onOk={saveOrderEdits}
+        footer={(_, { OkBtn, CancelBtn }) => (
+          <>
+            <CancelBtn />
+            <Button icon={<DownloadOutlined />} onClick={exportEditingOrder}>导出订单</Button>
+            <OkBtn />
+          </>
+        )}
       >
         <div className="order-editor-meta">
           <label>订单名称
@@ -3061,6 +3086,17 @@ function InnerFootballApp({
               format="YYYY-MM-DD HH:mm:ss"
               value={orderEditTime && dayjs(orderEditTime).isValid() ? dayjs(orderEditTime) : null}
               onChange={(value) => setOrderEditTime(value?.toISOString() ?? "")}
+            />
+          </label>
+          <label>投注倍数
+            <InputNumber
+              aria-label="编辑订单投注倍数"
+              controls={false}
+              min={1}
+              max={50}
+              disabled={Boolean(editingOrder?.settledAt)}
+              value={orderEditMultiple}
+              onChange={(value) => setOrderEditMultiple(Math.min(50, Math.max(1, Number(value ?? 1))))}
             />
           </label>
         </div>
@@ -3188,7 +3224,7 @@ function InnerFootballApp({
               <span>当前命中奖金</span><strong>¥{currency(orderDetailPrize)}</strong>
               <small className={orderDetailProfit >= 0 ? "profit-positive" : "profit-negative"}>当前利润 {orderDetailProfit >= 0 ? "+" : ""}¥{currency(orderDetailProfit)}</small>
             </div>
-            <DetailPrizeRange range={orderDetailRange} metrics={orderDetailRangeMetrics} />
+            <DetailPrizeRange range={orderDetailRange} metrics={orderDetailRangeMetrics} live />
             <div className="detail-pass-summary">
               <span>订单串关</span>
               <div>{orderDetail.passes.length ? orderDetail.passes.map((value) => <Tag color="cyan" key={value}>{value === 1 ? "单场" : `${value} 串 1`}</Tag>) : <Tag>未选择</Tag>}</div>
@@ -3295,7 +3331,13 @@ function InnerFootballApp({
                 <b>比赛 {index + 1}</b>
                 <Button type="text" danger icon={<DeleteOutlined />} disabled={manualOrderEntries.length === 1} onClick={() => setManualOrderEntries((current) => current.filter((item) => item.key !== entry.key))}>移除</Button>
               </div>
-              <div className="manual-match-picker-row">
+              <div
+                className="manual-match-picker-row"
+                ref={(element) => {
+                  if (element) manualOrderMatchPickerRowRefs.current.set(entry.key, element);
+                  else manualOrderMatchPickerRowRefs.current.delete(entry.key);
+                }}
+              >
                 <Select
                   allowClear
                   showSearch

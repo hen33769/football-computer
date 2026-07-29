@@ -1,9 +1,15 @@
 import { calculateStake } from "./calculator";
 import type { SavedSlip } from "./types";
 
-export const sortSavedOrders = (orders: SavedSlip[]) => [...orders].sort(
-  (left, right) => new Date(right.savedAt).getTime() - new Date(left.savedAt).getTime(),
-);
+export const sortSavedOrders = (orders: SavedSlip[]) => [...orders].sort((left, right) => {
+  const leftTime = new Date(left.savedAt).getTime();
+  const rightTime = new Date(right.savedAt).getTime();
+  const leftValid = Number.isFinite(leftTime);
+  const rightValid = Number.isFinite(rightTime);
+  if (leftValid && rightValid && leftTime !== rightTime) return rightTime - leftTime;
+  if (leftValid !== rightValid) return rightValid ? 1 : -1;
+  return right.savedAt.localeCompare(left.savedAt);
+});
 
 export const orderLedgerTotals = (orders: SavedSlip[]) => ({
   expense: orders.reduce((total, order) => total + calculateStake(order.matches, order.passes, order.multiple), 0),

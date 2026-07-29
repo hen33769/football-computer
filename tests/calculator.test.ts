@@ -16,10 +16,49 @@ import {
   MAX_SELECTED_MATCHES,
 } from "../app/calculator";
 import { cloneMatches, initialMatches } from "../app/data";
-import { unionSavedOrders } from "../app/imports";
+import { sortSavedOrders, unionSavedOrders } from "../app/imports";
 import { appendOrderPassValue, inferOrderPasses, parseOrderPassValues } from "../app/order-passes";
 import { judgeSlipWithResults, repairSlipHandicapResults } from "../app/results";
-import type { SavedSlip } from "../app/types";
+import { sortMatchesForManualOrder } from "../app/sorting";
+import type { MatchItem, SavedSlip } from "../app/types";
+
+test("订单按创建时间降序排列，非法时间排在末尾", () => {
+  const base: SavedSlip = { name: "", savedAt: "", matches: [], passes: [], multiple: 1 };
+  const orders = sortSavedOrders([
+    { ...base, name: "较早", savedAt: "2026-07-28T01:00:00.000Z" },
+    { ...base, name: "时间无效", savedAt: "unknown" },
+    { ...base, name: "最新", savedAt: "2026-07-29T01:00:00.000Z" },
+  ]);
+
+  assert.deepEqual(orders.map((order) => order.name), ["最新", "较早", "时间无效"]);
+});
+
+test("手动订单比赛先按比赛日期降序，同日按开赛时间升序", () => {
+  const match = (id: string, date: string, time: string, code: string): MatchItem => ({
+    id,
+    date,
+    time,
+    code,
+    weekday: "",
+    league: "",
+    home: "",
+    away: "",
+    markets: [],
+  });
+  const matches = sortMatchesForManualOrder([
+    match("late-day", "2026-07-30", "2026-07-31 03:00", "005"),
+    match("previous-day", "2026-07-29", "2026-07-29 18:00", "001"),
+    match("early-day", "2026-07-30", "2026-07-31 01:00", "002"),
+    match("same-time-first-code", "2026-07-30", "2026-07-31 01:00", "001"),
+  ]);
+
+  assert.deepEqual(matches.map((item) => item.id), [
+    "same-time-first-code",
+    "early-day",
+    "late-day",
+    "previous-day",
+  ]);
+});
 
 test("新增导入订单以新值更新同 ID 订单", () => {
   const existing: SavedSlip = { id: "order-1", name: "本地订单", savedAt: "2026-07-27T01:00:00.000Z", matches: [], passes: [], multiple: 1 };
@@ -144,6 +183,27 @@ test("理论奖金范围排除 0 并保持有序", () => {
   const range = calculatePrizeRange(matches, [2], 1);
   assert.ok(range.min > 0);
   assert.ok(range.max >= range.min);
+});
+
+test("实时奖金范围在某场已有成功项后忽略该场其它投注项", () => {
+  const matches = select();
+  matches[0].markets[0].options[1].selected = true;
+  matches[0].markets[0].options[1].odds = 5;
+  matches[1].markets[0].options[1].selected = true;
+  matches[1].markets[0].options[1].odds = 7;
+
+  assert.deepEqual(calculatePrizeRange(matches, [2], 1), {
+    min: 12,
+    max: 70,
+    uncappedMax: 70,
+  });
+  assert.deepEqual(calculatePrizeRange(matches, [2], 1, {
+    [matches[0].id]: { spf: "win" },
+  }), {
+    min: 12,
+    max: 28,
+    uncappedMax: 28,
+  });
 });
 
 test("中奖倍率范围按单注价格乘以倍数计算，不使用订单总投入", () => {
