@@ -11,6 +11,7 @@ import {
   DatePicker,
   Divider,
   Drawer,
+  Dropdown,
   Empty,
   Input,
   InputNumber,
@@ -65,7 +66,6 @@ import {
   calculateStake,
   countBets,
   getOrderStatus,
-  getPassLimit,
   getPassOptions,
   isOrderFailed,
   isOrderSettleable,
@@ -77,6 +77,7 @@ import {
   winningOptionId,
   type PrizeRangeMetrics,
 } from "./calculator";
+import { appendOrderPassValue, formatOrderPassValue, inferOrderPasses } from "./order-passes";
 import {
   cloneMatches,
   MARKET_LABELS,
@@ -168,6 +169,7 @@ const MATCH_PHASE_ROWS = [
   [14, "比赛结束"],
   [16, "赛前"],
 ] as const;
+const MANUAL_ORDER_PASS_SHORTCUTS = Array.from({ length: 8 }, (_, index) => index + 1);
 type LoadedOrderDraft = {
   mode?: "load" | "copy";
   filteredOptionCount?: number;
@@ -221,6 +223,11 @@ const compareMatchDisplayOrder = (left: MatchItem, right: MatchItem) => (
 
 const sortMatchesForDisplay = (items: MatchItem[]) => [...items].sort(compareMatchDisplayOrder);
 
+const sortMatchesForManualOrder = (items: MatchItem[]) => [...items].sort((left, right) => (
+  right.date.localeCompare(left.date)
+  || left.code.localeCompare(right.code, "zh-CN", { numeric: true, sensitivity: "base" })
+));
+
 const countSelectedOptions = (items: MatchItem[]) => items.reduce((total, match) => total + selectedOptions(match).length, 0);
 
 const matchesSaleFilter = (match: MatchItem, filter: MatchSaleFilter, now: Date) => {
@@ -250,6 +257,20 @@ const createManualOrderEntry = (): ManualOrderEntry => ({
   matchId: null,
   text: "",
 });
+
+function ManualMatchOptionLabel({ match, now }: { match: MatchItem; now: Date }) {
+  const saleState = getMatchSaleState(match, now);
+  return (
+    <span className="manual-match-option-label">
+      <span>{match.date} · {match.weekday}{match.code} · {match.home} VS {match.away}</span>
+      {saleState === "selling"
+        ? <Tag color="success">在售</Tag>
+        : saleState === "pending"
+          ? <Tag color="orange">待开售</Tag>
+          : <Tag color="error">已停售</Tag>}
+    </span>
+  );
+}
 
 const matchWithClearedSelections = (match: MatchItem): MatchItem => ({
   ...cloneMatches([match])[0],
@@ -520,19 +541,6 @@ const passLabel = (passes: number[]) => passes.length
   ? [...passes].sort((left, right) => left - right).map((value) => value === 1 ? "单场" : `${value} 串 1`).join("、")
   : "未选择串关";
 
-const inferOrderPasses = (text: string, orderMatches: MatchItem[]) => {
-  const matchCount = selectedMatches(orderMatches).length;
-  const limit = Math.min(matchCount, getPassLimit(orderMatches));
-  if (limit <= 0) return [];
-  const values = Array.from(text.matchAll(/([1-8])\s*(?:串|[xX×])\s*1/g), (item) => Number(item[1]));
-  if (values.length === 0) {
-    const passByCount = text.match(/([1-8])\s*关/);
-    if (passByCount) values.push(Number(passByCount[1]));
-  }
-  const valid = [...new Set(values)].filter((value) => value >= 1 && value <= limit).sort((a, b) => a - b);
-  return valid.length ? valid : [limit];
-};
-
 const cloneHits = (hits: CurrentHits | undefined): CurrentHits => Object.fromEntries(
   Object.entries(hits ?? {}).map(([matchId, values]) => [matchId, { ...values }]),
 );
@@ -797,6 +805,7 @@ function InnerFootballApp({
   const [orderEditName, setOrderEditName] = useState("");
   const [orderEditTime, setOrderEditTime] = useState("");
   const [orderEditMatches, setOrderEditMatches] = useState<MatchItem[]>([]);
+  const [orderEditPasses, setOrderEditPasses] = useState<number[]>([]);
   const [orderEditOddsLocked, setOrderEditOddsLocked] = useState(false);
   const [expandedOrderIds, setExpandedOrderIds] = useState<string[]>([]);
   const [orderOddsRefreshing, setOrderOddsRefreshing] = useState(false);
@@ -843,6 +852,8 @@ function InnerFootballApp({
   const [manualOrderOpen, setManualOrderOpen] = useState(false);
   const [manualOrderName, setManualOrderName] = useState("");
   const [manualOrderPassText, setManualOrderPassText] = useState("");
+  const [manualOrderPassDropdownOpen, setManualOrderPassDropdownOpen] = useState(false);
+  const manualOrderPassInputClickRef = useRef(false);
   const [manualOrderMultiple, setManualOrderMultiple] = useState(1);
   const [manualOrderEntries, setManualOrderEntries] = useState<ManualOrderEntry[]>(() => [createManualOrderEntry()]);
   const [manualPickerEntryKey, setManualPickerEntryKey] = useState<string | null>(null);
@@ -863,6 +874,20 @@ function InnerFootballApp({
   const [appSettings, setAppSettings] = useState<AppSettings>(() => loadAppSettings());
   const [importStrategy, setImportStrategy] = useState<ImportStrategy>("merge");
   const saleNow = useMemo(() => new Date(saleClock), [saleClock]);
+  const manualSelectedMatchIds = useMemo(() => new Set(manualOrderEntries.flatMap((entry) => (
+    entry.matchId ? [normalizeSportteryMatchId(entry.matchId)] : []
+  ))), [manualOrderEntries]);
+  const manualMatchOptions = useMemo(() => sortMatchesForManualOrder(matches).map((match) => {
+    const value = normalizeSportteryMatchId(match.id);
+    const saleState = getMatchSaleState(match, saleNow);
+    const statusText = saleState === "selling" ? "在售" : saleState === "pending" ? "待开售" : "已停售";
+    const displayText = `${match.date} · ${match.weekday}${match.code} · ${match.home} VS ${match.away}`;
+    return {
+      value,
+      searchText: `${displayText} ${statusText}`,
+      label: <ManualMatchOptionLabel match={match} now={saleNow} />,
+    };
+  }), [matches, saleNow]);
 
   const applySportterySnapshot = useCallback((snapshot: SportteryMatchSnapshot) => {
     const updateVisibleMatches = activeView === "betting" && !temporaryOrder;
@@ -1061,6 +1086,12 @@ function InnerFootballApp({
     const valid = passes.filter((value) => passOptions.includes(value));
     return valid.length > 0 || passOptions.length === 0 ? valid : [passOptions[passOptions.length - 1]];
   }, [passes, passOptions]);
+  const orderEditPassOptions = useMemo(() => [...new Set([
+    ...getPassOptions(orderEditMatches),
+    ...(editingOrder?.passes ?? []),
+  ])]
+    .filter((value) => Number.isInteger(value) && value >= 1 && value <= MAX_SELECTED_MATCHES)
+    .sort((left, right) => left - right), [editingOrder, orderEditMatches]);
 
   const navigateToView = (view: AppView) => {
     if (!cloudAccount && view !== "betting") {
@@ -1343,6 +1374,7 @@ function InnerFootballApp({
   const openManualOrder = () => {
     setManualOrderName("");
     setManualOrderPassText("");
+    setManualOrderPassDropdownOpen(false);
     setManualOrderMultiple(1);
     setManualOrderEntries([createManualOrderEntry()]);
     setManualPickerEntryKey(null);
@@ -1363,7 +1395,16 @@ function InnerFootballApp({
   };
 
   const selectManualOrderMatch = (entryKey: string, matchId: string | null) => {
-    const source = matchId ? matches.find((match) => normalizeSportteryMatchId(match.id) === normalizeSportteryMatchId(matchId)) : null;
+    const normalizedMatchId = matchId ? normalizeSportteryMatchId(matchId) : null;
+    if (normalizedMatchId && manualOrderEntries.some((entry) => (
+      entry.key !== entryKey
+      && entry.matchId
+      && normalizeSportteryMatchId(entry.matchId) === normalizedMatchId
+    ))) {
+      message.warning("该比赛已在当前订单中选择，请选择其他比赛");
+      return;
+    }
+    const source = normalizedMatchId ? matches.find((match) => normalizeSportteryMatchId(match.id) === normalizedMatchId) : null;
     if (!source) {
       updateManualOrderEntry(entryKey, { matchId: null, text: "" });
       return;
@@ -1657,6 +1698,7 @@ function InnerFootballApp({
     setOrderEditName(slip.name);
     setOrderEditTime(slip.savedAt);
     setOrderEditMatches(cloneMatches(slip.matches));
+    setOrderEditPasses([...slip.passes]);
     setOrderEditOddsLocked(isOrderOddsLocked(slip));
   };
 
@@ -1665,6 +1707,7 @@ function InnerFootballApp({
     setOrderEditName("");
     setOrderEditTime("");
     setOrderEditMatches([]);
+    setOrderEditPasses([]);
     setOrderEditOddsLocked(false);
   };
 
@@ -1875,6 +1918,13 @@ function InnerFootballApp({
       message.warning("请选择有效的订单创建时间");
       return;
     }
+    const nextPasses = editingOrder.settledAt
+      ? [...editingOrder.passes]
+      : [...new Set(orderEditPasses)].sort((left, right) => left - right);
+    if (!editingOrder.settledAt && selectedMatches(orderEditMatches).length > 0 && nextPasses.length === 0) {
+      message.warning("请至少选择一种串关方式");
+      return;
+    }
     const hasInvalidOdds = !editingOrder.settledAt && selectedMatches(orderEditMatches).some((match) => match.markets.some((market) => market.options.some((option) => option.selected && option.odds <= 0)));
     if (hasInvalidOdds) {
       message.warning("请为所有已选项填写大于 0 的倍率");
@@ -1886,19 +1936,26 @@ function InnerFootballApp({
       name: nextName,
       savedAt: nextTime.millisecond(0).toISOString(),
       matches: editingOrder.settledAt ? cloneMatches(editingOrder.matches) : cloneMatches(orderEditMatches),
+      passes: nextPasses,
       oddsLocked: Boolean(editingOrder.settledAt || orderEditOddsLocked),
     };
     const sameOrder = (slip: SavedSlip) => slip === editingOrder || Boolean(editingOrder.id && slip.id === editingOrder.id);
     const next = savedSlips.map((slip) => sameOrder(slip) ? updated : slip);
     setSavedSlips(next);
+    if (!editingOrder.settledAt) {
+      const previousStake = calculateStake(editingOrder.matches, editingOrder.passes, editingOrder.multiple);
+      const nextStake = calculateStake(updated.matches, updated.passes, updated.multiple);
+      setExpenseTotal((current) => Math.max(0, current + nextStake - previousStake));
+    }
     localCache.setItem(SAVED_KEY, JSON.stringify(next));
     if (orderDetail && sameOrder(orderDetail)) setOrderDetail(updated);
     if (temporaryOrder?.id === updated.id) {
       setMatches(cloneMatches(updated.matches));
+      setPasses([...updated.passes]);
       setTemporaryOrder({ id: updated.id!, name: updated.name });
     }
     closeOrderEditor();
-    notification.success({ message: "订单已更新", description: `已保存“${updated.name}”的${editingOrder.settledAt ? "名称和时间" : "名称、时间和倍率"}`, placement: "bottomRight" });
+    notification.success({ message: "订单已更新", description: `已保存“${updated.name}”的${editingOrder.settledAt ? "名称和时间" : "名称、时间、串关和倍率"}`, placement: "bottomRight" });
   };
 
   const settleOrders = (targets: SavedSlip[]) => {
@@ -3007,11 +3064,28 @@ function InnerFootballApp({
             />
           </label>
         </div>
+        <label className="order-editor-pass-field">串关方式
+          <Select
+            aria-label="编辑订单串关方式"
+            mode="multiple"
+            allowClear
+            maxTagCount="responsive"
+            disabled={Boolean(editingOrder?.settledAt)}
+            placeholder="请选择串关方式"
+            value={orderEditPasses}
+            options={orderEditPassOptions.map((value) => ({
+              value,
+              label: value === 1 ? "单场" : `${value} 串 1`,
+            }))}
+            onChange={(values) => setOrderEditPasses([...values].sort((left, right) => left - right))}
+          />
+          <small>{editingOrder?.settledAt ? "结账订单的串关方式已锁定。" : "修改串关后，累计投入会按新旧订单金额的差额同步调整。"}</small>
+        </label>
         <div className="order-editor-section-title">
           <b>已选项倍率</b>
           <div className="order-odds-lock"><LockOutlined /><span>锁定倍率</span><Switch checked={orderEditOddsLocked} disabled={Boolean(editingOrder?.settledAt)} onChange={setOrderEditOddsLocked} /></div>
         </div>
-        <p className="modal-help">锁定后不会参与订单页的批量倍率更新；结账订单必须锁定。手动修改只影响当前订单快照，不会改动官方比赛列表、投注倍数或收支账本。</p>
+        <p className="modal-help">锁定后不会参与订单页的批量倍率更新；结账订单必须锁定。倍率修改只影响当前订单快照，不会改动官方比赛列表；串关修改会同步调整累计投入。</p>
         <div className="order-odds-editor">
           {selectedMatches(orderEditMatches).map((match) => (
             <section className="order-odds-match" key={match.id}>
@@ -3162,7 +3236,7 @@ function InnerFootballApp({
 
       <Modal
         open={manualOrderOpen}
-        onCancel={() => { setManualOrderOpen(false); setManualPickerEntryKey(null); setManualPickerMatch(null); }}
+        onCancel={() => { setManualOrderOpen(false); setManualOrderPassDropdownOpen(false); setManualPickerEntryKey(null); setManualPickerMatch(null); }}
         onOk={addManualOrder}
         width={900}
         title="手动添加订单"
@@ -3171,7 +3245,47 @@ function InnerFootballApp({
       >
         <div className="manual-order-fields">
           <label>订单名称<Input value={manualOrderName} onChange={(event) => setManualOrderName(event.target.value)} placeholder="留空则自动命名" maxLength={30} /></label>
-          <label>串关方式<Input value={manualOrderPassText} onChange={(event) => setManualOrderPassText(event.target.value)} placeholder="例如：4串1、6串1" /></label>
+          <label>串关方式
+            <Dropdown
+              open={manualOrderPassDropdownOpen}
+              trigger={["click"]}
+              placement="bottomLeft"
+              rootClassName="manual-pass-shortcut-dropdown"
+              onOpenChange={(open, info) => {
+                if (info.source !== "trigger") return;
+                if (!open && manualOrderPassInputClickRef.current) return;
+                setManualOrderPassDropdownOpen(open);
+              }}
+              menu={{
+                items: MANUAL_ORDER_PASS_SHORTCUTS.map((value) => ({
+                  key: String(value),
+                  label: formatOrderPassValue(value),
+                })),
+                onClick: ({ key }) => {
+                  setManualOrderPassText((current) => appendOrderPassValue(current, Number(key)));
+                  setManualOrderPassDropdownOpen(true);
+                },
+              }}
+            >
+              <Input
+                value={manualOrderPassText}
+                onClickCapture={() => {
+                  manualOrderPassInputClickRef.current = true;
+                  window.setTimeout(() => {
+                    manualOrderPassInputClickRef.current = false;
+                  });
+                }}
+                onFocus={(event) => {
+                  const input = event.currentTarget;
+                  window.requestAnimationFrame(() => {
+                    if (document.activeElement === input) setManualOrderPassDropdownOpen(true);
+                  });
+                }}
+                onChange={(event) => setManualOrderPassText(event.target.value)}
+                placeholder="例如：单场、单关、2 关、3串1、三关、4、五串一"
+              />
+            </Dropdown>
+          </label>
           <label>投注倍数<InputNumber controls={false} min={1} max={50} value={manualOrderMultiple} onChange={(value) => setManualOrderMultiple(Math.min(50, Math.max(1, Number(value ?? 1))))} /></label>
         </div>
         <div className="manual-order-entry-list">
@@ -3185,12 +3299,12 @@ function InnerFootballApp({
                 <Select
                   allowClear
                   showSearch
-                  optionFilterProp="label"
+                  optionFilterProp="searchText"
                   placeholder="从本地保存的比赛数据中选择"
                   value={entry.matchId}
-                  options={sortMatchesForDisplay(matches).map((match) => ({
-                    value: normalizeSportteryMatchId(match.id),
-                    label: `${match.date} · ${match.weekday}${match.code} · ${match.home} VS ${match.away}${getMatchSaleState(match, saleNow) === "pending" ? " · 待开售" : getMatchSaleState(match, saleNow) === "stopped" ? " · 已停售" : ""}`,
+                  options={manualMatchOptions.map((option) => ({
+                    ...option,
+                    disabled: option.value !== normalizeSportteryMatchId(entry.matchId ?? "") && manualSelectedMatchIds.has(option.value),
                   }))}
                   onChange={(value) => selectManualOrderMatch(entry.key, value ?? null)}
                 />

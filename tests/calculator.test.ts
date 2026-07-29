@@ -17,6 +17,7 @@ import {
 } from "../app/calculator";
 import { cloneMatches, initialMatches } from "../app/data";
 import { unionSavedOrders } from "../app/imports";
+import { appendOrderPassValue, inferOrderPasses, parseOrderPassValues } from "../app/order-passes";
 import { judgeSlipWithResults, repairSlipHandicapResults } from "../app/results";
 import type { SavedSlip } from "../app/types";
 
@@ -40,6 +41,50 @@ function select(matches = cloneMatches(initialMatches.slice(0, 2))) {
   matches[1].markets[0].options[0].odds = 3;
   return matches;
 }
+
+test("手动订单串关兼容单场别名及中阿数字写法", () => {
+  assert.deepEqual(parseOrderPassValues(" 3 "), [3]);
+  assert.deepEqual(parseOrderPassValues(" 四 "), [4]);
+  assert.deepEqual(
+    parseOrderPassValues("单 场、单 关、1 串 1、一 串 一、1串一、一串1"),
+    [1],
+  );
+  assert.deepEqual(
+    parseOrderPassValues("2 串 1、三 串 一、4 x 1、五 × 一、六 关、7 关、八 串 1"),
+    [2, 3, 4, 5, 6, 7, 8],
+  );
+});
+
+test("手动订单串关支持多个 n 关混写并受比赛场数限制", () => {
+  const matches = cloneMatches(initialMatches.slice(0, 4));
+  matches.forEach((match) => {
+    match.markets[0].options[0].selected = true;
+  });
+
+  assert.deepEqual(parseOrderPassValues("2关、三关、4串1、五关"), [2, 3, 4, 5]);
+  assert.deepEqual(parseOrderPassValues("单场、二串一、3 串 1、4"), [1, 2, 3, 4]);
+  assert.deepEqual(parseOrderPassValues("单关、三串一、4"), [1, 3, 4]);
+  assert.deepEqual(inferOrderPasses("单关、三关、4关、八关", matches), [1, 3, 4]);
+  assert.deepEqual(inferOrderPasses("未填写串关", matches), [4]);
+});
+
+test("手动订单串关不从超出范围的连续数字中截取", () => {
+  assert.deepEqual(parseOrderPassValues("11串1、13关、九关、十三关"), []);
+  assert.deepEqual(parseOrderPassValues("比赛 ID 1234567，赔率 3.20"), []);
+});
+
+test("手动订单串关快捷填充会追加、排序、去重并统一格式", () => {
+  assert.equal(appendOrderPassValue("", 4), "4串1");
+  assert.equal(
+    appendOrderPassValue("4、单关、三串一、4串1", 2),
+    "单场、2串1、3串1、4串1",
+  );
+  assert.equal(
+    appendOrderPassValue("单场、2串1、3串1、4串1", 3),
+    "单场、2串1、3串1、4串1",
+  );
+  assert.equal(appendOrderPassValue("八关、2 串 1", 1), "单场、2串1、8串1");
+});
 
 test("2 串 1 的注数、投入和命中奖金", () => {
   const matches = select();
