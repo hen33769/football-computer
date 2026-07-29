@@ -4,6 +4,7 @@ import type { MatchItem, SavedSlip } from "../../../types";
 import { getDb } from "../../../../db";
 import { sharedMatches, userOrders, userStates } from "../../../../db/schema";
 import { findAuthenticatedCloudAccount, parseJson, routeError } from "../../../cloud-server";
+import { hydrateSportteryMatchOdds } from "../../../sporttery";
 
 export const dynamic = "force-dynamic";
 
@@ -14,7 +15,7 @@ export async function GET(request: Request) {
     const matchRows = await db.select().from(sharedMatches).orderBy(sharedMatches.businessDate, sharedMatches.matchId);
     const matches = matchRows.flatMap((row) => {
       const match = parseJson<MatchItem | null>(row.dataJson, null);
-      return match ? [match] : [];
+      return match ? [hydrateSportteryMatchOdds(match)] : [];
     });
 
     if (authenticated.kind === "anonymous") {
