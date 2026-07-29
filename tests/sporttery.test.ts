@@ -472,6 +472,58 @@ test("固定奖金历史仅保留实际倍率变化并计算最后一次方向",
   assert.equal(market(enriched, "spf").options.find((option) => option.id === "win")?.oddsHistory?.length, 3);
 });
 
+test("当前倍率缺失时使用趋势最后一条倍率", () => {
+  const [baseMatch] = convertSportteryMatches(payload, beforeKickoff);
+  market(baseMatch, "spf").options.find((option) => option.id === "win")!.odds = 0;
+  const enriched = enrichSportteryMatchOddsHistory(baseMatch, {
+    value: {
+      oddsHistory: {
+        hadList: [
+          { h: "2.10", updateDate: "2026-07-25", updateTime: "09:00:00" },
+          { h: "2.38", updateDate: "2026-07-25", updateTime: "10:00:00" },
+        ],
+      },
+    },
+  });
+  const option = market(enriched, "spf").options.find((item) => item.id === "win");
+  assert.equal(option?.odds, 2.38);
+  assert.equal(option?.oddsTrend, 1);
+  assert.equal(option?.oddsHistory?.length, 2);
+});
+
+test("比赛缓存同步不会用空倍率覆盖旧有效倍率", () => {
+  const [previous] = cloneMatches(convertSportteryMatches(payload, beforeKickoff));
+  const previousSpf = market(previous, "spf");
+  previousSpf.options[0].selected = true;
+  previousSpf.options[1].selected = true;
+
+  const [incoming] = cloneMatches(convertSportteryMatches(payload, beforeKickoff));
+  incoming.saleStatus = "stopped";
+  incoming.markets.forEach((item) => {
+    item.singleAvailable = false;
+    item.passAvailable = false;
+    item.options.forEach((option) => {
+      option.odds = 0;
+      option.oddsTrend = 0;
+      option.selected = false;
+      delete option.oddsHistory;
+    });
+  });
+  const win = market(incoming, "spf").options.find((option) => option.id === "win")!;
+  win.oddsHistory = [
+    { odds: 2.1, updatedAt: "2026-07-25 09:00:00", trend: 0 },
+    { odds: 2.38, updatedAt: "2026-07-25 10:00:00", trend: 1 },
+  ];
+
+  const [cached] = mergeSportteryMatchCache([previous], [incoming], beforeKickoff);
+  const cachedSpf = market(cached, "spf");
+  assert.equal(cached.saleStatus, "stopped");
+  assert.equal(cachedSpf.options.find((option) => option.id === "win")?.odds, 2.38);
+  assert.equal(cachedSpf.options.find((option) => option.id === "win")?.oddsTrend, 1);
+  assert.equal(cachedSpf.options.find((option) => option.id === "draw")?.odds, 2.82);
+  assert.deepEqual(cachedSpf.options.map((option) => option.selected), [true, true, false]);
+});
+
 test("常规模式按小时为今天及以后的缺失比赛逐场补取倍率", async () => {
   const now = new Date("2026-07-24T12:00:00");
   const standardPayload = structuredClone(payload);

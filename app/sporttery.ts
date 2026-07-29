@@ -1,6 +1,6 @@
 import { createMarkets } from "./data";
 import { winningOptionId } from "./calculator";
-import type { MarketType, MatchItem, OddsHistoryEntry } from "./types";
+import type { MarketType, MatchItem, OddsHistoryEntry, OddsOption } from "./types";
 
 export const SPORTTERY_MATCH_CALCULATOR_URL =
   "https://webapi.sporttery.cn/gateway/uniform/football/getMatchCalculatorV1.qry";
@@ -290,14 +290,68 @@ export function convertSportteryMatches(payload: SportteryMatchCalculatorRespons
     });
 }
 
+const latestHistoryOdds = (option?: Pick<OddsOption, "oddsHistory">) => {
+  const odds = option?.oddsHistory?.at(-1)?.odds;
+  return typeof odds === "number" && Number.isFinite(odds) && odds > 0 ? odds : 0;
+};
+
+const latestHistoryTrend = (option?: Pick<OddsOption, "oddsHistory">) => option?.oddsHistory?.at(-1)?.trend;
+
+const resolveSportteryOptionOdds = (incoming: OddsOption, previous?: OddsOption): OddsOption => {
+  const incomingHistoryOdds = latestHistoryOdds(incoming);
+  const previousHistoryOdds = latestHistoryOdds(previous);
+  const previousOdds = typeof previous?.odds === "number" && previous.odds > 0 ? previous.odds : 0;
+  const oddsHistory = incoming.oddsHistory?.length ? incoming.oddsHistory : previous?.oddsHistory;
+  const odds = incoming.odds > 0
+    ? incoming.odds
+    : incomingHistoryOdds || previousOdds || previousHistoryOdds || 0;
+  const oddsTrend = incoming.odds > 0
+    ? incoming.oddsTrend ?? latestHistoryTrend(incoming) ?? latestHistoryTrend(previous) ?? 0
+    : incomingHistoryOdds > 0
+      ? latestHistoryTrend(incoming) ?? incoming.oddsTrend ?? 0
+      : previousOdds > 0 || previousHistoryOdds > 0
+        ? previous?.oddsTrend ?? latestHistoryTrend(previous) ?? incoming.oddsTrend ?? 0
+        : incoming.oddsTrend ?? 0;
+  const resolved = {
+    ...incoming,
+    odds,
+    oddsTrend,
+  };
+  return oddsHistory?.length ? { ...resolved, oddsHistory } : resolved;
+};
+
+export const hydrateSportteryMatchOdds = (match: MatchItem): MatchItem => ({
+  ...match,
+  markets: match.markets.map((market) => ({
+    ...market,
+    options: market.options.map((option) => resolveSportteryOptionOdds(option)),
+  })),
+});
+
+export const mergeSportteryMatchOdds = (incoming: MatchItem, previous?: MatchItem): MatchItem => ({
+  ...incoming,
+  id: normalizeSportteryMatchId(incoming.id),
+  markets: incoming.markets.map((market) => {
+    const previousMarket = previous?.markets.find((item) => item.type === market.type);
+    return {
+      ...market,
+      options: market.options.map((option) => {
+        const previousOption = previousMarket?.options.find((item) => item.id === option.id);
+        return resolveSportteryOptionOdds(option, previousOption);
+      }),
+    };
+  }),
+});
+
 const preserveSelections = (incoming: MatchItem, previous?: MatchItem): MatchItem => {
-  if (!previous) return incoming;
+  const resolved = mergeSportteryMatchOdds(incoming, previous);
+  if (!previous) return resolved;
   const selected = new Set(previous.markets.flatMap((market) => market.options
     .filter((option) => option.selected)
     .map((option) => `${market.type}:${option.id}`)));
   return {
-    ...incoming,
-    markets: incoming.markets.map((market) => ({
+    ...resolved,
+    markets: resolved.markets.map((market) => ({
       ...market,
       options: market.options.map((option) => ({
         ...option,
@@ -315,7 +369,7 @@ export function replaceSportteryMatches(current: MatchItem[], incoming: MatchIte
   });
 }
 
-const retainedDateCutoff = (today: string) => {
+export const retainedSportteryMatchDateCutoff = (today: string) => {
   const date = new Date(`${today}T12:00:00`);
   if (Number.isNaN(date.getTime())) return today;
   date.setDate(date.getDate() - SPORTTERY_MATCH_CACHE_DAYS);
@@ -342,7 +396,7 @@ export function mergeSportteryMatchCache(
 ): MatchItem[] {
   const now = referenceTime instanceof Date ? referenceTime : new Date(`${referenceTime}T12:00:00`);
   const today = referenceTime instanceof Date ? localDateKey(referenceTime) : referenceTime;
-  const cutoff = retainedDateCutoff(today);
+  const cutoff = retainedSportteryMatchDateCutoff(today);
   const retained = current.filter((match) => match.date >= cutoff);
   const mergedIncoming = incoming.filter((match) => match.date >= cutoff).map((match) => {
     const normalized = { ...match, id: normalizeSportteryMatchId(match.id) };
@@ -397,7 +451,7 @@ export function unionSportteryMatchCache(
   referenceTime: string | Date,
 ): MatchItem[] {
   const today = referenceTime instanceof Date ? localDateKey(referenceTime) : referenceTime;
-  const cutoff = retainedDateCutoff(today);
+  const cutoff = retainedSportteryMatchDateCutoff(today);
   const union: MatchItem[] = [];
 
   current.forEach((match) => {
@@ -678,11 +732,11 @@ export function enrichSportteryMatchOddsHistory(
           }];
         }
         const latestTrend = oddsHistory.at(-1)?.trend;
-        return {
+        return resolveSportteryOptionOdds({
           ...option,
           ...(oddsHistory.length ? { oddsHistory } : {}),
           oddsTrend: latestTrend || option.oddsTrend || 0,
-        };
+        });
       }),
     })),
   };

@@ -1,10 +1,20 @@
 import { getD1 } from "../../../../db";
 import { clearMatchSelections } from "../../../cloud";
+import {
+  mergeSportteryMatchOdds,
+  normalizeSportteryMatchId,
+  retainedSportteryMatchDateCutoff,
+} from "../../../sporttery";
 import type { MatchItem } from "../../../types";
-import { requireAuthenticatedCloudAccount, routeError } from "../../../cloud-server";
+import { parseJson, requireAuthenticatedCloudAccount, routeError } from "../../../cloud-server";
 
 const MAX_MATCHES = 500;
 const MATCHES_PER_STATEMENT = 20;
+
+type SharedMatchRow = {
+  match_id: string;
+  data_json: string;
+};
 
 function isMatch(value: unknown): value is MatchItem {
   if (!value || typeof value !== "object") return false;
@@ -26,16 +36,30 @@ export async function PUT(request: Request) {
       return Response.json({ error: `比赛数据无效或超过 ${MAX_MATCHES} 场` }, { status: 400 });
     }
 
-    const matches = [...new Map(
+    const uploadedMatches = [...new Map(
       clearMatchSelections(structuredClone(payload.matches))
-        .map((match) => [match.id, match] as const),
+        .map((match) => {
+          const normalized = { ...match, id: normalizeSportteryMatchId(match.id) };
+          return [normalized.id, normalized] as const;
+        }),
     ).values()];
     const d1 = getD1();
     const now = new Date().toISOString();
     const userId = authenticated.value.account.id;
-    const statements = [
-      d1.prepare("DELETE FROM shared_matches"),
-    ];
+    const existingRows = await d1.prepare("SELECT match_id, data_json FROM shared_matches").all<SharedMatchRow>();
+    const existingMatches = new Map((existingRows.results ?? []).flatMap((row) => {
+      const match = parseJson<MatchItem | null>(row.data_json, null);
+      return match ? [[normalizeSportteryMatchId(row.match_id), match] as const] : [];
+    }));
+    const matches = clearMatchSelections(uploadedMatches.map((match) => (
+      mergeSportteryMatchOdds(match, existingMatches.get(match.id))
+    )));
+    const latestBusinessDate = matches.reduce<string | null>((latest, match) => (
+      !latest || match.date > latest ? match.date : latest
+    ), null);
+    const statements = latestBusinessDate
+      ? [d1.prepare("DELETE FROM shared_matches WHERE business_date < ?1").bind(retainedSportteryMatchDateCutoff(latestBusinessDate))]
+      : [];
 
     for (let index = 0; index < matches.length; index += MATCHES_PER_STATEMENT) {
       const chunk = matches.slice(index, index + MATCHES_PER_STATEMENT);
@@ -53,10 +77,15 @@ export async function PUT(request: Request) {
       statements.push(d1.prepare(`
         INSERT INTO shared_matches (match_id, business_date, data_json, updated_by, updated_at)
         VALUES ${placeholders}
+        ON CONFLICT(match_id) DO UPDATE SET
+          business_date = excluded.business_date,
+          data_json = excluded.data_json,
+          updated_by = excluded.updated_by,
+          updated_at = excluded.updated_at
       `).bind(...values));
     }
 
-    await d1.batch(statements);
+    if (statements.length > 0) await d1.batch(statements);
     return Response.json({ ok: true, savedAt: now, count: matches.length });
   } catch (error) {
     return routeError(error);
