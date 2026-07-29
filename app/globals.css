@@ -823,18 +823,18 @@ button, input, textarea { font: inherit; }
   display: flex;
   align-items: center;
   justify-content: center;
-  padding-block: 10dvh;
+  padding-block: 5dvh;
   overflow: hidden;
 }
 .ant-modal-root .ant-modal {
   top: auto;
-  max-height: 80dvh;
+  max-height: 90dvh;
   margin: 0;
   padding-bottom: 0;
 }
 .ant-modal-root .ant-modal-content,
 .ant-modal-root .ant-modal-container {
-  max-height: 80dvh;
+  max-height: 90dvh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
