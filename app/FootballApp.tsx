@@ -78,7 +78,8 @@ import {
   type PrizeRangeMetrics,
 } from "./calculator";
 import { appendOrderPassValue, formatOrderPassValue, inferOrderPasses } from "./order-passes";
-import { sortMatchesForManualOrder } from "./sorting";
+import { matchPassesLeagueFilter, orderContainsTeam, orderPassesLeagueFilter } from "./order-filters";
+import { prioritizeLeagueNames, sortMatchesForManualOrder } from "./sorting";
 import {
   cloneMatches,
   MARKET_LABELS,
@@ -144,6 +145,7 @@ const INCOME_KEY = CLOUD_STORAGE_KEYS.income;
 const LOADED_ORDER_KEY = "football-simulator-loaded-order-v1";
 const MATCH_CACHE_KEY = CLOUD_STORAGE_KEYS.matches;
 const LEGACY_MATCH_RESULTS_KEY = "football-simulator-match-results-v1";
+const ORDER_LIST_BATCH_SIZE = 10;
 
 export type AppView = "betting" | "orders" | "settings";
 type DataTransferMode = "orders" | "settings" | "matches" | "full";
@@ -726,6 +728,7 @@ function InnerFootballApp({
   const { message, modal, notification } = App.useApp();
   const isGuestMode = cloudAccount?.id === "local";
   const headerRef = useRef<HTMLElement | null>(null);
+  const orderListLoadMoreRef = useRef<HTMLDivElement | null>(null);
   const [isMobileViewport, setIsMobileViewport] = useState(false);
   const [accountLoginBetDraft] = useState<AccountLoginBetDraft | null>(() => {
     if (initialView !== "betting") return null;
@@ -811,6 +814,9 @@ function InnerFootballApp({
   const [orderDateRange, setOrderDateRange] = useState<[string, string] | null>(null);
   const [orderProgressFilter, setOrderProgressFilter] = useState<OrderProgressFilter>("unsettled");
   const [orderStatusFilters, setOrderStatusFilters] = useState<OrderStatusFilter[]>([]);
+  const [orderTeamQuery, setOrderTeamQuery] = useState("");
+  const [selectedOrderLeagueNames, setSelectedOrderLeagueNames] = useState<string[]>([]);
+  const [renderedOrderCount, setRenderedOrderCount] = useState(ORDER_LIST_BATCH_SIZE);
   const [expenseTotal, setExpenseTotal] = useState(() => {
     const stored = Number(localCache.getItem(EXPENSE_KEY));
     if (localCache.getItem(EXPENSE_KEY) !== null && Number.isFinite(stored)) return Math.max(0, stored);
@@ -850,7 +856,7 @@ function InnerFootballApp({
   const [leagueOptions, setLeagueOptions] = useState<SportteryLeague[]>(() => cachedLeagueOptions(matches));
   const [selectedMatchDate, setSelectedMatchDate] = useState<string | null>(null);
   const [matchSaleFilter, setMatchSaleFilter] = useState<MatchSaleFilter>("non-stopped");
-  const [visibleLeagueNames, setVisibleLeagueNames] = useState<string[] | null>(null);
+  const [selectedLeagueNames, setSelectedLeagueNames] = useState<string[]>([]);
   const [collapsedMatchDates, setCollapsedMatchDates] = useState<string[]>([]);
   const initializedMatchDateCollapseRef = useRef(new Set<string>());
   const autoCollapsedMatchDatesRef = useRef(new Set<string>());
@@ -886,7 +892,7 @@ function InnerFootballApp({
       setMatchDates(nextDates);
       setLeagueOptions(nextLeagues);
       setSelectedMatchDate((current) => current && nextDates.some((item) => item.businessDate === current) ? current : null);
-      setVisibleLeagueNames((current) => current?.filter((name) => nextLeagues.some((item) => item.leagueNameAbbr === name)) ?? null);
+      setSelectedLeagueNames((current) => current.filter((name) => nextLeagues.some((item) => item.leagueNameAbbr === name)));
     }
     setSportteryFetchMode(snapshot.mode);
     setSportteryLastUpdateTime(snapshot.lastUpdateTime);
@@ -1200,15 +1206,26 @@ function InnerFootballApp({
   const orderDetailRangeMetrics = calculatePrizeRangeMetrics(orderDetailRange, orderDetailStake, orderDetail?.multiple ?? 0);
   const orderDetailMatches = orderDetail ? sortMatchesForDisplay(selectedMatches(orderDetail.matches)) : [];
   const orderDetailPickedCount = orderDetailMatches.reduce((total, match) => total + selectedOptions(match).length, 0);
+  const selectedOrderLeagueSet = useMemo(() => new Set(selectedOrderLeagueNames), [selectedOrderLeagueNames]);
   const filteredSavedSlips = useMemo(() => sortSavedOrders(savedSlips
     .filter((slip) => {
       if (orderProgressFilter === "settled" && !slip.settledAt) return false;
       if (orderProgressFilter === "unsettled" && slip.settledAt) return false;
       if (orderStatusFilters.length > 0 && !orderStatusFilters.includes(getOrderStatus(slip))) return false;
-      if (!orderDateRange) return true;
-      const savedDate = savedSlipDateKey(slip.savedAt);
-      return savedDate >= orderDateRange[0] && savedDate <= orderDateRange[1];
-    })), [savedSlips, orderDateRange, orderProgressFilter, orderStatusFilters]);
+      if (orderDateRange) {
+        const savedDate = savedSlipDateKey(slip.savedAt);
+        if (savedDate < orderDateRange[0] || savedDate > orderDateRange[1]) return false;
+      }
+      return orderContainsTeam(slip, orderTeamQuery)
+        && orderPassesLeagueFilter(slip, selectedOrderLeagueSet);
+    })), [
+      savedSlips,
+      orderDateRange,
+      orderProgressFilter,
+      orderStatusFilters,
+      orderTeamQuery,
+      selectedOrderLeagueSet,
+    ]);
   const unsettledOrderCount = useMemo(() => savedSlips.filter((slip) => !slip.settledAt).length, [savedSlips]);
   const visibleUnlockedOrderCount = useMemo(
     () => filteredSavedSlips.filter((slip) => !isOrderOddsLocked(slip)).length,
@@ -1222,6 +1239,11 @@ function InnerFootballApp({
   const filteredOrderStake = filteredOrderLedger.expense;
   const filteredOrderIncome = filteredOrderLedger.income;
   const filteredOrderProfit = filteredOrderIncome - filteredOrderStake;
+  const renderedSavedSlips = useMemo(
+    () => filteredSavedSlips.slice(0, renderedOrderCount),
+    [filteredSavedSlips, renderedOrderCount],
+  );
+  const hasMoreRenderedOrders = renderedSavedSlips.length < filteredSavedSlips.length;
   const resultMatches = useMemo(() => {
     const unique = new Map<string, MatchItem>();
     const officialById = new Map(matches.map((match) => [normalizeSportteryMatchId(match.id), match]));
@@ -1236,30 +1258,56 @@ function InnerFootballApp({
     return sortMatchesForDisplay([...unique.values()]);
   }, [filteredSavedSlips, matches]);
 
+  useEffect(() => {
+    if (activeView !== "orders" || !hasMoreRenderedOrders || typeof IntersectionObserver === "undefined") return;
+    const target = orderListLoadMoreRef.current;
+    if (!target) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      setRenderedOrderCount((current) => Math.min(
+        current + ORDER_LIST_BATCH_SIZE,
+        filteredSavedSlips.length,
+      ));
+    }, { rootMargin: "360px 0px" });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [activeView, filteredSavedSlips.length, hasMoreRenderedOrders]);
+
   const availableMatchDateSet = useMemo(
     () => new Set(matches.map((match) => match.date).filter(Boolean)),
     [matches],
   );
-  const visibleLeagueSet = useMemo(
-    () => new Set(visibleLeagueNames ?? leagueOptions.map((item) => item.leagueNameAbbr)),
-    [leagueOptions, visibleLeagueNames],
-  );
+  const selectedLeagueSet = useMemo(() => new Set(selectedLeagueNames), [selectedLeagueNames]);
   const dateAndSaleFilteredMatches = useMemo(() => matches
     .filter((match) => !selectedMatchDate || match.date === selectedMatchDate)
     .filter((match) => matchesSaleFilter(match, matchSaleFilter, saleNow)),
   [matches, matchSaleFilter, saleNow, selectedMatchDate]);
   const availableLeagueOptions = useMemo(() => {
     const availableLeagueNames = new Set(dateAndSaleFilteredMatches.map((match) => match.league));
-    return leagueOptions.filter((league) => availableLeagueNames.has(league.leagueNameAbbr));
+    const optionByName = new Map(leagueOptions.map((league) => [league.leagueNameAbbr, league]));
+    return prioritizeLeagueNames(leagueOptions
+      .filter((league) => availableLeagueNames.has(league.leagueNameAbbr))
+      .map((league) => league.leagueNameAbbr))
+      .map((leagueName) => optionByName.get(leagueName))
+      .filter((league): league is SportteryLeague => Boolean(league));
   }, [dateAndSaleFilteredMatches, leagueOptions]);
+  const availableOrderLeagueNames = useMemo(() => {
+    const namesInOrders = new Set(savedSlips.flatMap((slip) => selectedMatches(slip.matches)
+      .map((match) => match.league)
+      .filter(Boolean)));
+    const orderedNames = leagueOptions
+      .map((league) => league.leagueNameAbbr)
+      .filter((leagueName) => namesInOrders.delete(leagueName));
+    return prioritizeLeagueNames([...orderedNames, ...namesInOrders]);
+  }, [leagueOptions, savedSlips]);
   const settingsLeagueNames = useMemo(() => [...new Set([
     ...Object.keys(DEFAULT_LEAGUE_TAG_COLORS),
     ...leagueOptions.map((item) => leagueColorSettingKey(item.leagueNameAbbr)),
     ...Object.keys(appSettings.appearance.leagueTagColors),
   ])], [appSettings.appearance.leagueTagColors, leagueOptions]);
   const filteredMatches = useMemo(() => dateAndSaleFilteredMatches
-    .filter((match) => leagueOptions.length === 0 || visibleLeagueSet.has(match.league))
-    .sort(compareMatchDisplayOrder), [dateAndSaleFilteredMatches, leagueOptions.length, visibleLeagueSet]);
+    .filter((match) => matchPassesLeagueFilter(match, selectedLeagueSet))
+    .sort(compareMatchDisplayOrder), [dateAndSaleFilteredMatches, selectedLeagueSet]);
 
   const groupedMatches = useMemo(() => {
     const groups = new Map<string, MatchItem[]>();
@@ -1618,6 +1666,22 @@ function InnerFootballApp({
 
   const toggleOrderExpanded = (id: string) => {
     setExpandedOrderIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  };
+
+  const clearOrderFilters = () => {
+    setRenderedOrderCount(ORDER_LIST_BATCH_SIZE);
+    setOrderDateRange(null);
+    setOrderProgressFilter(null);
+    setOrderStatusFilters([]);
+    setOrderTeamQuery("");
+    setSelectedOrderLeagueNames([]);
+  };
+
+  const toggleOrderLeagueFilter = (leagueName: string) => {
+    setRenderedOrderCount(ORDER_LIST_BATCH_SIZE);
+    setSelectedOrderLeagueNames((current) => current.includes(leagueName)
+      ? current.filter((item) => item !== leagueName)
+      : [...current, leagueName]);
   };
 
   const expandAllOrderOptions = () => {
@@ -2267,18 +2331,15 @@ function InnerFootballApp({
     message.success("累计收入已保存并锁定");
   };
 
-  const toggleLeagueVisibility = (leagueName: string) => {
-    setVisibleLeagueNames((current) => {
-      const visible = current ?? leagueOptions.map((item) => item.leagueNameAbbr);
-      return visible.includes(leagueName)
-        ? visible.filter((item) => item !== leagueName)
-        : [...visible, leagueName];
-    });
+  const toggleLeagueFilter = (leagueName: string) => {
+    setSelectedLeagueNames((current) => current.includes(leagueName)
+      ? current.filter((item) => item !== leagueName)
+      : [...current, leagueName]);
   };
 
   const clearMatchFilters = () => {
     setSelectedMatchDate(null);
-    setVisibleLeagueNames(null);
+    setSelectedLeagueNames([]);
     setMatchSaleFilter("all");
   };
 
@@ -2468,25 +2529,26 @@ function InnerFootballApp({
               >刷新数据</Button>
             </div>
             <div className="match-filter-row league-filter-control">
-              <span>比赛类型</span>
+              <span className="match-filter-label">比赛类型<small>不选则不限</small></span>
               <div className="league-filter-tags">
                 {availableLeagueOptions.map((league) => {
-                  const visible = visibleLeagueSet.has(league.leagueNameAbbr);
+                  const selected = selectedLeagueSet.has(league.leagueNameAbbr);
                   const leagueColor = getLeagueTagColor(appSettings, league.leagueNameAbbr);
                   return (
                     <Tag
                       key={league.leagueId}
                       color={leagueColor}
-                      variant={visible ? "solid" : "outlined"}
-                      style={visible ? { color: readableTagTextColor(leagueColor) } : undefined}
+                      variant={selected ? "solid" : "outlined"}
+                      style={selected ? { color: readableTagTextColor(leagueColor) } : undefined}
                       role="button"
+                      aria-pressed={selected}
                       tabIndex={0}
-                      title={league.leagueName}
-                      onClick={() => toggleLeagueVisibility(league.leagueNameAbbr)}
+                      title={`${league.leagueName} · ${selected ? "已选择" : "点击筛选"}；不选代表不限`}
+                      onClick={() => toggleLeagueFilter(league.leagueNameAbbr)}
                       onKeyDown={(event) => {
                         if (event.key === "Enter" || event.key === " ") {
                           event.preventDefault();
-                          toggleLeagueVisibility(league.leagueNameAbbr);
+                          toggleLeagueFilter(league.leagueNameAbbr);
                         }
                       }}
                     >
@@ -2615,11 +2677,7 @@ function InnerFootballApp({
                   <Button
                     type="text"
                     icon={<UndoOutlined />}
-                    onClick={() => {
-                      setOrderDateRange(null);
-                      setOrderProgressFilter(null);
-                      setOrderStatusFilters([]);
-                    }}
+                    onClick={clearOrderFilters}
                   >清除过滤</Button>
                 </div>
                 <div className="order-filter-grid">
@@ -2631,7 +2689,10 @@ function InnerFootballApp({
                       placeholder={["开始日期", "结束日期"]}
                       disabledDate={(current) => current.startOf("day").isAfter(dayjs().startOf("day"))}
                       value={orderDateRange ? [dayjs(orderDateRange[0]), dayjs(orderDateRange[1])] : null}
-                      onChange={(dates) => setOrderDateRange(dates?.[0] && dates[1] ? [dates[0].format("YYYY-MM-DD"), dates[1].format("YYYY-MM-DD")] : null)}
+                      onChange={(dates) => {
+                        setRenderedOrderCount(ORDER_LIST_BATCH_SIZE);
+                        setOrderDateRange(dates?.[0] && dates[1] ? [dates[0].format("YYYY-MM-DD"), dates[1].format("YYYY-MM-DD")] : null);
+                      }}
                     />
                   </label>
                   <label className="order-filter-field">
@@ -2647,6 +2708,7 @@ function InnerFootballApp({
                         { value: "unsettled", label: "未结账" },
                       ]}
                       onChange={(value) => {
+                        setRenderedOrderCount(ORDER_LIST_BATCH_SIZE);
                         const nextValue = String(value);
                         setOrderProgressFilter(nextValue === "settled" || nextValue === "unsettled" ? nextValue : null);
                       }}
@@ -2668,11 +2730,55 @@ function InnerFootballApp({
                         { value: "failed", label: "失败" },
                       ]}
                       onChange={(values) => {
+                        setRenderedOrderCount(ORDER_LIST_BATCH_SIZE);
                         const next = values as Array<OrderStatusFilter | "all">;
                         setOrderStatusFilters(next.includes("all") ? [] : next as OrderStatusFilter[]);
                       }}
                     />
                   </label>
+                  <label className="order-filter-field order-team-filter-field">
+                    <span>比赛队伍</span>
+                    <Input
+                      allowClear
+                      aria-label="按比赛队伍筛选订单"
+                      placeholder="输入主队或客队名称"
+                      value={orderTeamQuery}
+                      onChange={(event) => {
+                        setRenderedOrderCount(ORDER_LIST_BATCH_SIZE);
+                        setOrderTeamQuery(event.target.value);
+                      }}
+                    />
+                  </label>
+                  <div className="order-filter-field order-league-filter-field">
+                    <span>比赛类型 <small>不选代表不限</small></span>
+                    <div className="league-filter-tags">
+                      {availableOrderLeagueNames.map((leagueName) => {
+                        const selected = selectedOrderLeagueNames.includes(leagueName);
+                        const leagueColor = getLeagueTagColor(appSettings, leagueName);
+                        return (
+                          <Tag
+                            key={leagueName}
+                            color={leagueColor}
+                            variant={selected ? "solid" : "outlined"}
+                            style={selected ? { color: readableTagTextColor(leagueColor) } : undefined}
+                            role="button"
+                            aria-pressed={selected}
+                            tabIndex={0}
+                            title={`${leagueName} · ${selected ? "已选择" : "点击筛选"}；不选代表不限`}
+                            onClick={() => toggleOrderLeagueFilter(leagueName)}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" || event.key === " ") {
+                                event.preventDefault();
+                                toggleOrderLeagueFilter(leagueName);
+                              }
+                            }}
+                          >
+                            {leagueName}
+                          </Tag>
+                        );
+                      })}
+                    </div>
+                  </div>
                 </div>
                 <div className="order-filter-summary">
                   <div><span>筛选结果</span><b>{filteredSavedSlips.length}<small> 个订单</small></b></div>
@@ -2818,10 +2924,11 @@ function InnerFootballApp({
             {savedSlips.length === 0 ? (
               <Card className="orders-empty"><Empty description="还没有保存的预测单"><Button type="primary" onClick={() => navigateToView("betting")}>去选择比赛</Button></Empty></Card>
             ) : filteredSavedSlips.length === 0 ? (
-              <Card className="orders-empty"><Empty description="当前筛选条件下没有订单"><Button type="primary" onClick={() => { setOrderDateRange(null); setOrderProgressFilter(null); setOrderStatusFilters([]); }}>清除筛选</Button></Empty></Card>
+              <Card className="orders-empty"><Empty description="当前筛选条件下没有订单"><Button type="primary" onClick={clearOrderFilters}>清除筛选</Button></Empty></Card>
             ) : (
-              <div className="orders-grid">
-                {filteredSavedSlips.map((slip, slipIndex) => {
+              <>
+                <div className="orders-grid">
+                  {renderedSavedSlips.map((slip, slipIndex) => {
                   const orderMatches = sortMatchesForDisplay(selectedMatches(slip.matches));
                   const orderBets = countBets(slip.matches, slip.passes);
                   const orderStake = calculateStake(slip.matches, slip.passes, slip.multiple);
@@ -2946,8 +3053,15 @@ function InnerFootballApp({
                       </div>
                     </Card>
                   );
-                })}
-              </div>
+                  })}
+                </div>
+                {hasMoreRenderedOrders && (
+                  <div className="orders-load-more" ref={orderListLoadMoreRef} role="status" aria-live="polite">
+                    <span>继续向下滚动加载更多订单</span>
+                    <b>已展示 {renderedSavedSlips.length} / {filteredSavedSlips.length}</b>
+                  </div>
+                )}
+              </>
             )}
           </section>
         </main>

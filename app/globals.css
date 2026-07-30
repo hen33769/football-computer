@@ -248,6 +248,8 @@ button, input, textarea { font: inherit; }
 .match-toolbar { display: grid; gap: 12px; margin-bottom: 20px; padding: 14px; border: 1px solid var(--line); border-radius: 15px; background: rgba(255,255,255,.78); box-shadow: 0 6px 20px rgba(22,54,58,.035); }
 .match-filter-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: center; gap: 10px; }
 .match-filter-row > span { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.match-filter-row > .match-filter-label { display: flex; flex-direction: column; gap: 2px; white-space: normal; }
+.match-filter-label small { color: #94a2a5; font-size: 9px; }
 .match-date-control { grid-template-columns: 72px minmax(0, 1fr) auto; }
 .match-date-filters { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .match-date-filters .ant-picker { width: 220px; }
@@ -626,7 +628,10 @@ button, input, textarea { font: inherit; }
 .order-filter-grid { display: grid; grid-template-columns: minmax(250px, 1.35fr) minmax(145px, .7fr) minmax(220px, 1fr); align-items: end; gap: 12px; }
 .order-filter-field { min-width: 0; display: flex; flex-direction: column; gap: 7px; }
 .order-filter-field > span { color: #61767b; font-size: 11px; font-weight: 700; }
-.order-filter-field .ant-picker, .order-filter-field .ant-select { width: 100%; }
+.order-filter-field > span small { margin-left: 5px; color: #93a1a4; font-size: 9px; font-weight: 500; }
+.order-filter-field .ant-input, .order-filter-field .ant-picker, .order-filter-field .ant-select { width: 100%; }
+.order-league-filter-field { grid-column: 2 / -1; align-self: stretch; }
+.order-league-filter-field .league-filter-tags { min-height: 40px; align-items: center; }
 .order-filter-summary { display: grid; grid-template-columns: auto auto auto minmax(180px, 1fr); align-items: center; gap: 18px; margin-top: 16px; padding: 12px 14px; border-radius: 13px; background: linear-gradient(100deg, #f1f8f7, #f8fbfa); }
 .order-filter-summary > div { display: flex; flex-direction: column; gap: 2px; }
 .order-filter-summary span { color: #789095; font-size: 10px; }
@@ -682,6 +687,8 @@ button, input, textarea { font: inherit; }
 .match-result-fields .ant-select { width: 100%; }
 .orders-empty { min-height: 330px; display: grid; place-items: center; border-radius: 20px; }
 .orders-grid { column-count: 2; column-fill: balance; column-gap: 16px; }
+.orders-load-more { min-height: 64px; display: flex; align-items: center; justify-content: center; gap: 8px; color: #789095; font-size: 11px; }
+.orders-load-more b { color: #47676d; font-variant-numeric: tabular-nums; }
 .order-card {
   display: block;
   width: 100%;
@@ -927,6 +934,7 @@ button, input, textarea { font: inherit; }
   .pass-grid { grid-template-columns: repeat(3, 1fr); }
   .orders-heading { align-items: flex-start; }
   .order-filter-grid, .order-statistics-grid { grid-template-columns: 1fr; }
+  .order-league-filter-field { grid-column: auto; }
   .order-filter-summary { grid-template-columns: 1fr 1fr; }
   .order-filter-summary p { grid-column: 1 / -1; text-align: left; }
   .match-results-head { align-items: stretch; flex-direction: column; }

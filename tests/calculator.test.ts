@@ -17,9 +17,10 @@ import {
 } from "../app/calculator";
 import { cloneMatches, initialMatches } from "../app/data";
 import { sortSavedOrders, unionSavedOrders } from "../app/imports";
+import { matchPassesLeagueFilter, orderContainsTeam, orderPassesLeagueFilter } from "../app/order-filters";
 import { appendOrderPassValue, inferOrderPasses, parseOrderPassValues } from "../app/order-passes";
 import { judgeSlipWithResults, repairSlipHandicapResults } from "../app/results";
-import { sortMatchesForManualOrder } from "../app/sorting";
+import { prioritizeLeagueNames, sortMatchesForManualOrder } from "../app/sorting";
 import type { MatchItem, SavedSlip } from "../app/types";
 
 test("订单按创建时间降序排列，非法时间排在末尾", () => {
@@ -58,6 +59,39 @@ test("手动订单比赛先按比赛日期降序，同日按开赛时间升序",
     "late-day",
     "previous-day",
   ]);
+});
+
+test("比赛类型优先显示世界杯和欧冠，其余维持原顺序", () => {
+  assert.deepEqual(
+    prioritizeLeagueNames(["韩职", "英超", "欧冠", "西甲", "世界杯", "德甲"]),
+    ["世界杯", "欧冠", "韩职", "英超", "西甲", "德甲"],
+  );
+  assert.deepEqual(
+    prioritizeLeagueNames(["韩职", "英超", "西甲"]),
+    ["韩职", "英超", "西甲"],
+  );
+});
+
+test("订单队伍和比赛类型仅匹配实际已投注比赛，空类型代表不过滤", () => {
+  const matches = cloneMatches(initialMatches.slice(0, 2));
+  matches[0].markets[0].options[0].selected = true;
+  const slip: SavedSlip = {
+    name: "筛选测试",
+    savedAt: "2026-07-30T00:00:00.000Z",
+    matches,
+    passes: [1],
+    multiple: 1,
+  };
+
+  assert.equal(orderContainsTeam(slip, ""), true);
+  assert.equal(orderContainsTeam(slip, matches[0].home), true);
+  assert.equal(orderContainsTeam(slip, ` ${matches[0].away} `), true);
+  assert.equal(orderContainsTeam(slip, matches[1].home), false);
+  assert.equal(orderPassesLeagueFilter(slip, new Set()), true);
+  assert.equal(orderPassesLeagueFilter(slip, new Set([matches[0].league])), true);
+  assert.equal(orderPassesLeagueFilter(slip, new Set([matches[1].league])), false);
+  assert.equal(matchPassesLeagueFilter(matches[0], new Set()), true);
+  assert.equal(matchPassesLeagueFilter(matches[0], new Set([matches[0].league])), true);
 });
 
 test("新增导入订单以新值更新同 ID 订单", () => {
