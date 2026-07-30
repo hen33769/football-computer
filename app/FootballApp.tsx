@@ -1220,7 +1220,8 @@ function InnerFootballApp({
   );
   const filteredOrderLedger = useMemo(() => orderLedgerTotals(filteredSavedSlips), [filteredSavedSlips]);
   const filteredOrderStake = filteredOrderLedger.expense;
-  const filteredOrderProfit = filteredOrderLedger.income - filteredOrderLedger.expense;
+  const filteredOrderIncome = filteredOrderLedger.income;
+  const filteredOrderProfit = filteredOrderIncome - filteredOrderStake;
   const resultMatches = useMemo(() => {
     const unique = new Map<string, MatchItem>();
     const officialById = new Map(matches.map((match) => [normalizeSportteryMatchId(match.id), match]));
@@ -2676,10 +2677,12 @@ function InnerFootballApp({
                 <div className="order-filter-summary">
                   <div><span>筛选结果</span><b>{filteredSavedSlips.length}<small> 个订单</small></b></div>
                   <div><span>筛选投入</span><b>¥{currency(filteredOrderStake)}</b></div>
-                  <div className={filteredOrderProfit >= 0 ? "positive" : "negative"}>
-                    <span>筛选盈亏</span>
-                    <b>{filteredOrderProfit > 0 ? "+" : filteredOrderProfit < 0 ? "−" : ""}¥{currency(Math.abs(filteredOrderProfit))}</b>
-                  </div>
+                  <Tooltip title={<><div>筛选投入：¥{currency(filteredOrderStake)}</div><div>筛选收入：¥{currency(filteredOrderIncome)}</div></>}>
+                    <div className={`order-filter-profit ${filteredOrderProfit >= 0 ? "positive" : "negative"}`}>
+                      <span>筛选盈亏</span>
+                      <b>{filteredOrderProfit > 0 ? "+" : filteredOrderProfit < 0 ? "−" : ""}¥{currency(Math.abs(filteredOrderProfit))}</b>
+                    </div>
+                  </Tooltip>
                   <p>“有希望”表示当前既未产生中奖金额，也未因失败场次失去全部串关机会。</p>
                 </div>
               </Card>

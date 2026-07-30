@@ -631,6 +631,7 @@ button, input, textarea { font: inherit; }
 .order-filter-summary > div { display: flex; flex-direction: column; gap: 2px; }
 .order-filter-summary span { color: #789095; font-size: 10px; }
 .order-filter-summary b { color: #17383d; font-size: 18px; font-variant-numeric: tabular-nums; }
+.order-filter-summary .order-filter-profit { cursor: help; }
 .order-filter-summary .positive b { color: #128767; }
 .order-filter-summary .negative b { color: var(--accent-dark); }
 .order-filter-summary b small { color: #789095; font-size: 10px; font-weight: 500; }
