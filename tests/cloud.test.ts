@@ -9,9 +9,10 @@ import {
 } from "../app/cloud";
 import {
   applyPersonalSyncIntent,
-  createNonDestructivePersonalSyncIntent,
   createPersonalSyncIntent,
+  emptyPersonalSyncIntent,
   mergePersonalSyncIntents,
+  resolvePersonalBootstrapState,
 } from "../app/personal-sync";
 import { createDefaultSettings } from "../app/settings";
 import type { MatchItem, SavedSlip } from "../app/types";
@@ -100,14 +101,56 @@ test("删除订单只生成明确的订单 ID", () => {
   assert.deepEqual(intent.deleteOrderIds, ["order-1"]);
 });
 
-test("旧版客户端的空快照迁移不会推断删除云端订单", () => {
-  const remoteOrder = savedOrder("remote-order");
-  const intent = createNonDestructivePersonalSyncIntent(
-    personalState([remoteOrder]),
-    personalState([]),
+test("页面启动没有明确增量意图时严格使用远端订单", () => {
+  const remoteJudged = {
+    ...savedOrder("order-1"),
+    hits: { "match-1": { spf: "win" as const } },
+    resultValues: { "match-1": { spf: "win" as const } },
+  };
+  const staleLocal = savedOrder("order-1");
+  const { intent, personal } = resolvePersonalBootstrapState(
+    personalState([remoteJudged]),
+    true,
+    null,
+    personalState([staleLocal]),
   );
-  assert.deepEqual(intent.upsertOrders, []);
-  assert.deepEqual(intent.deleteOrderIds, []);
+
+  assert.deepEqual(intent, emptyPersonalSyncIntent());
+  assert.deepEqual(personal.orders, [remoteJudged]);
+  assert.notDeepEqual(personal.orders, [staleLocal]);
+});
+
+test("页面启动只叠加已经持久化的指定订单增量", () => {
+  const remoteJudged = {
+    ...savedOrder("order-1"),
+    hits: { "match-1": { spf: "win" as const } },
+  };
+  const remoteOther = savedOrder("order-2", "远端其他订单");
+  const pendingOrder = { ...remoteJudged, name: "本机明确修改" };
+  const pendingIntent = {
+    upsertOrders: [pendingOrder],
+    deleteOrderIds: [],
+  };
+  const { personal } = resolvePersonalBootstrapState(
+    personalState([remoteJudged, remoteOther]),
+    true,
+    pendingIntent,
+  );
+
+  assert.deepEqual(personal.orders, [pendingOrder, remoteOther]);
+});
+
+test("首次进入空账号时仍允许明确迁移本地订单", () => {
+  const localOrder = savedOrder("local-order", "首次迁移订单");
+  const { intent, personal } = resolvePersonalBootstrapState(
+    personalState([]),
+    false,
+    null,
+    personalState([localOrder]),
+  );
+
+  assert.deepEqual(intent.upsertOrders, [localOrder]);
+  assert.deepEqual(personal.orders, [localOrder]);
 });
 
 test("并发设备新增的未知订单不会被旧设备的增量同步删除", () => {

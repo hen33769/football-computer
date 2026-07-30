@@ -13,6 +13,10 @@ export type CloudPersonalMutation = PersonalSyncIntent & {
   expectedRevision: number;
 };
 
+export function emptyPersonalSyncIntent(): PersonalSyncIntent {
+  return { upsertOrders: [], deleteOrderIds: [] };
+}
+
 function sameValue(left: unknown, right: unknown) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
@@ -45,16 +49,6 @@ export function createPersonalSyncIntent(
     deleteOrderIds,
     finance: sameValue(previous.finance, next.finance) ? undefined : structuredClone(next.finance),
     settings: sameValue(previous.settings, next.settings) ? undefined : structuredClone(next.settings),
-  };
-}
-
-export function createNonDestructivePersonalSyncIntent(
-  previous: CloudPersonalData,
-  next: CloudPersonalData,
-): PersonalSyncIntent {
-  return {
-    ...createPersonalSyncIntent(previous, next),
-    deleteOrderIds: [],
   };
 }
 
@@ -108,5 +102,26 @@ export function fullPersonalSyncIntent(personal: CloudPersonalData): PersonalSyn
     deleteOrderIds: [],
     finance: structuredClone(personal.finance),
     settings: structuredClone(personal.settings),
+  };
+}
+
+/**
+ * 页面启动以云端快照为基准。只有已经持久化的精确增量意图，或调用方明确
+ * 允许的首次空账号迁移，才可以叠加本地数据；普通本地缓存不会参与解析。
+ */
+export function resolvePersonalBootstrapState(
+  serverPersonal: CloudPersonalData,
+  hasServerPersonalData: boolean,
+  durablePendingIntent: PersonalSyncIntent | null,
+  initialMigrationPersonal?: CloudPersonalData,
+) {
+  const intent = durablePendingIntent && hasPersonalSyncIntent(durablePendingIntent)
+    ? structuredClone(durablePendingIntent)
+    : !hasServerPersonalData && initialMigrationPersonal
+      ? fullPersonalSyncIntent(initialMigrationPersonal)
+      : emptyPersonalSyncIntent();
+  return {
+    intent,
+    personal: applyPersonalSyncIntent(serverPersonal, intent),
   };
 }

@@ -15,12 +15,11 @@ import { localCache, sessionCache } from "./browser-storage";
 import FootballApp, { type AppView } from "./FootballApp";
 import { DEMO_APP_URL } from "./links";
 import {
-  applyPersonalSyncIntent,
-  createNonDestructivePersonalSyncIntent,
   createPersonalSyncIntent,
-  fullPersonalSyncIntent,
+  emptyPersonalSyncIntent,
   hasPersonalSyncIntent,
   mergePersonalSyncIntents,
+  resolvePersonalBootstrapState,
   type CloudPersonalMutation,
   type PersonalSyncIntent,
 } from "./personal-sync";
@@ -32,10 +31,6 @@ type PendingPersonalChanges = {
   accountId: string;
   intent: PersonalSyncIntent;
 };
-
-function emptyPersonalSyncIntent(): PersonalSyncIntent {
-  return { upsertOrders: [], deleteOrderIds: [] };
-}
 
 function pathForView(view: AppView) {
   return view === "orders" ? "/orders" : view === "settings" ? "/settings" : "/";
@@ -233,7 +228,6 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
 
       const nextAccount = result.account;
       const localMarker = localCache.getItem(CLOUD_STORAGE_KEYS.accountId);
-      const hasLegacyPendingWrite = localCache.getItem(CLOUD_STORAGE_KEYS.pendingPersonal) === nextAccount.id;
       const localPersonal = readLocalPersonalState();
       const pendingMigration = readJson<CloudPersonalData | null>(CLOUD_STORAGE_KEYS.pendingMigration, null);
       const serverPersonal: CloudPersonalData = {
@@ -241,24 +235,19 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
         finance: result.personal.finance,
         settings: result.personal.settings,
       };
-      let pendingIntent = readPendingPersonalChanges(nextAccount.id) ?? emptyPersonalSyncIntent();
-      if (!result.hasPersonalData && !hasPersonalSyncIntent(pendingIntent) && pendingMigration) {
-        pendingIntent = fullPersonalSyncIntent(pendingMigration);
-      } else if (
-        !hasPersonalSyncIntent(pendingIntent)
-        && hasLegacyPendingWrite
-        && localMarker === nextAccount.id
-      ) {
-        pendingIntent = createNonDestructivePersonalSyncIntent(serverPersonal, localPersonal);
-      } else if (
-        !result.hasPersonalData
-        && !hasPersonalSyncIntent(pendingIntent)
-        && (!localMarker || localMarker === nextAccount.id)
-        && hasLocalPersonalData(localPersonal)
-      ) {
-        pendingIntent = fullPersonalSyncIntent(localPersonal);
-      }
-      const personal = applyPersonalSyncIntent(serverPersonal, pendingIntent);
+      const durablePendingIntent = readPendingPersonalChanges(nextAccount.id);
+      const initialMigrationPersonal = !result.hasPersonalData && !hasPersonalSyncIntent(durablePendingIntent ?? emptyPersonalSyncIntent())
+        ? pendingMigration
+          ?? ((!localMarker || localMarker === nextAccount.id) && hasLocalPersonalData(localPersonal)
+            ? localPersonal
+            : undefined)
+        : undefined;
+      const { intent: pendingIntent, personal } = resolvePersonalBootstrapState(
+        serverPersonal,
+        Boolean(result.hasPersonalData),
+        durablePendingIntent,
+        initialMigrationPersonal,
+      );
       localCache.removeItem(CLOUD_STORAGE_KEYS.pendingPersonal);
       localCache.removeItem(CLOUD_STORAGE_KEYS.pendingMigration);
       writePendingPersonalChanges(nextAccount.id, pendingIntent);

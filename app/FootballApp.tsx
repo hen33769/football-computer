@@ -935,9 +935,6 @@ function InnerFootballApp({
 
   useEffect(() => {
     if (!cloudAccount) return;
-    if (cloudAccount.id !== "local") {
-      localCache.setItem(CLOUD_STORAGE_KEYS.pendingPersonal, cloudAccount.id);
-    }
     onCloudPersonalChange({
       orders: savedSlips,
       finance: { expenseTotal, incomeTotal },
@@ -1509,7 +1506,7 @@ function InnerFootballApp({
       passes: [...activePasses],
       multiple,
       oddsLocked: previousOrder?.oddsLocked ?? false,
-      hits: cloneHits(hits),
+      hits: previousOrder ? filterHitsForSelections(previousOrder.hits, matches) : {},
       resultValues: previousOrder?.resultValues
         ? Object.fromEntries(Object.entries(previousOrder.resultValues).filter(([matchId]) => matches.some((match) => match.id === matchId)))
         : undefined,
