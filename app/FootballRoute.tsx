@@ -20,6 +20,7 @@ import {
   createPersonalMetadataSyncIntent,
   emptyPersonalSyncIntent,
   hasPersonalSyncIntent,
+  migrateLegacyPersonalSyncIntent,
   mergePersonalSyncIntents,
   resolvePersonalBootstrapState,
   type CloudPersonalMutation,
@@ -98,14 +99,25 @@ function installPublicState() {
 function readPendingPersonalChanges(accountId: string): PersonalSyncIntent | null {
   const pending = readJson<PendingPersonalChanges | null>(CLOUD_STORAGE_KEYS.pendingPersonalChanges, null);
   if (
-    !pending
-    || pending.accountId !== accountId
-    || !Array.isArray(pending.intent?.upsertOrders)
-    || !Array.isArray(pending.intent?.deleteOrderIds)
+    pending
+    && pending.accountId === accountId
+    && Array.isArray(pending.intent?.upsertOrders)
+    && Array.isArray(pending.intent?.deleteOrderIds)
+  ) {
+    return pending.intent;
+  }
+
+  const legacy = readJson<PendingPersonalChanges | null>(CLOUD_STORAGE_KEYS.legacyPendingPersonalChanges, null);
+  if (
+    !legacy
+    || legacy.accountId !== accountId
+    || !Array.isArray(legacy.intent?.upsertOrders)
+    || !Array.isArray(legacy.intent?.deleteOrderIds)
   ) {
     return null;
   }
-  return pending.intent;
+  localCache.removeItem(CLOUD_STORAGE_KEYS.legacyPendingPersonalChanges);
+  return migrateLegacyPersonalSyncIntent();
 }
 
 function writePendingPersonalChanges(accountId: string, intent: PersonalSyncIntent) {
@@ -150,6 +162,7 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
   const [syncStatus, setSyncStatus] = useState<CloudSyncStatus>("saved");
   const syncQueueRef = useRef<Promise<void>>(Promise.resolve());
   const pendingWritesRef = useRef(0);
+  const logoutRunningRef = useRef(false);
   const personalSyncRunningRef = useRef(false);
   const pendingPersonalIntentRef = useRef<PersonalSyncIntent>(emptyPersonalSyncIntent());
   const pendingPersonalVersionRef = useRef(0);
@@ -165,6 +178,7 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
         ...intent,
         upsertOrders: ensureOrderIds(intent.upsertOrders),
         expectedRevision: serverRevisionRef.current,
+        orderMutationVersion: 1,
       };
       try {
         const response = await requestJson<{ revision: number }>("/api/cloud/personal", {
@@ -342,7 +356,8 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
   };
 
   const logout = useCallback(async () => {
-    setSyncStatus("saving");
+    if (logoutRunningRef.current) return;
+    logoutRunningRef.current = true;
     await syncQueueRef.current.catch(() => undefined);
     try {
       await requestJson("/api/cloud/account", { method: "DELETE" });
@@ -359,11 +374,12 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
       pendingViewRef.current = null;
       sessionCache.removeItem(CLOUD_STORAGE_KEYS.loginBetDraft);
       window.history.replaceState({}, "", "/");
+      logoutRunningRef.current = false;
     }
   }, []);
 
   const enqueueWrite = useCallback((task: () => Promise<void>) => {
-    if (!accountIdRef.current) return;
+    if (!accountIdRef.current || logoutRunningRef.current) return;
     pendingWritesRef.current += 1;
     setSyncStatus("saving");
     const run = syncQueueRef.current.catch(() => undefined).then(task);

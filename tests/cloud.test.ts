@@ -11,6 +11,7 @@ import {
   applyPersonalSyncIntent,
   createPersonalMetadataSyncIntent,
   emptyPersonalSyncIntent,
+  migrateLegacyPersonalSyncIntent,
   mergePersonalSyncIntents,
   resolvePersonalBootstrapState,
 } from "../app/personal-sync";
@@ -123,6 +124,12 @@ test("页面订单快照即使只剩筛选子集，也不会推断云端删除",
   assert.deepEqual(intent.upsertOrders, []);
   assert.deepEqual(intent.deleteOrderIds, []);
   assert.deepEqual(intent.finance, filteredSnapshot.finance);
+});
+
+test("旧版待同步队列升级时不重放无法证明来源的订单或账本修改", () => {
+  const migrated = migrateLegacyPersonalSyncIntent();
+
+  assert.deepEqual(migrated, emptyPersonalSyncIntent());
 });
 
 test("十个订单中过滤出五个再更新一单，云端仍保留全部十个 ID", () => {

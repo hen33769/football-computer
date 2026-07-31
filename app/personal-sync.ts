@@ -13,10 +13,19 @@ export type OrderSyncIntent = Pick<PersonalSyncIntent, "upsertOrders" | "deleteO
 
 export type CloudPersonalMutation = PersonalSyncIntent & {
   expectedRevision: number;
+  orderMutationVersion?: 1;
 };
 
 export function emptyPersonalSyncIntent(): PersonalSyncIntent {
   return { upsertOrders: [], deleteOrderIds: [] };
+}
+
+/**
+ * v2 队列可能包含旧版完整订单快照推断出的写入与删除，无法证明每项修改都
+ * 来自明确操作。升级时整批丢弃，以当前云端快照为基准。
+ */
+export function migrateLegacyPersonalSyncIntent(): PersonalSyncIntent {
+  return emptyPersonalSyncIntent();
 }
 
 function sameValue(left: unknown, right: unknown) {

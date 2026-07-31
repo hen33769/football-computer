@@ -48,6 +48,9 @@ export async function PUT(request: Request) {
     ) {
       return Response.json({ error: `删除订单 ID 无效或超过 ${MAX_ORDERS} 个` }, { status: 400 });
     }
+    if ((rawUpserts.length > 0 || rawDeletes.length > 0) && payload.orderMutationVersion !== 1) {
+      return Response.json({ error: "订单同步协议已升级，请刷新页面后重试" }, { status: 409 });
+    }
     if (payload.finance && (
       !finiteNonNegative(payload.finance.expenseTotal)
       || !finiteNonNegative(payload.finance.incomeTotal)
