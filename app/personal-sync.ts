@@ -9,6 +9,8 @@ export type PersonalSyncIntent = {
   settings?: AppSettings;
 };
 
+export type OrderSyncIntent = Pick<PersonalSyncIntent, "upsertOrders" | "deleteOrderIds">;
+
 export type CloudPersonalMutation = PersonalSyncIntent & {
   expectedRevision: number;
 };
@@ -32,21 +34,17 @@ export function hasPersonalSyncIntent(intent: PersonalSyncIntent) {
     || Boolean(intent.settings);
 }
 
-export function createPersonalSyncIntent(
+/**
+ * 普通页面状态同步只能更新收支与设置，不能根据订单快照缺项推断删除。
+ * 订单必须由调用方通过明确的 upsertOrders / deleteOrderIds 单独提交。
+ */
+export function createPersonalMetadataSyncIntent(
   previous: CloudPersonalData,
   next: CloudPersonalData,
 ): PersonalSyncIntent {
-  const previousOrders = orderMap(previous.orders);
-  const nextOrders = orderMap(next.orders);
-  const upsertOrders = [...nextOrders].flatMap(([id, order]) => {
-    const existing = previousOrders.get(id);
-    return !existing || !sameValue(existing, order) ? [order] : [];
-  });
-  const deleteOrderIds = [...previousOrders.keys()].filter((id) => !nextOrders.has(id));
-
   return {
-    upsertOrders,
-    deleteOrderIds,
+    upsertOrders: [],
+    deleteOrderIds: [],
     finance: sameValue(previous.finance, next.finance) ? undefined : structuredClone(next.finance),
     settings: sameValue(previous.settings, next.settings) ? undefined : structuredClone(next.settings),
   };
@@ -77,18 +75,31 @@ export function mergePersonalSyncIntents(
   };
 }
 
+/** 仅按 mutation 中明确给出的订单 ID 修改本地或云端快照。 */
+export function applyOrderSyncIntent(
+  currentOrders: SavedSlip[],
+  intent: OrderSyncIntent,
+): SavedSlip[] {
+  const deletes = new Set(intent.deleteOrderIds);
+  const upserts = orderMap(intent.upsertOrders.filter((order) => order.id && !deletes.has(order.id)));
+  const existingIds = new Set(currentOrders.flatMap((order) => order.id ? [order.id] : []));
+  const addedOrders = [...upserts].flatMap(([id, order]) => (
+    existingIds.has(id) ? [] : [structuredClone(order)]
+  ));
+  const retainedOrders = currentOrders.flatMap((order) => {
+    if (order.id && deletes.has(order.id)) return [];
+    const updated = order.id ? upserts.get(order.id) : undefined;
+    return [updated ? structuredClone(updated) : order];
+  });
+  return [...addedOrders, ...retainedOrders];
+}
+
 export function applyPersonalSyncIntent(
   current: CloudPersonalData,
   intent: PersonalSyncIntent,
 ): CloudPersonalData {
-  const orders = orderMap(current.orders);
-  intent.deleteOrderIds.forEach((id) => orders.delete(id));
-  intent.upsertOrders.forEach((order) => {
-    if (order.id) orders.set(order.id, structuredClone(order));
-  });
-
   return {
-    orders: [...orders.values()].sort((left, right) => (
+    orders: applyOrderSyncIntent(current.orders, intent).sort((left, right) => (
       new Date(right.savedAt).getTime() - new Date(left.savedAt).getTime()
     )),
     finance: intent.finance ? structuredClone(intent.finance) : structuredClone(current.finance),

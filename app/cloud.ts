@@ -32,6 +32,8 @@ export type CloudPersonalData = {
   settings: AppSettings;
 };
 
+export type CloudPersonalMetadata = Pick<CloudPersonalData, "finance" | "settings">;
+
 export type CloudPersonalState = CloudPersonalData & {
   revision: number;
 };

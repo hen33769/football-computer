@@ -9,18 +9,21 @@ import {
   type CloudAccount,
   type CloudBootstrapResponse,
   type CloudPersonalData,
+  type CloudPersonalMetadata,
   type CloudSyncStatus,
 } from "./cloud";
 import { localCache, sessionCache } from "./browser-storage";
 import FootballApp, { type AppView } from "./FootballApp";
 import { DEMO_APP_URL } from "./links";
 import {
-  createPersonalSyncIntent,
+  applyPersonalSyncIntent,
+  createPersonalMetadataSyncIntent,
   emptyPersonalSyncIntent,
   hasPersonalSyncIntent,
   mergePersonalSyncIntents,
   resolvePersonalBootstrapState,
   type CloudPersonalMutation,
+  type OrderSyncIntent,
   type PersonalSyncIntent,
 } from "./personal-sync";
 import { createDefaultSettings, normalizeAppSettings } from "./settings";
@@ -417,26 +420,46 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
     });
   }, [enqueueWrite, sendPersonalMutation]);
 
-  const syncPersonal = useCallback((personal: CloudPersonalData) => {
+  const syncPersonalMetadata = useCallback((metadata: CloudPersonalMetadata) => {
     const accountId = accountIdRef.current;
     if (!accountId) return;
-    const nextPersonal: CloudPersonalData = {
-      ...personal,
-      orders: ensureOrderIds(personal.orders),
-    };
     const previous = clientPersonalRef.current;
+    if (!previous) return;
+    const nextPersonal: CloudPersonalData = {
+      ...previous,
+      finance: metadata.finance,
+      settings: metadata.settings,
+    };
     clientPersonalRef.current = nextPersonal;
-    if (previous) {
-      const incomingIntent = createPersonalSyncIntent(previous, nextPersonal);
-      if (hasPersonalSyncIntent(incomingIntent)) {
-        pendingPersonalIntentRef.current = mergePersonalSyncIntents(
-          pendingPersonalIntentRef.current,
-          incomingIntent,
-        );
-        pendingPersonalVersionRef.current += 1;
-        writePendingPersonalChanges(accountId, pendingPersonalIntentRef.current);
-      }
+    const incomingIntent = createPersonalMetadataSyncIntent(previous, nextPersonal);
+    if (hasPersonalSyncIntent(incomingIntent)) {
+      pendingPersonalIntentRef.current = mergePersonalSyncIntents(
+        pendingPersonalIntentRef.current,
+        incomingIntent,
+      );
+      pendingPersonalVersionRef.current += 1;
+      writePendingPersonalChanges(accountId, pendingPersonalIntentRef.current);
     }
+    schedulePersonalSync();
+  }, [schedulePersonalSync]);
+
+  const syncOrders = useCallback((orderIntent: OrderSyncIntent) => {
+    const accountId = accountIdRef.current;
+    if (!accountId) return;
+    const incomingIntent: PersonalSyncIntent = {
+      upsertOrders: ensureOrderIds(orderIntent.upsertOrders),
+      deleteOrderIds: [...new Set(orderIntent.deleteOrderIds)],
+    };
+    if (!hasPersonalSyncIntent(incomingIntent)) return;
+    if (clientPersonalRef.current) {
+      clientPersonalRef.current = applyPersonalSyncIntent(clientPersonalRef.current, incomingIntent);
+    }
+    pendingPersonalIntentRef.current = mergePersonalSyncIntents(
+      pendingPersonalIntentRef.current,
+      incomingIntent,
+    );
+    pendingPersonalVersionRef.current += 1;
+    writePendingPersonalChanges(accountId, pendingPersonalIntentRef.current);
     schedulePersonalSync();
   }, [schedulePersonalSync]);
 
@@ -489,7 +512,8 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
         onNavigate={navigate}
         cloudAccount={account}
         cloudSyncStatus={syncStatus}
-        onCloudPersonalChange={syncPersonal}
+        onCloudPersonalMetadataChange={syncPersonalMetadata}
+        onCloudOrderMutation={syncOrders}
         onCloudMatchesChange={syncMatches}
         onRequireAccount={openAccountDialog}
         onLogout={logout}

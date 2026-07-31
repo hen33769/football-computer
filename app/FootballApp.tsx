@@ -86,10 +86,12 @@ import {
 } from "./data";
 import {
   CLOUD_STORAGE_KEYS,
+  ensureOrderIds,
   type CloudAccount,
-  type CloudPersonalData,
+  type CloudPersonalMetadata,
   type CloudSyncStatus,
 } from "./cloud";
+import { applyOrderSyncIntent, type OrderSyncIntent } from "./personal-sync";
 import { localCache, sessionCache } from "./browser-storage";
 import { APP_VERSION } from "./AppVersion";
 import { MatchPreviewModal, OfficialTrendModal } from "./FootballInsights";
@@ -711,7 +713,8 @@ function InnerFootballApp({
   onNavigate,
   cloudAccount,
   cloudSyncStatus,
-  onCloudPersonalChange,
+  onCloudPersonalMetadataChange,
+  onCloudOrderMutation,
   onCloudMatchesChange,
   onRequireAccount,
   onLogout,
@@ -720,7 +723,8 @@ function InnerFootballApp({
   onNavigate?: (view: AppView) => void;
   cloudAccount: CloudAccount | null;
   cloudSyncStatus: CloudSyncStatus;
-  onCloudPersonalChange: (state: CloudPersonalData) => void;
+  onCloudPersonalMetadataChange: (state: CloudPersonalMetadata) => void;
+  onCloudOrderMutation: (intent: OrderSyncIntent) => void;
   onCloudMatchesChange: (matches: MatchItem[]) => void;
   onRequireAccount: (view?: AppView) => void;
   onLogout: () => Promise<void>;
@@ -793,20 +797,23 @@ function InnerFootballApp({
   const [orderEditOddsLocked, setOrderEditOddsLocked] = useState(false);
   const [expandedOrderIds, setExpandedOrderIds] = useState<string[]>([]);
   const [orderOddsRefreshing, setOrderOddsRefreshing] = useState(false);
-  const [savedSlips, setSavedSlips] = useState<SavedSlip[]>(() => {
+  const [initialSavedSlipLoad] = useState(() => {
     try {
       const raw = localCache.getItem(SAVED_KEY);
-      if (!raw) return [];
+      if (!raw) return { orders: [] as SavedSlip[], repairedOrders: [] as SavedSlip[] };
       const parsed = JSON.parse(raw) as SavedSlip[];
-      const repaired = parsed.map(repairSlipHandicapResults);
-      if (repaired.some((slip, index) => slip !== parsed[index])) {
+      const repaired = ensureOrderIds(parsed.map(repairSlipHandicapResults));
+      const repairedOrders = repaired.filter((slip, index) => slip !== parsed[index]);
+      if (repairedOrders.length > 0) {
         localCache.setItem(SAVED_KEY, JSON.stringify(repaired));
       }
-      return repaired;
+      return { orders: repaired, repairedOrders };
     } catch {
-      return [];
+      return { orders: [] as SavedSlip[], repairedOrders: [] as SavedSlip[] };
     }
   });
+  const [savedSlips, setSavedSlips] = useState<SavedSlip[]>(initialSavedSlipLoad.orders);
+  const repairedOrdersSentRef = useRef(false);
   const [matchResults, setMatchResults] = useState<MatchResults>({});
   const [resultFetchingMatchIds, setResultFetchingMatchIds] = useState<string[]>([]);
   const [allResultsFetching, setAllResultsFetching] = useState(false);
@@ -834,7 +841,7 @@ function InnerFootballApp({
   const [incomeEditing, setIncomeEditing] = useState(false);
   const [expenseDraft, setExpenseDraft] = useState(0);
   const [incomeDraft, setIncomeDraft] = useState(0);
-  const [saveOpen, setSaveOpen] = useState(false);
+  const [saveOpen, setSaveOpen] = useState(() => Boolean(accountLoginBetDraft && cloudAccount));
   const [saveName, setSaveName] = useState("");
   const [manualOrderOpen, setManualOrderOpen] = useState(false);
   const [manualOrderName, setManualOrderName] = useState("");
@@ -877,6 +884,14 @@ function InnerFootballApp({
       label: <ManualMatchOptionLabel match={match} now={saleNow} />,
     };
   }), [matches, saleNow]);
+
+  const commitOrderMutation = useCallback((intent: OrderSyncIntent) => {
+    const nextOrders = applyOrderSyncIntent(savedSlips, intent);
+    setSavedSlips(nextOrders);
+    localCache.setItem(SAVED_KEY, JSON.stringify(nextOrders));
+    onCloudOrderMutation(intent);
+    return nextOrders;
+  }, [onCloudOrderMutation, savedSlips]);
 
   const applySportterySnapshot = useCallback((snapshot: SportteryMatchSnapshot) => {
     const updateVisibleMatches = activeView === "betting" && !temporaryOrder;
@@ -926,8 +941,6 @@ function InnerFootballApp({
   useEffect(() => {
     if (!accountLoginBetDraft || !cloudAccount) return;
     sessionCache.removeItem(CLOUD_STORAGE_KEYS.loginBetDraft);
-    setSaveName("");
-    setSaveOpen(true);
     message.success("账号已登录，刚才选择的比赛和串关已保留");
   }, [accountLoginBetDraft, cloudAccount, message]);
 
@@ -941,12 +954,17 @@ function InnerFootballApp({
 
   useEffect(() => {
     if (!cloudAccount) return;
-    onCloudPersonalChange({
-      orders: savedSlips,
+    onCloudPersonalMetadataChange({
       finance: { expenseTotal, incomeTotal },
       settings: appSettings,
     });
-  }, [appSettings, cloudAccount, expenseTotal, incomeTotal, onCloudPersonalChange, savedSlips]);
+  }, [appSettings, cloudAccount, expenseTotal, incomeTotal, onCloudPersonalMetadataChange]);
+
+  useEffect(() => {
+    if (!cloudAccount || repairedOrdersSentRef.current || initialSavedSlipLoad.repairedOrders.length === 0) return;
+    repairedOrdersSentRef.current = true;
+    onCloudOrderMutation({ upsertOrders: initialSavedSlipLoad.repairedOrders, deleteOrderIds: [] });
+  }, [cloudAccount, initialSavedSlipLoad.repairedOrders, onCloudOrderMutation]);
 
   useEffect(() => {
     matchesRef.current = matches;
@@ -1370,10 +1388,8 @@ function InnerFootballApp({
       oddsLocked: false,
       hits: {},
     };
-    const all = [nextOrder, ...savedSlips];
-    setSavedSlips(all);
+    commitOrderMutation({ upsertOrders: [nextOrder], deleteOrderIds: [] });
     setExpenseTotal((current) => current + calculateStake(nextOrder.matches, nextOrder.passes, nextOrder.multiple));
-    localCache.setItem(SAVED_KEY, JSON.stringify(all));
     notification.success({
       message: "订单添加完成",
       description: `新增 1 个订单，包含 ${selectedMatches(orderMatches).length} 场比赛`,
@@ -1561,14 +1577,10 @@ function InnerFootballApp({
         : undefined,
       failedMatches: previousOrder?.failedMatches?.filter((matchId) => matches.some((match) => match.id === matchId)) ?? [],
     };
-    const all = loadedOrderIndex >= 0
-      ? savedSlips.map((slip, index) => index === loadedOrderIndex ? next : slip)
-      : [next, ...savedSlips];
     const previousStake = previousOrder ? calculateStake(previousOrder.matches, previousOrder.passes, previousOrder.multiple) : 0;
     const nextStake = calculateStake(next.matches, next.passes, next.multiple);
-    setSavedSlips(all);
+    commitOrderMutation({ upsertOrders: [next], deleteOrderIds: [] });
     setExpenseTotal((current) => Math.max(0, current + nextStake - previousStake));
-    localCache.setItem(SAVED_KEY, JSON.stringify(all));
     setSaveOpen(false);
     setSaveName("");
     if (temporaryOrder) restoreSavedMatches();
@@ -1607,9 +1619,7 @@ function InnerFootballApp({
     const orderId = slip.id || createSlipId();
     const loadedSlip = slip.id ? slip : { ...slip, id: orderId };
     if (!slip.id) {
-      const nextSavedSlips = savedSlips.map((item) => item === slip ? loadedSlip : item);
-      setSavedSlips(nextSavedSlips);
-      localCache.setItem(SAVED_KEY, JSON.stringify(nextSavedSlips));
+      commitOrderMutation({ upsertOrders: [loadedSlip], deleteOrderIds: [] });
     }
     setMatches(availableMatches);
     setPasses([...loadedSlip.passes]);
@@ -1657,11 +1667,12 @@ function InnerFootballApp({
 
   const deleteSlip = (target: SavedSlip) => {
     if (!savedSlips.includes(target)) return;
-    const next = savedSlips.filter((slip) => slip !== target);
-    setSavedSlips(next);
+    commitOrderMutation({
+      upsertOrders: [],
+      deleteOrderIds: target.id ? [target.id] : [],
+    });
     setExpenseTotal((current) => Math.max(0, current - calculateStake(target.matches, target.passes, target.multiple)));
     if (target.settledAt) setIncomeTotal((current) => Math.max(0, current - (target.settledPrize ?? 0)));
-    localCache.setItem(SAVED_KEY, JSON.stringify(next));
   };
 
   const toggleOrderExpanded = (id: string) => {
@@ -1697,10 +1708,10 @@ function InnerFootballApp({
     }
 
     const nextOrders = savedSlips.map((slip) => visibleUnlockedOrders.has(slip) ? { ...slip, oddsLocked: true } : slip);
+    const updatedOrders = nextOrders.filter((slip, index) => slip !== savedSlips[index]);
     const detailIndex = orderDetail ? savedSlips.findIndex((slip) => slip === orderDetail || Boolean(orderDetail.id && slip.id === orderDetail.id)) : -1;
-    setSavedSlips(nextOrders);
-    localCache.setItem(SAVED_KEY, JSON.stringify(nextOrders));
-    if (detailIndex >= 0) setOrderDetail(nextOrders[detailIndex]);
+    const committedOrders = commitOrderMutation({ upsertOrders: updatedOrders, deleteOrderIds: [] });
+    if (detailIndex >= 0) setOrderDetail(committedOrders[detailIndex]);
     notification.success({
       title: "倍率锁定完成",
       description: `已锁定当前查看的 ${visibleUnlockedOrders.size} 个订单`,
@@ -1731,9 +1742,9 @@ function InnerFootballApp({
         return { ...slip, matches: refreshed.matches };
       });
       const detailIndex = orderDetail ? savedSlips.findIndex((slip) => slip === orderDetail || Boolean(orderDetail.id && slip.id === orderDetail.id)) : -1;
-      setSavedSlips(nextOrders);
-      localCache.setItem(SAVED_KEY, JSON.stringify(nextOrders));
-      if (detailIndex >= 0) setOrderDetail(nextOrders[detailIndex]);
+      const updatedOrders = nextOrders.filter((slip, index) => slip !== savedSlips[index]);
+      const committedOrders = commitOrderMutation({ upsertOrders: updatedOrders, deleteOrderIds: [] });
+      if (detailIndex >= 0) setOrderDetail(committedOrders[detailIndex]);
       notification.success({
         title: "订单倍率更新完成",
         description: `已检查 ${unlockedOrderCount} 个未锁定订单，匹配 ${matchedOptionCount} 个投注项，${changedOptionCount} 项倍率发生变化${unmatchedOptionCount ? `；${unmatchedOptionCount} 项暂无最新可售倍率，已保留原值` : ""}`,
@@ -1810,10 +1821,8 @@ function InnerFootballApp({
       hits: cloneHits(orderHits),
       failedMatches: [...orderFailedMatches],
     };
-    const next = savedSlips.map((slip) => slip === orderDetail ? updated : slip);
-    setSavedSlips(next);
+    commitOrderMutation({ upsertOrders: [updated], deleteOrderIds: [] });
     setOrderDetail(updated);
-    localCache.setItem(SAVED_KEY, JSON.stringify(next));
     notification.success({ message: "比赛结果已保存", description: `已更新订单“${updated.name}”的命中与失败状态`, placement: "bottomRight" });
   };
 
@@ -1941,17 +1950,17 @@ function InnerFootballApp({
       return;
     }
     const next = savedSlips.map((slip) => visibleOrders.has(slip) ? judgeSlipWithResults(slip, matchResults) : slip);
-    setSavedSlips(next);
-    localCache.setItem(SAVED_KEY, JSON.stringify(next));
+    const updatedOrders = next.filter((slip, index) => slip !== savedSlips[index]);
+    const committedOrders = commitOrderMutation({ upsertOrders: updatedOrders, deleteOrderIds: [] });
     if (orderDetail) {
-      const updatedDetail = next.find((slip) => slip === orderDetail || Boolean(orderDetail.id && slip.id === orderDetail.id));
+      const updatedDetail = committedOrders.find((slip) => slip === orderDetail || Boolean(orderDetail.id && slip.id === orderDetail.id));
       if (updatedDetail) {
         setOrderDetail(updatedDetail);
         setOrderHits(cloneHits(updatedDetail.hits));
         setOrderFailedMatches([...(updatedDetail.failedMatches ?? [])]);
       }
     }
-    const failedOrders = next.filter((slip) => visibleOrders.has(slip) && isOrderFailed(slip)).length;
+    const failedOrders = updatedOrders.filter(isOrderFailed).length;
     notification.success({ message: "订单判断完成", description: `已判断 ${visibleOrders.size} 个未结账订单${failedOrders ? `，其中 ${failedOrders} 个订单已不符合串关条件` : ""}`, placement: "bottomRight" });
   };
 
@@ -2000,14 +2009,12 @@ function InnerFootballApp({
       oddsLocked: Boolean(editingOrder.settledAt || orderEditOddsLocked),
     };
     const sameOrder = (slip: SavedSlip) => slip === editingOrder || Boolean(editingOrder.id && slip.id === editingOrder.id);
-    const next = savedSlips.map((slip) => sameOrder(slip) ? updated : slip);
-    setSavedSlips(next);
+    commitOrderMutation({ upsertOrders: [updated], deleteOrderIds: [] });
     if (!editingOrder.settledAt) {
       const previousStake = calculateStake(editingOrder.matches, editingOrder.passes, editingOrder.multiple);
       const nextStake = calculateStake(updated.matches, updated.passes, updated.multiple);
       setExpenseTotal((current) => Math.max(0, current + nextStake - previousStake));
     }
-    localCache.setItem(SAVED_KEY, JSON.stringify(next));
     if (orderDetail && sameOrder(orderDetail)) setOrderDetail(updated);
     if (temporaryOrder?.id === updated.id) {
       setMatches(cloneMatches(updated.matches));
@@ -2035,11 +2042,9 @@ function InnerFootballApp({
         oddsLocked: true,
       } satisfies SavedSlip] as const;
     }));
-    const next = savedSlips.map((slip) => settledOrders.get(slip) ?? slip);
     const settledPrizeTotal = [...settledOrders.values()].reduce((total, slip) => total + (slip.settledPrize ?? 0), 0);
-    setSavedSlips(next);
+    commitOrderMutation({ upsertOrders: [...settledOrders.values()], deleteOrderIds: [] });
     setIncomeTotal((current) => current + settledPrizeTotal);
-    localCache.setItem(SAVED_KEY, JSON.stringify(next));
     const settledDetail = orderDetail ? settledOrders.get(orderDetail) : undefined;
     if (settledDetail) setOrderDetail(settledDetail);
     if (temporaryOrder && [...settledOrders.values()].some((slip) => slip.id === temporaryOrder.id)) restoreSavedMatches();
@@ -2059,10 +2064,8 @@ function InnerFootballApp({
       oddsLocked: target.oddsLockedBeforeSettlement ?? false,
       oddsLockedBeforeSettlement: undefined,
     };
-    const next = savedSlips.map((slip) => slip === target ? withdrawn : slip);
-    setSavedSlips(next);
+    commitOrderMutation({ upsertOrders: [withdrawn], deleteOrderIds: [] });
     setIncomeTotal((current) => Math.max(0, current - (target.settledPrize ?? 0)));
-    localCache.setItem(SAVED_KEY, JSON.stringify(next));
     if (orderDetail === target) setOrderDetail(withdrawn);
     notification.success({
       message: "结账已撤回",
@@ -2244,12 +2247,20 @@ function InnerFootballApp({
           cancelText: "取消",
           okButtonProps: { danger: strategy === "replace" },
           onOk: () => {
-            setSavedSlips(restoredOrders);
+            const restoredOrderIds = new Set(restoredOrders.flatMap((order) => order.id ? [order.id] : []));
+            const incomingOrderIds = new Set(incomingOrders.flatMap((order) => order.id ? [order.id] : []));
+            commitOrderMutation({
+              upsertOrders: strategy === "merge"
+                ? restoredOrders.filter((order) => Boolean(order.id && incomingOrderIds.has(order.id)))
+                : restoredOrders,
+              deleteOrderIds: strategy === "replace"
+                ? savedSlips.flatMap((order) => order.id && !restoredOrderIds.has(order.id) ? [order.id] : [])
+                : [],
+            });
             setAppSettings(saveAppSettings(restoredSettings));
             setExpenseTotal(nextExpense);
             setIncomeTotal(nextIncome);
             if (canImportMatches) applyMatches(restoredMatches);
-            localCache.setItem(SAVED_KEY, JSON.stringify(restoredOrders));
             localCache.setItem(EXPENSE_KEY, String(nextExpense));
             localCache.setItem(INCOME_KEY, String(nextIncome));
             notification.success({
@@ -2266,10 +2277,13 @@ function InnerFootballApp({
 
       if (strategy === "merge") {
         const { nextOrders, added, updated, expenseDelta, incomeDelta } = unionSavedOrders(savedSlips, incomingOrders);
-        setSavedSlips(nextOrders);
+        const incomingOrderIds = new Set(incomingOrders.flatMap((order) => order.id ? [order.id] : []));
+        commitOrderMutation({
+          upsertOrders: nextOrders.filter((order) => Boolean(order.id && incomingOrderIds.has(order.id))),
+          deleteOrderIds: [],
+        });
         setExpenseTotal((current) => Math.max(0, current + expenseDelta));
         setIncomeTotal((current) => Math.max(0, current + incomeDelta));
-        localCache.setItem(SAVED_KEY, JSON.stringify(nextOrders));
         notification.success({ message: "订单合并完成", description: `新增 ${added} 个，更新 ${updated} 个同 ID 订单`, placement: "bottomRight" });
         return;
       }
@@ -2277,10 +2291,13 @@ function InnerFootballApp({
       const restoredOrders = sortSavedOrders(incomingOrders);
       const currentTotals = orderLedgerTotals(savedSlips);
       const restoredTotals = orderLedgerTotals(restoredOrders);
-      setSavedSlips(restoredOrders);
+      const restoredOrderIds = new Set(restoredOrders.flatMap((order) => order.id ? [order.id] : []));
+      commitOrderMutation({
+        upsertOrders: restoredOrders,
+        deleteOrderIds: savedSlips.flatMap((order) => order.id && !restoredOrderIds.has(order.id) ? [order.id] : []),
+      });
       setExpenseTotal((current) => Math.max(0, current - currentTotals.expense + restoredTotals.expense));
       setIncomeTotal((current) => Math.max(0, current - currentTotals.income + restoredTotals.income));
-      localCache.setItem(SAVED_KEY, JSON.stringify(restoredOrders));
       notification.success({ message: "订单覆盖完成", description: `已恢复 ${restoredOrders.length} 个订单`, placement: "bottomRight" });
     } catch (error) {
       notification.error({
@@ -3512,7 +3529,8 @@ function InnerFootballApp({
 }
 
 const LOCAL_CLOUD_ACCOUNT: CloudAccount = { id: "local", account: "游客", role: "user" };
-const ignoreCloudPersonalChange = () => undefined;
+const ignoreCloudPersonalMetadataChange = () => undefined;
+const ignoreCloudOrderMutation = () => undefined;
 const ignoreCloudMatchesChange = () => undefined;
 
 export default function FootballApp({
@@ -3520,7 +3538,8 @@ export default function FootballApp({
   onNavigate,
   cloudAccount = LOCAL_CLOUD_ACCOUNT,
   cloudSyncStatus = "saved",
-  onCloudPersonalChange = ignoreCloudPersonalChange,
+  onCloudPersonalMetadataChange = ignoreCloudPersonalMetadataChange,
+  onCloudOrderMutation = ignoreCloudOrderMutation,
   onCloudMatchesChange = ignoreCloudMatchesChange,
   onRequireAccount = () => undefined,
   onLogout = async () => undefined,
@@ -3529,7 +3548,8 @@ export default function FootballApp({
   onNavigate?: (view: AppView) => void;
   cloudAccount?: CloudAccount | null;
   cloudSyncStatus?: CloudSyncStatus;
-  onCloudPersonalChange?: (state: CloudPersonalData) => void;
+  onCloudPersonalMetadataChange?: (state: CloudPersonalMetadata) => void;
+  onCloudOrderMutation?: (intent: OrderSyncIntent) => void;
   onCloudMatchesChange?: (matches: MatchItem[]) => void;
   onRequireAccount?: (view?: AppView) => void;
   onLogout?: () => Promise<void>;
@@ -3560,7 +3580,8 @@ export default function FootballApp({
           onNavigate={onNavigate}
           cloudAccount={cloudAccount}
           cloudSyncStatus={cloudSyncStatus}
-          onCloudPersonalChange={onCloudPersonalChange}
+          onCloudPersonalMetadataChange={onCloudPersonalMetadataChange}
+          onCloudOrderMutation={onCloudOrderMutation}
           onCloudMatchesChange={onCloudMatchesChange}
           onRequireAccount={onRequireAccount}
           onLogout={onLogout}

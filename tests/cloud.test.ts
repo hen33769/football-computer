@@ -9,7 +9,7 @@ import {
 } from "../app/cloud";
 import {
   applyPersonalSyncIntent,
-  createPersonalSyncIntent,
+  createPersonalMetadataSyncIntent,
   emptyPersonalSyncIntent,
   mergePersonalSyncIntents,
   resolvePersonalBootstrapState,
@@ -80,25 +80,68 @@ function savedOrder(id: string, name = id): SavedSlip {
   };
 }
 
-test("新增和编辑订单只生成对应订单的 upsert，不替换整张订单表", () => {
+test("新增和编辑订单通过明确 ID upsert，不影响其它订单", () => {
   const first = savedOrder("order-1");
   const added = savedOrder("order-2");
-  const addIntent = createPersonalSyncIntent(personalState([first]), personalState([first, added]));
-  assert.deepEqual(addIntent.upsertOrders.map((order) => order.id), ["order-2"]);
-  assert.deepEqual(addIntent.deleteOrderIds, []);
-
+  const afterAdd = applyPersonalSyncIntent(personalState([first]), {
+    upsertOrders: [added],
+    deleteOrderIds: [],
+  });
   const edited = { ...first, name: "已编辑" };
-  const editIntent = createPersonalSyncIntent(personalState([first, added]), personalState([edited, added]));
-  assert.deepEqual(editIntent.upsertOrders.map((order) => order.id), ["order-1"]);
-  assert.deepEqual(editIntent.deleteOrderIds, []);
+  const afterEdit = applyPersonalSyncIntent(afterAdd, {
+    upsertOrders: [edited],
+    deleteOrderIds: [],
+  });
+
+  assert.deepEqual(afterEdit.orders.map((order) => order.id).sort(), ["order-1", "order-2"]);
+  assert.equal(afterEdit.orders.find((order) => order.id === "order-1")?.name, "已编辑");
 });
 
-test("删除订单只生成明确的订单 ID", () => {
+test("删除订单只应用调用方明确提交的订单 ID", () => {
   const first = savedOrder("order-1");
   const second = savedOrder("order-2");
-  const intent = createPersonalSyncIntent(personalState([first, second]), personalState([second]));
+  const third = savedOrder("order-3");
+  const next = applyPersonalSyncIntent(personalState([first, second, third]), {
+    upsertOrders: [],
+    deleteOrderIds: ["order-1"],
+  });
+
+  assert.deepEqual(next.orders.map((order) => order.id).sort(), ["order-2", "order-3"]);
+});
+
+test("页面订单快照即使只剩筛选子集，也不会推断云端删除", () => {
+  const first = savedOrder("order-1");
+  const second = savedOrder("order-2");
+  const previous = personalState([first, second]);
+  const filteredSnapshot = {
+    ...previous,
+    orders: [first],
+    finance: { expenseTotal: 20, incomeTotal: 0 },
+  };
+  const intent = createPersonalMetadataSyncIntent(previous, filteredSnapshot);
+
   assert.deepEqual(intent.upsertOrders, []);
-  assert.deepEqual(intent.deleteOrderIds, ["order-1"]);
+  assert.deepEqual(intent.deleteOrderIds, []);
+  assert.deepEqual(intent.finance, filteredSnapshot.finance);
+});
+
+test("十个订单中过滤出五个再更新一单，云端仍保留全部十个 ID", () => {
+  const remoteOrders = Array.from({ length: 10 }, (_, index) => savedOrder(`order-${index + 1}`));
+  const filteredOrders = remoteOrders.slice(0, 5);
+  const edited = { ...filteredOrders[0], name: "已替换本菲卡投注" };
+  const metadataIntent = createPersonalMetadataSyncIntent(
+    personalState(remoteOrders),
+    personalState(filteredOrders),
+  );
+  const pending = mergePersonalSyncIntents(metadataIntent, {
+    upsertOrders: [edited],
+    deleteOrderIds: [],
+  });
+  const merged = applyPersonalSyncIntent(personalState(remoteOrders), pending);
+
+  assert.equal(merged.orders.length, 10);
+  assert.deepEqual(merged.orders.map((order) => order.id).sort(), remoteOrders.map((order) => order.id).sort());
+  assert.equal(merged.orders.find((order) => order.id === edited.id)?.name, edited.name);
 });
 
 test("页面启动没有明确增量意图时严格使用远端订单", () => {
@@ -157,7 +200,7 @@ test("并发设备新增的未知订单不会被旧设备的增量同步删除",
   const original = savedOrder("order-1");
   const remoteAdded = savedOrder("remote-order");
   const localEdited = { ...original, name: "本机编辑" };
-  const localIntent = createPersonalSyncIntent(personalState([original]), personalState([localEdited]));
+  const localIntent = { upsertOrders: [localEdited], deleteOrderIds: [] };
   const merged = applyPersonalSyncIntent(personalState([original, remoteAdded]), localIntent);
 
   assert.deepEqual(merged.orders.map((order) => order.id).sort(), ["order-1", "remote-order"]);
@@ -167,9 +210,9 @@ test("并发设备新增的未知订单不会被旧设备的增量同步删除",
 test("同步失败期间的多次操作会合并为最后一次明确意图", () => {
   const first = savedOrder("order-1");
   const edited = { ...first, name: "第二版" };
-  const firstIntent = createPersonalSyncIntent(personalState([]), personalState([first]));
-  const secondIntent = createPersonalSyncIntent(personalState([first]), personalState([edited]));
-  const deleteIntent = createPersonalSyncIntent(personalState([edited]), personalState([]));
+  const firstIntent = { upsertOrders: [first], deleteOrderIds: [] };
+  const secondIntent = { upsertOrders: [edited], deleteOrderIds: [] };
+  const deleteIntent = { upsertOrders: [], deleteOrderIds: ["order-1"] };
   const pending = mergePersonalSyncIntents(
     mergePersonalSyncIntents(firstIntent, secondIntent),
     deleteIntent,
