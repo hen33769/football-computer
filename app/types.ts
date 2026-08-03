@@ -56,6 +56,7 @@ export type SavedSlip = {
   id?: string;
   name: string;
   savedAt: string;
+  updatedAt?: string;
   matches: MatchItem[];
   passes: number[];
   multiple: number;

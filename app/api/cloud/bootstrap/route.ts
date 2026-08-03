@@ -33,7 +33,7 @@ export async function GET(request: Request) {
     const state = stateRows[0];
     const orders = orderRows.flatMap((row) => {
       const order = parseJson<SavedSlip | null>(row.dataJson, null);
-      return order ? [order] : [];
+      return order ? [{ ...order, id: order.id ?? row.orderId, updatedAt: row.updatedAt }] : [];
     });
 
     return Response.json({

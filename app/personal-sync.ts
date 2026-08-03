@@ -11,9 +11,31 @@ export type PersonalSyncIntent = {
 
 export type OrderSyncIntent = Pick<PersonalSyncIntent, "upsertOrders" | "deleteOrderIds">;
 
+export type CloudOrderDelete = {
+  id: string;
+  updatedAt?: string;
+};
+
 export type CloudPersonalMutation = PersonalSyncIntent & {
   expectedRevision: number;
-  orderMutationVersion?: 1;
+  deleteOrders?: CloudOrderDelete[];
+  orderMutationVersion?: 1 | 2;
+};
+
+export type CloudPersonalMutationResponse = {
+  ok: true;
+  savedAt: string;
+  revision: number;
+  upsertedOrders: SavedSlip[];
+  upsertedOrderIds: string[];
+  deletedOrderIds: string[];
+};
+
+export type CloudOrderMutationResult = {
+  orders: SavedSlip[];
+  upsertedOrders: SavedSlip[];
+  deletedOrderIds: string[];
+  revision: number;
 };
 
 export function emptyPersonalSyncIntent(): PersonalSyncIntent {
