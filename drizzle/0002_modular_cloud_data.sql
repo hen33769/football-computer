@@ -6,10 +6,9 @@ CREATE TABLE `user_settings` (
 	FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-INSERT INTO `user_settings` (`user_id`, `settings_json`, `revision`, `updated_at`)
+INSERT OR IGNORE INTO `user_settings` (`user_id`, `settings_json`, `revision`, `updated_at`)
 SELECT `user_id`, `settings_json`, `revision`, `updated_at`
-FROM `user_states`
-ON CONFLICT(`user_id`) DO NOTHING;
+FROM `user_states`;
 --> statement-breakpoint
 CREATE TABLE `user_finance_corrections` (
 	`user_id` text PRIMARY KEY NOT NULL,
@@ -20,12 +19,11 @@ CREATE TABLE `user_finance_corrections` (
 	FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-INSERT INTO `user_finance_corrections` (
+INSERT OR IGNORE INTO `user_finance_corrections` (
 	`user_id`, `expense_correction_cents`, `income_correction_cents`, `revision`, `updated_at`
 )
 SELECT `user_id`, `expense_cents`, `income_cents`, `revision`, `updated_at`
-FROM `user_states`
-ON CONFLICT(`user_id`) DO NOTHING;
+FROM `user_states`;
 --> statement-breakpoint
 DROP TABLE `user_states`;
 --> statement-breakpoint
