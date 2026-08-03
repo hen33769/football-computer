@@ -2,7 +2,6 @@
 
 import {
   App,
-  Badge,
   Button,
   Card,
   Checkbox,
@@ -39,12 +38,10 @@ import {
   EditOutlined,
   ExpandOutlined,
   EyeOutlined,
-  FileTextOutlined,
   HomeOutlined,
   ImportOutlined,
   InfoCircleOutlined,
   LockOutlined,
-  LogoutOutlined,
   MinusOutlined,
   PlusOutlined,
   QuestionCircleOutlined,
@@ -52,10 +49,8 @@ import {
   RightOutlined,
   RollbackOutlined,
   SaveOutlined,
-  SettingOutlined,
   UndoOutlined,
   UploadOutlined,
-  UserOutlined,
 } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement } from "react";
@@ -90,16 +85,15 @@ import {
   ensureOrderIds,
   type CloudAccount,
   type CloudPersonalData,
-  type CloudPersonalMetadata,
   type CloudSyncStatus,
 } from "./cloud";
 import { applyOrderSyncIntent, type CloudOrderMutationResult, type OrderSyncIntent } from "./personal-sync";
 import { localCache, sessionCache } from "./browser-storage";
-import { APP_VERSION } from "./AppVersion";
 import { MatchPreviewModal, OfficialTrendModal } from "./FootballInsights";
 import { orderLedgerTotals, sortSavedOrders, unionSavedOrders } from "./imports";
 import { CLOUD_APP_URL } from "./links";
 import { formatManualMatchText, formatManualOrderText } from "./manual-order-format";
+import { AppShellHeader } from "./components/AppShellHeader";
 import { parseRecognizedText } from "./ocr";
 import {
   convertSportteryMatches,
@@ -156,6 +150,19 @@ type DataTransferMode = "orders" | "settings" | "matches" | "full";
 type ImportStrategy = "merge" | "replace";
 type OrderProgressFilter = "settled" | "unsettled" | null;
 type OrderStatusFilter = "success" | "hopeful" | "failed";
+type CloudOrderQuery = {
+  from?: string | null;
+  to?: string | null;
+  progress?: OrderProgressFilter;
+  statuses?: OrderStatusFilter[];
+  limit?: number;
+  offset?: number;
+};
+type CloudOrderQueryResult = {
+  orders: SavedSlip[];
+  total: number;
+  unsettledCount: number;
+};
 type MatchSaleFilter = "all" | "non-stopped" | "stopped" | "selling" | "pending";
 const MATCH_SALE_FILTER_OPTIONS: Array<{ value: MatchSaleFilter; label: string }> = [
   { value: "all", label: "不限" },
@@ -716,9 +723,12 @@ function InnerFootballApp({
   cloudAccount,
   cloudPersonal,
   cloudSyncStatus,
-  onCloudPersonalMetadataChange,
+  onCloudSettingsChange,
+  onCloudFinanceCorrectionChange,
   onCloudOrderMutation,
+  onCloudOrdersQueryChange,
   onCloudMatchesChange,
+  onCloudMatchesRefresh,
   onRequireAccount,
   onLogout,
 }: {
@@ -727,9 +737,12 @@ function InnerFootballApp({
   cloudAccount: CloudAccount | null;
   cloudPersonal: CloudPersonalData | null;
   cloudSyncStatus: CloudSyncStatus;
-  onCloudPersonalMetadataChange: (state: CloudPersonalMetadata) => void;
+  onCloudSettingsChange: (settings: AppSettings) => void;
+  onCloudFinanceCorrectionChange: (correction: { expenseCorrection: number; incomeCorrection: number }) => Promise<CloudPersonalData["finance"]>;
   onCloudOrderMutation: (intent: OrderSyncIntent) => Promise<CloudOrderMutationResult>;
+  onCloudOrdersQueryChange: (query: CloudOrderQuery) => Promise<CloudOrderQueryResult>;
   onCloudMatchesChange: (matches: MatchItem[]) => void;
+  onCloudMatchesRefresh: (manual: boolean) => Promise<SportteryMatchSnapshot>;
   onRequireAccount: (view?: AppView) => void;
   onLogout: () => Promise<void>;
 }) {
@@ -825,6 +838,13 @@ function InnerFootballApp({
     }
   });
   const [savedSlips, setSavedSlips] = useState<SavedSlip[]>(initialSavedSlipLoad.orders);
+  const [cloudOrderTotal, setCloudOrderTotal] = useState(() => (
+    isCloudMode && cloudPersonal ? cloudPersonal.orderTotal ?? initialSavedSlipLoad.orders.length : initialSavedSlipLoad.orders.length
+  ));
+  const [cloudUnsettledOrderCount, setCloudUnsettledOrderCount] = useState(() => (
+    isCloudMode && cloudPersonal ? cloudPersonal.unsettledOrderCount ?? initialSavedSlipLoad.orders.filter((slip) => !slip.settledAt).length : initialSavedSlipLoad.orders.filter((slip) => !slip.settledAt).length
+  ));
+  const [cloudOrdersLoading, setCloudOrdersLoading] = useState(false);
   const repairedOrdersSentRef = useRef(false);
   const [matchResults, setMatchResults] = useState<MatchResults>({});
   const [resultFetchingMatchIds, setResultFetchingMatchIds] = useState<string[]>([]);
@@ -853,6 +873,18 @@ function InnerFootballApp({
     if (localCache.getItem(PROFIT_KEY) !== null && Number.isFinite(oldProfit)) return Math.max(0, oldProfit + derivedExpense);
     return savedSlips.reduce((total, slip) => total + (slip.settledPrize ?? 0), 0);
   });
+  const [expenseCorrection, setExpenseCorrection] = useState(() => (
+    isCloudMode && cloudPersonal ? cloudPersonal.finance.expenseCorrection ?? 0 : 0
+  ));
+  const [incomeCorrection, setIncomeCorrection] = useState(() => (
+    isCloudMode && cloudPersonal ? cloudPersonal.finance.incomeCorrection ?? 0 : 0
+  ));
+  const [expenseOrdersTotal, setExpenseOrdersTotal] = useState(() => (
+    isCloudMode && cloudPersonal ? cloudPersonal.finance.expenseOrders ?? Math.max(0, cloudPersonal.finance.expenseTotal - (cloudPersonal.finance.expenseCorrection ?? 0)) : 0
+  ));
+  const [incomeOrdersTotal, setIncomeOrdersTotal] = useState(() => (
+    isCloudMode && cloudPersonal ? cloudPersonal.finance.incomeOrders ?? Math.max(0, cloudPersonal.finance.incomeTotal - (cloudPersonal.finance.incomeCorrection ?? 0)) : 0
+  ));
   const [expenseEditing, setExpenseEditing] = useState(false);
   const [incomeEditing, setIncomeEditing] = useState(false);
   const [expenseDraft, setExpenseDraft] = useState(0);
@@ -906,6 +938,24 @@ function InnerFootballApp({
     };
   }), [matches, saleNow]);
 
+  const applyCloudFinance = useCallback((finance: CloudPersonalData["finance"]) => {
+    setExpenseTotal(Math.max(0, finance.expenseTotal));
+    setIncomeTotal(Math.max(0, finance.incomeTotal));
+    setExpenseCorrection(finance.expenseCorrection ?? 0);
+    setIncomeCorrection(finance.incomeCorrection ?? 0);
+    setExpenseOrdersTotal(finance.expenseOrders ?? Math.max(0, finance.expenseTotal - (finance.expenseCorrection ?? 0)));
+    setIncomeOrdersTotal(finance.incomeOrders ?? Math.max(0, finance.incomeTotal - (finance.incomeCorrection ?? 0)));
+  }, []);
+
+  const currentCloudOrderQuery = useCallback((): CloudOrderQuery => ({
+    from: orderDateRange?.[0] ?? null,
+    to: orderDateRange?.[1] ?? null,
+    progress: orderProgressFilter,
+    statuses: orderStatusFilters,
+    limit: 500,
+    offset: 0,
+  }), [orderDateRange, orderProgressFilter, orderStatusFilters]);
+
   const commitOrderMutation = useCallback(async (intent: OrderSyncIntent) => {
     const normalizedIntent: OrderSyncIntent = {
       upsertOrders: ensureOrderIds(intent.upsertOrders),
@@ -920,26 +970,44 @@ function InnerFootballApp({
 
     try {
       const result = await onCloudOrderMutation(normalizedIntent);
-      setSavedSlips(result.orders);
-      return result.orders;
+      let nextOrders = result.orders;
+      if (activeView === "orders") {
+        try {
+          const queried = await onCloudOrdersQueryChange(currentCloudOrderQuery());
+          nextOrders = ensureOrderIds(queried.orders);
+          setCloudOrderTotal(queried.total);
+          setCloudUnsettledOrderCount(queried.unsettledCount);
+        } catch (queryError) {
+          console.error("[云端订单] 写入后重新加载筛选订单失败", queryError);
+          setCloudOrderTotal(result.orders.length);
+          setCloudUnsettledOrderCount(result.orders.filter((slip) => !slip.settledAt).length);
+        }
+      } else {
+        setCloudOrderTotal(result.orders.length);
+        setCloudUnsettledOrderCount(result.orders.filter((slip) => !slip.settledAt).length);
+      }
+      setSavedSlips(nextOrders);
+      if (result.finance) applyCloudFinance(result.finance);
+      return nextOrders;
     } catch (error) {
       message.error(error instanceof Error ? error.message : "订单同步失败，请刷新后重试");
       return null;
     }
-  }, [isGuestMode, message, onCloudOrderMutation, savedSlips]);
+  }, [activeView, applyCloudFinance, currentCloudOrderQuery, isGuestMode, message, onCloudOrderMutation, onCloudOrdersQueryChange, savedSlips]);
 
   const persistAppSettings = useCallback((settings: AppSettings) => {
     const normalized = normalizeAppSettings(settings);
     if (isGuestMode) saveAppSettings(normalized);
+    else if (isCloudMode) onCloudSettingsChange(normalized);
     return normalized;
-  }, [isGuestMode]);
+  }, [isCloudMode, isGuestMode, onCloudSettingsChange]);
 
-  const applySportterySnapshot = useCallback((snapshot: SportteryMatchSnapshot) => {
+  const applySportterySnapshot = useCallback((snapshot: SportteryMatchSnapshot, saveToCloud = true) => {
     const updateVisibleMatches = activeView === "betting" && !temporaryOrder;
     const currentCache = updateVisibleMatches ? matchesRef.current : loadCachedMatches();
     const mergedMatches = mergeSportteryMatchCache(currentCache, snapshot.matches, new Date());
     saveCachedMatches(mergedMatches);
-    onCloudMatchesChange(mergedMatches);
+    if (saveToCloud) onCloudMatchesChange(mergedMatches);
     if (updateVisibleMatches) {
       const nextDates = cachedMatchDates(mergedMatches, snapshot.matchDates);
       const nextLeagues = cachedLeagueOptions(mergedMatches, snapshot.leagues);
@@ -954,6 +1022,17 @@ function InnerFootballApp({
     setSportteryLastUpdateTime(snapshot.lastUpdateTime);
     setSportteryLoaded(true);
   }, [activeView, onCloudMatchesChange, temporaryOrder]);
+
+  const loadSportterySnapshot = useCallback(async (manual: boolean) => {
+    try {
+      return { snapshot: await onCloudMatchesRefresh(manual), source: "cloud" as const };
+    } catch (cloudError) {
+      const mode = getSportteryRefreshPolicy(new Date()).mode;
+      const snapshot = await fetchSportteryMatchSnapshot(mode);
+      console.warn("[体彩接口] 云端比赛刷新失败，已回退到前端官方接口", cloudError);
+      return { snapshot, source: "official-fallback" as const };
+    }
+  }, [onCloudMatchesRefresh]);
 
   useEffect(() => {
     localCache.removeItem(LEGACY_DRAFT_KEY);
@@ -994,14 +1073,6 @@ function InnerFootballApp({
     if (!isGuestMode) return;
     localCache.setItem(INCOME_KEY, String(incomeTotal));
   }, [incomeTotal, isGuestMode]);
-
-  useEffect(() => {
-    if (!isCloudMode) return;
-    onCloudPersonalMetadataChange({
-      finance: { expenseTotal, incomeTotal },
-      settings: appSettings,
-    });
-  }, [appSettings, expenseTotal, incomeTotal, isCloudMode, onCloudPersonalMetadataChange]);
 
   useEffect(() => {
     if (!isGuestMode || repairedOrdersSentRef.current || initialSavedSlipLoad.repairedOrders.length === 0) return;
@@ -1062,20 +1133,19 @@ function InnerFootballApp({
   useEffect(() => {
     if (activeView !== "betting") return;
     let active = true;
-    const mode = getSportteryRefreshPolicy(new Date()).mode;
-    void fetchSportteryMatchSnapshot(mode)
-      .then((snapshot) => {
+    void loadSportterySnapshot(false)
+      .then(({ snapshot, source }) => {
         if (!active) return;
-        applySportterySnapshot(snapshot);
-        console.log("[体彩接口] 进入投注页获取比赛", { mode, totalCount: snapshot.matches.length, fixedBonusFailureCount: snapshot.fixedBonusFailureCount });
+        applySportterySnapshot(snapshot, source === "official-fallback");
+        console.log("[体彩接口] 进入投注页获取比赛", { source, mode: snapshot.mode, totalCount: snapshot.matches.length, fixedBonusFailureCount: snapshot.fixedBonusFailureCount });
       })
       .catch((error: unknown) => {
         if (!active) return;
         setSportteryLoaded(true);
         console.error("[体彩接口] 进入投注页获取比赛失败", error);
-      });
+    });
     return () => { active = false; };
-  }, [activeView, applySportterySnapshot, temporaryOrder]);
+  }, [activeView, applySportterySnapshot, loadSportterySnapshot, temporaryOrder]);
 
   useEffect(() => {
     if (activeView !== "betting") return;
@@ -1088,8 +1158,8 @@ function InnerFootballApp({
         const policy = getSportteryRefreshPolicy(new Date());
         if (policy.autoIntervalMs !== null) {
           try {
-            const snapshot = await fetchSportteryMatchSnapshot(policy.mode);
-            if (!disposed) applySportterySnapshot(snapshot);
+            const { snapshot, source } = await loadSportterySnapshot(false);
+            if (!disposed) applySportterySnapshot(snapshot, source === "official-fallback");
           } catch (error) {
             console.error("[体彩接口] 自动刷新比赛失败", error);
           }
@@ -1102,17 +1172,16 @@ function InnerFootballApp({
       disposed = true;
       window.clearTimeout(timer);
     };
-  }, [activeView, applySportterySnapshot, temporaryOrder]);
+  }, [activeView, applySportterySnapshot, loadSportterySnapshot, temporaryOrder]);
 
   const refreshSportteryData = async () => {
     setSportteryRefreshing(true);
     try {
-      const mode = getSportteryRefreshPolicy(new Date()).mode;
-      const snapshot = await fetchSportteryMatchSnapshot(mode);
-      applySportterySnapshot(snapshot);
+      const { snapshot, source } = await loadSportterySnapshot(true);
+      applySportterySnapshot(snapshot, source === "official-fallback");
       notification.success({
         title: "比赛数据已刷新",
-        description: `${mode === "morning" ? "早间逐场最新赔率" : "常规接口 + 缺失比赛补充"} · 共 ${snapshot.matches.length} 场${snapshot.fixedBonusFailureCount ? ` · ${snapshot.fixedBonusFailureCount} 场投注情况获取失败` : ""}${snapshot.lastUpdateTime ? ` · 接口更新 ${snapshot.lastUpdateTime}` : ""}`,
+        description: `${snapshot.mode === "morning" ? "早间逐场最新赔率" : "常规接口 + 缺失比赛补充"} · ${source === "cloud" ? "云端缓存/刷新" : "前端官方兜底"} · 共 ${snapshot.matches.length} 场${snapshot.fixedBonusFailureCount ? ` · ${snapshot.fixedBonusFailureCount} 场投注情况获取失败` : ""}${snapshot.lastUpdateTime ? ` · 接口更新 ${snapshot.lastUpdateTime}` : ""}`,
         placement: "bottomRight",
       });
     } catch (error) {
@@ -1279,6 +1348,35 @@ function InnerFootballApp({
   const orderDetailMatches = orderDetail ? sortMatchesForDisplay(selectedMatches(orderDetail.matches)) : [];
   const orderDetailPickedCount = orderDetailMatches.reduce((total, match) => total + selectedOptions(match).length, 0);
   const selectedOrderLeagueSet = useMemo(() => new Set(selectedOrderLeagueNames), [selectedOrderLeagueNames]);
+  const cloudOrderQuery = useMemo(() => currentCloudOrderQuery(), [currentCloudOrderQuery]);
+
+  useEffect(() => {
+    if (!isCloudMode || activeView !== "orders") return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      if (cancelled) return;
+      setCloudOrdersLoading(true);
+      void onCloudOrdersQueryChange(cloudOrderQuery)
+        .then((result) => {
+          if (cancelled) return;
+          setSavedSlips(ensureOrderIds(result.orders));
+          setCloudOrderTotal(result.total);
+          setCloudUnsettledOrderCount(result.unsettledCount);
+          setRenderedOrderCount(ORDER_LIST_BATCH_SIZE);
+        })
+        .catch((error) => {
+          if (!cancelled) message.error(error instanceof Error ? error.message : "订单筛选加载失败，请刷新后重试");
+        })
+        .finally(() => {
+          if (!cancelled) setCloudOrdersLoading(false);
+        });
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [activeView, cloudOrderQuery, isCloudMode, message, onCloudOrdersQueryChange]);
+
   const filteredSavedSlips = useMemo(() => sortSavedOrders(savedSlips
     .filter((slip) => {
       if (orderProgressFilter === "settled" && !slip.settledAt) return false;
@@ -1298,7 +1396,10 @@ function InnerFootballApp({
       orderTeamQuery,
       selectedOrderLeagueSet,
     ]);
-  const unsettledOrderCount = useMemo(() => savedSlips.filter((slip) => !slip.settledAt).length, [savedSlips]);
+  const orderTotalCount = isCloudMode ? cloudOrderTotal : savedSlips.length;
+  const unsettledOrderCount = useMemo(() => (
+    isCloudMode ? cloudUnsettledOrderCount : savedSlips.filter((slip) => !slip.settledAt).length
+  ), [cloudUnsettledOrderCount, isCloudMode, savedSlips]);
   const visibleUnlockedOrderCount = useMemo(
     () => filteredSavedSlips.filter((slip) => !isOrderOddsLocked(slip)).length,
     [filteredSavedSlips],
@@ -1444,7 +1545,7 @@ function InnerFootballApp({
     };
     const committedOrders = await commitOrderMutation({ upsertOrders: [nextOrder], deleteOrderIds: [] });
     if (!committedOrders) return false;
-    setExpenseTotal((current) => current + calculateStake(nextOrder.matches, nextOrder.passes, nextOrder.multiple));
+    if (isGuestMode) setExpenseTotal((current) => current + calculateStake(nextOrder.matches, nextOrder.passes, nextOrder.multiple));
     notification.success({
       message: "订单添加完成",
       description: `新增 1 个订单，包含 ${selectedMatches(orderMatches).length} 场比赛`,
@@ -1639,7 +1740,7 @@ function InnerFootballApp({
     const nextStake = calculateStake(next.matches, next.passes, next.multiple);
     const committedOrders = await commitOrderMutation({ upsertOrders: [next], deleteOrderIds: [] });
     if (!committedOrders) return;
-    setExpenseTotal((current) => Math.max(0, current + nextStake - previousStake));
+    if (isGuestMode) setExpenseTotal((current) => Math.max(0, current + nextStake - previousStake));
     setSaveOpen(false);
     setSaveName("");
     if (temporaryOrder) restoreSavedMatches();
@@ -1732,8 +1833,10 @@ function InnerFootballApp({
       deleteOrderIds: target.id ? [target.id] : [],
     });
     if (!committedOrders) return;
-    setExpenseTotal((current) => Math.max(0, current - calculateStake(target.matches, target.passes, target.multiple)));
-    if (target.settledAt) setIncomeTotal((current) => Math.max(0, current - (target.settledPrize ?? 0)));
+    if (isGuestMode) {
+      setExpenseTotal((current) => Math.max(0, current - calculateStake(target.matches, target.passes, target.multiple)));
+      if (target.settledAt) setIncomeTotal((current) => Math.max(0, current - (target.settledPrize ?? 0)));
+    }
   };
 
   const toggleOrderExpanded = (id: string) => {
@@ -1785,9 +1888,9 @@ function InnerFootballApp({
   };
 
   const refreshUnlockedOrderOdds = async () => {
-    const unlockedOrderCount = savedSlips.filter((slip) => !isOrderOddsLocked(slip)).length;
-    if (unlockedOrderCount === 0) {
-      message.info("没有可更新的未锁定订单");
+    const visibleUnlockedOrders = new Set(filteredSavedSlips.filter((slip) => !isOrderOddsLocked(slip)));
+    if (visibleUnlockedOrders.size === 0) {
+      message.info("当前查看的订单没有可更新的未锁定订单");
       return;
     }
 
@@ -1799,7 +1902,7 @@ function InnerFootballApp({
       let changedOptionCount = 0;
       let unmatchedOptionCount = 0;
       const nextOrders = savedSlips.map((slip) => {
-        if (isOrderOddsLocked(slip)) return slip;
+        if (!visibleUnlockedOrders.has(slip)) return slip;
         const refreshed = refreshSelectedOdds(slip.matches, latestMatches);
         matchedOptionCount += refreshed.matchedOptionCount;
         changedOptionCount += refreshed.changedOptionCount;
@@ -1816,7 +1919,7 @@ function InnerFootballApp({
       }
       notification.success({
         title: "订单倍率更新完成",
-        description: `已检查 ${unlockedOrderCount} 个未锁定订单，匹配 ${matchedOptionCount} 个投注项，${changedOptionCount} 项倍率发生变化${unmatchedOptionCount ? `；${unmatchedOptionCount} 项暂无最新可售倍率，已保留原值` : ""}`,
+        description: `已检查当前查看的 ${visibleUnlockedOrders.size} 个未锁定订单，匹配 ${matchedOptionCount} 个投注项，${changedOptionCount} 项倍率发生变化${unmatchedOptionCount ? `；${unmatchedOptionCount} 项暂无最新可售倍率，已保留原值` : ""}`,
         placement: "bottomRight",
       });
     } catch (error) {
@@ -2087,7 +2190,7 @@ function InnerFootballApp({
     if (!editingOrder.settledAt) {
       const previousStake = calculateStake(editingOrder.matches, editingOrder.passes, editingOrder.multiple);
       const nextStake = calculateStake(committedOrder.matches, committedOrder.passes, committedOrder.multiple);
-      setExpenseTotal((current) => Math.max(0, current + nextStake - previousStake));
+      if (isGuestMode) setExpenseTotal((current) => Math.max(0, current + nextStake - previousStake));
     }
     if (orderDetail && sameOrder(orderDetail)) setOrderDetail(committedOrder);
     if (temporaryOrder?.id === committedOrder.id) {
@@ -2119,7 +2222,7 @@ function InnerFootballApp({
     const settledPrizeTotal = [...settledOrders.values()].reduce((total, slip) => total + (slip.settledPrize ?? 0), 0);
     const committedOrders = await commitOrderMutation({ upsertOrders: [...settledOrders.values()], deleteOrderIds: [] });
     if (!committedOrders) return;
-    setIncomeTotal((current) => current + settledPrizeTotal);
+    if (isGuestMode) setIncomeTotal((current) => current + settledPrizeTotal);
     const settledDetail = orderDetail?.id
       ? committedOrders.find((slip) => slip.id === orderDetail.id)
       : undefined;
@@ -2144,7 +2247,7 @@ function InnerFootballApp({
     const committedOrders = await commitOrderMutation({ upsertOrders: [withdrawn], deleteOrderIds: [] });
     if (!committedOrders) return;
     const committedOrder = committedOrders.find((slip) => slip.id === withdrawn.id) ?? withdrawn;
-    setIncomeTotal((current) => Math.max(0, current - (target.settledPrize ?? 0)));
+    if (isGuestMode) setIncomeTotal((current) => Math.max(0, current - (target.settledPrize ?? 0)));
     if (orderDetail === target) setOrderDetail(committedOrder);
     notification.success({
       message: "结账已撤回",
@@ -2343,8 +2446,10 @@ function InnerFootballApp({
             });
             if (!committedOrders) throw new Error("订单同步失败");
             setAppSettings(persistAppSettings(restoredSettings));
-            setExpenseTotal(nextExpense);
-            setIncomeTotal(nextIncome);
+            if (isGuestMode) {
+              setExpenseTotal(nextExpense);
+              setIncomeTotal(nextIncome);
+            }
             if (canImportMatches) applyMatches(restoredMatches);
             notification.success({
               message: strategy === "merge" ? "完整数据合并完成" : "完整数据覆盖完成",
@@ -2366,8 +2471,10 @@ function InnerFootballApp({
           deleteOrderIds: [],
         });
         if (!committedOrders) return;
-        setExpenseTotal((current) => Math.max(0, current + expenseDelta));
-        setIncomeTotal((current) => Math.max(0, current + incomeDelta));
+        if (isGuestMode) {
+          setExpenseTotal((current) => Math.max(0, current + expenseDelta));
+          setIncomeTotal((current) => Math.max(0, current + incomeDelta));
+        }
         notification.success({ message: "订单合并完成", description: `新增 ${added} 个，更新 ${updated} 个同 ID 订单`, placement: "bottomRight" });
         return;
       }
@@ -2381,8 +2488,10 @@ function InnerFootballApp({
         deleteOrderIds: savedSlips.flatMap((order) => order.id && !restoredOrderIds.has(order.id) ? [order.id] : []),
       });
       if (!committedOrders) return;
-      setExpenseTotal((current) => Math.max(0, current - currentTotals.expense + restoredTotals.expense));
-      setIncomeTotal((current) => Math.max(0, current - currentTotals.income + restoredTotals.income));
+      if (isGuestMode) {
+        setExpenseTotal((current) => Math.max(0, current - currentTotals.expense + restoredTotals.expense));
+        setIncomeTotal((current) => Math.max(0, current - currentTotals.income + restoredTotals.income));
+      }
       notification.success({ message: "订单覆盖完成", description: `已恢复 ${restoredOrders.length} 个订单`, placement: "bottomRight" });
     } catch (error) {
       notification.error({
@@ -2410,25 +2519,55 @@ function InnerFootballApp({
   };
 
   const unlockExpenseEditor = () => {
-    setExpenseDraft(expenseTotal);
+    setExpenseDraft(isCloudMode ? expenseCorrection : expenseTotal);
     setExpenseEditing(true);
   };
 
   const unlockIncomeEditor = () => {
-    setIncomeDraft(incomeTotal);
+    setIncomeDraft(isCloudMode ? incomeCorrection : incomeTotal);
     setIncomeEditing(true);
   };
 
-  const saveExpenseCorrection = () => {
-    const next = Math.max(0, Number(expenseDraft || 0));
-    setExpenseTotal(next);
+  const saveExpenseCorrection = async () => {
+    const next = Number(expenseDraft || 0);
+    if (!Number.isFinite(next)) {
+      message.error("支出纠错值无效");
+      return;
+    }
+    if (isCloudMode) {
+      try {
+        const finance = await onCloudFinanceCorrectionChange({ expenseCorrection: next, incomeCorrection });
+        applyCloudFinance(finance);
+        setExpenseEditing(false);
+        message.success("支出纠错值已保存");
+      } catch (error) {
+        message.error(error instanceof Error ? error.message : "支出纠错值保存失败");
+      }
+      return;
+    }
+    setExpenseTotal(Math.max(0, next));
     setExpenseEditing(false);
     message.success("累计支出已保存并锁定");
   };
 
-  const saveIncomeCorrection = () => {
-    const next = Math.max(0, Number(incomeDraft || 0));
-    setIncomeTotal(next);
+  const saveIncomeCorrection = async () => {
+    const next = Number(incomeDraft || 0);
+    if (!Number.isFinite(next)) {
+      message.error("收入纠错值无效");
+      return;
+    }
+    if (isCloudMode) {
+      try {
+        const finance = await onCloudFinanceCorrectionChange({ expenseCorrection, incomeCorrection: next });
+        applyCloudFinance(finance);
+        setIncomeEditing(false);
+        message.success("收入纠错值已保存");
+      } catch (error) {
+        message.error(error instanceof Error ? error.message : "收入纠错值保存失败");
+      }
+      return;
+    }
+    setIncomeTotal(Math.max(0, next));
     setIncomeEditing(false);
     message.success("累计收入已保存并锁定");
   };
@@ -2522,69 +2661,26 @@ function InnerFootballApp({
       <div className="data-popover-heading"><b>导出数据</b><span>可分别备份订单、比赛与设置</span></div>
       <Button type="text" block disabled={savedSlips.length === 0} onClick={() => exportData("orders")}><span><b>导出订单</b><small>{savedSlips.length} 个{isGuestMode ? "本地" : "云端"}订单</small></span><DownloadOutlined /></Button>
       <Button type="text" block onClick={() => exportData("settings")}><span><b>导出设置</b><small>联赛颜色等应用设置</small></span><DownloadOutlined /></Button>
-      <Button type="text" block onClick={() => exportData("matches")}><span><b>导出比赛数据</b><small>5 天内比赛缓存</small></span><DownloadOutlined /></Button>
+      <Button type="text" block onClick={() => exportData("matches")}><span><b>导出比赛数据</b><small>7 天内比赛缓存</small></span><DownloadOutlined /></Button>
       <Button type="text" block onClick={() => exportData("full")}><span><b>导出完整数据</b><small>订单、比赛、设置与收支账本</small></span><DownloadOutlined /></Button>
     </div>
   );
 
-  const syncLabel = isGuestMode
-    ? "游客数据仅保存在当前浏览器"
-    : cloudSyncStatus === "saving"
-      ? "正在保存到云端"
-      : cloudSyncStatus === "error"
-        ? "云同步失败，请刷新后重试"
-        : "云端数据已同步";
-  const accountMenu = cloudAccount ? (
-    <div className="cloud-account-menu">
-      <div><b>{cloudAccount.account}</b><Tag color={isGuestMode ? "default" : cloudAccount.role === "admin" ? "gold" : "blue"}>{isGuestMode ? "本地模式" : cloudAccount.role === "admin" ? "管理员" : "账号"}</Tag></div>
-      <span className={cloudSyncStatus === "error" ? "error" : ""}>{syncLabel}</span>
-      {isGuestMode
-        ? <Button icon={<UserOutlined />} block href={CLOUD_APP_URL}>登录云端账号</Button>
-        : <Button icon={<LogoutOutlined />} block onClick={() => { void onLogout(); }}>退出账号</Button>}
-    </div>
-  ) : null;
-
   return (
     <div className="football-app">
-      <header className="hero-header" ref={headerRef}>
-        <div className="hero-glow" />
-        <div className="hero-content">
-          <div className="brand-lockup">
-            <div className="brand-logo" role="img" aria-label="SMGR" />
-            <div><p>中国以小博大 · 玩法模拟 · v{APP_VERSION}</p><h1>Small Money Get Rich</h1></div>
-          </div>
-          <div className="hero-actions">
-            {activeView === "orders" && <Button icon={<PlusOutlined />} onClick={openManualOrder}><span className="header-button-label">添加订单</span></Button>}
-            <Button icon={<SaveOutlined />} onClick={saveRepositoryPage}>
-              <span className="header-button-label">保存页面</span>
-            </Button>
-            <Button className={activeView === "betting" ? "view-toggle active" : "view-toggle"} icon={<HomeOutlined />} onClick={() => navigateToView("betting")}>
-              <span className="header-button-label">投注</span>
-            </Button>
-            <Badge className="order-navigation-badge" count={unsettledOrderCount} size="small" offset={[-12, 4]} onClick={() => navigateToView("orders")}>
-              <Button className={activeView === "orders" ? "view-toggle active" : "view-toggle"} icon={<FileTextOutlined />}>
-                <span className="header-button-label">订单</span>
-              </Button>
-            </Badge>
-            <Button className={activeView === "settings" ? "view-toggle active" : "view-toggle"} icon={<SettingOutlined />} onClick={() => navigateToView("settings")}>
-              <span className="header-button-label">设置</span>
-            </Button>
-            {cloudAccount ? (
-              <Popover content={accountMenu} trigger="click" placement="bottomRight">
-                <Button className="cloud-account-button" icon={<UserOutlined />}>
-                  <span className="header-button-label">{cloudAccount.account}</span>
-                </Button>
-              </Popover>
-            ) : (
-              <Button className="cloud-account-button" icon={<UserOutlined />} onClick={() => onRequireAccount()}>
-                <span className="header-button-label">账号登录</span>
-              </Button>
-            )}
-          </div>
-        </div>
-        <div className="responsible-note"><InfoCircleOutlined /> 非官方模拟工具 · 模拟器随便玩</div>
-      </header>
-      <div className="hero-header-spacer" aria-hidden="true" />
+      <AppShellHeader
+        activeView={activeView}
+        cloudAccount={cloudAccount}
+        cloudSyncStatus={cloudSyncStatus}
+        headerRef={headerRef}
+        isGuestMode={isGuestMode}
+        unsettledOrderCount={unsettledOrderCount}
+        onAddOrder={openManualOrder}
+        onLogout={onLogout}
+        onNavigate={navigateToView}
+        onRequireAccount={() => onRequireAccount()}
+        onSavePage={saveRepositoryPage}
+      />
 
       {activeView === "betting" ? <main className="page-shell">
         <section className="main-column">
@@ -2762,9 +2858,9 @@ function InnerFootballApp({
             <div className="section-heading orders-heading">
               <div><span className="eyebrow">{isGuestMode ? "LOCAL ORDERS" : "CLOUD ORDERS"}</span><h2>订单列表</h2><p>{isGuestMode ? "游客订单和累计收支只保存在当前浏览器，不会上传服务器或跨设备同步。" : "订单、累计收支会保存到当前账号，并在其他设备登录后自动同步。"}</p></div>
               <Space wrap>
-                <Tag color="cyan">显示 {filteredSavedSlips.length} / 共 {savedSlips.length} 个订单</Tag>
+                <Tag color="cyan">{cloudOrdersLoading ? "正在加载订单…" : `显示 ${filteredSavedSlips.length} / 共 ${orderTotalCount} 个订单`}</Tag>
                 <Button icon={<ExpandOutlined />} disabled={filteredSavedSlips.length === 0} onClick={expandAllOrderOptions}>展开全部选项</Button>
-                <Button icon={<ReloadOutlined />} loading={orderOddsRefreshing} disabled={savedSlips.length === 0} onClick={() => { void refreshUnlockedOrderOdds(); }}>更新倍率</Button>
+                <Button icon={<ReloadOutlined />} loading={orderOddsRefreshing} disabled={filteredSavedSlips.length === 0} onClick={() => { void refreshUnlockedOrderOdds(); }}>更新倍率</Button>
                 <Button icon={<LockOutlined />} disabled={visibleUnlockedOrderCount === 0} onClick={() => { void lockVisibleOrderOdds(); }}>锁定倍率</Button>
                 <Tooltip title="仅结账成功与失败账单">
                   <span><Button className="checkout-order-button" icon={<CheckOutlined />} disabled={visibleSettleableOrders.length === 0} onClick={() => { void settleOrders(visibleSettleableOrders); }}>一键结账</Button></span>
@@ -2901,38 +2997,40 @@ function InnerFootballApp({
                   <Tag color={netProfit >= 0 ? "green" : "red"}>{netProfit >= 0 ? "当前盈利" : "当前亏损"}</Tag>
                 </div>
                 <div className="order-statistics-grid">
-                  <div className="order-stat-item order-money-card expense-card">
-                    <span>累计支出</span>
-                    {expenseEditing ? (
-                      <div className="order-money-editor">
-                        <InputNumber autoFocus aria-label="累计支出校正" controls={false} min={0} precision={2} prefix="¥" value={expenseDraft} onChange={(value) => setExpenseDraft(Math.max(0, Number(value ?? 0)))} onPressEnter={saveExpenseCorrection} />
-                        <Button type="primary" aria-label="保存累计支出" icon={<CheckOutlined />} onClick={saveExpenseCorrection} />
-                        <Button aria-label="取消编辑累计支出" icon={<CloseOutlined />} onClick={() => setExpenseEditing(false)} />
-                      </div>
-                    ) : (
-                      <div className="order-money-locked">
-                        <strong>¥{currency(expenseTotal)}</strong>
-                        <Tooltip title="解锁编辑累计支出"><Button type="text" aria-label="解锁编辑累计支出" icon={<EditOutlined />} onClick={unlockExpenseEditor} /></Tooltip>
-                      </div>
-                    )}
-                    <small>订单投入自动计入</small>
-                  </div>
-                  <div className="order-stat-item order-money-card income-card">
-                    <span>累计收入</span>
-                    {incomeEditing ? (
-                      <div className="order-money-editor">
-                        <InputNumber autoFocus aria-label="累计收入校正" controls={false} min={0} precision={2} prefix="¥" value={incomeDraft} onChange={(value) => setIncomeDraft(Math.max(0, Number(value ?? 0)))} onPressEnter={saveIncomeCorrection} />
-                        <Button type="primary" aria-label="保存累计收入" icon={<CheckOutlined />} onClick={saveIncomeCorrection} />
-                        <Button aria-label="取消编辑累计收入" icon={<CloseOutlined />} onClick={() => setIncomeEditing(false)} />
-                      </div>
-                    ) : (
-                      <div className="order-money-locked">
-                        <strong>¥{currency(incomeTotal)}</strong>
-                        <Tooltip title="解锁编辑累计收入"><Button type="text" aria-label="解锁编辑累计收入" icon={<EditOutlined />} onClick={unlockIncomeEditor} /></Tooltip>
-                      </div>
-                    )}
-                    <small>结账奖金自动计入</small>
-                  </div>
+	                  <div className="order-stat-item order-money-card expense-card">
+	                    <span>累计支出</span>
+	                    {expenseEditing ? (
+	                      <div className="order-money-editor">
+	                        <InputNumber autoFocus aria-label={isCloudMode ? "支出纠错值" : "累计支出校正"} controls={false} min={isCloudMode ? undefined : 0} precision={2} prefix="¥" value={expenseDraft} onChange={(value) => setExpenseDraft(Number(value ?? 0))} onPressEnter={() => { void saveExpenseCorrection(); }} />
+	                        <Button type="primary" aria-label={isCloudMode ? "保存支出纠错值" : "保存累计支出"} icon={<CheckOutlined />} onClick={() => { void saveExpenseCorrection(); }} />
+	                        <Button aria-label={isCloudMode ? "取消编辑支出纠错值" : "取消编辑累计支出"} icon={<CloseOutlined />} onClick={() => setExpenseEditing(false)} />
+	                        {isCloudMode && <small>预览最终支出：¥{currency(expenseOrdersTotal)} {Number(expenseDraft || 0) >= 0 ? "+" : "−"} ¥{currency(Math.abs(Number(expenseDraft || 0)))} = ¥{currency(expenseOrdersTotal + Number(expenseDraft || 0))}</small>}
+	                      </div>
+	                    ) : (
+	                      <div className="order-money-locked">
+	                        <strong>¥{currency(expenseTotal)}</strong>
+	                        <Tooltip title={isCloudMode ? "编辑支出纠错值" : "解锁编辑累计支出"}><Button type="text" aria-label={isCloudMode ? "编辑支出纠错值" : "解锁编辑累计支出"} icon={<EditOutlined />} onClick={unlockExpenseEditor} /></Tooltip>
+	                      </div>
+	                    )}
+	                    <small>{isCloudMode ? `订单支出 ¥${currency(expenseOrdersTotal)}，纠错 ${expenseCorrection >= 0 ? "+" : "−"}¥${currency(Math.abs(expenseCorrection))}` : "订单投入自动计入"}</small>
+	                  </div>
+	                  <div className="order-stat-item order-money-card income-card">
+	                    <span>累计收入</span>
+	                    {incomeEditing ? (
+	                      <div className="order-money-editor">
+	                        <InputNumber autoFocus aria-label={isCloudMode ? "收入纠错值" : "累计收入校正"} controls={false} min={isCloudMode ? undefined : 0} precision={2} prefix="¥" value={incomeDraft} onChange={(value) => setIncomeDraft(Number(value ?? 0))} onPressEnter={() => { void saveIncomeCorrection(); }} />
+	                        <Button type="primary" aria-label={isCloudMode ? "保存收入纠错值" : "保存累计收入"} icon={<CheckOutlined />} onClick={() => { void saveIncomeCorrection(); }} />
+	                        <Button aria-label={isCloudMode ? "取消编辑收入纠错值" : "取消编辑累计收入"} icon={<CloseOutlined />} onClick={() => setIncomeEditing(false)} />
+	                        {isCloudMode && <small>预览最终收入：¥{currency(incomeOrdersTotal)} {Number(incomeDraft || 0) >= 0 ? "+" : "−"} ¥{currency(Math.abs(Number(incomeDraft || 0)))} = ¥{currency(incomeOrdersTotal + Number(incomeDraft || 0))}</small>}
+	                      </div>
+	                    ) : (
+	                      <div className="order-money-locked">
+	                        <strong>¥{currency(incomeTotal)}</strong>
+	                        <Tooltip title={isCloudMode ? "编辑收入纠错值" : "解锁编辑累计收入"}><Button type="text" aria-label={isCloudMode ? "编辑收入纠错值" : "解锁编辑累计收入"} icon={<EditOutlined />} onClick={unlockIncomeEditor} /></Tooltip>
+	                      </div>
+	                    )}
+	                    <small>{isCloudMode ? `订单收入 ¥${currency(incomeOrdersTotal)}，纠错 ${incomeCorrection >= 0 ? "+" : "−"}¥${currency(Math.abs(incomeCorrection))}` : "结账奖金自动计入"}</small>
+	                  </div>
                   <div className={`order-stat-item order-profit-card ${netProfit >= 0 ? "positive" : "negative"}`}>
                     <span>当前利润</span>
                     <strong>{netProfit >= 0 ? "+" : "−"}¥{currency(Math.abs(netProfit))}</strong>
@@ -3625,14 +3723,26 @@ function InnerFootballApp({
 }
 
 const LOCAL_CLOUD_ACCOUNT: CloudAccount = { id: "local", account: "游客", role: "user" };
-const ignoreCloudPersonalMetadataChange = () => undefined;
+const ignoreCloudSettingsChange = () => undefined;
+const ignoreCloudFinanceCorrectionChange = async (correction: { expenseCorrection: number; incomeCorrection: number }) => ({
+  expenseTotal: Math.max(0, correction.expenseCorrection),
+  incomeTotal: Math.max(0, correction.incomeCorrection),
+  expenseCorrection: correction.expenseCorrection,
+  incomeCorrection: correction.incomeCorrection,
+});
 const ignoreCloudOrderMutation = async () => ({
   orders: [],
   upsertedOrders: [],
   deletedOrderIds: [],
   revision: 0,
 });
+const ignoreCloudOrdersQueryChange = async (): Promise<CloudOrderQueryResult> => ({
+  orders: [],
+  total: 0,
+  unsettledCount: 0,
+});
 const ignoreCloudMatchesChange = () => undefined;
+const ignoreCloudMatchesRefresh = async () => fetchSportteryMatchSnapshot(getSportteryRefreshPolicy(new Date()).mode);
 
 export default function FootballApp({
   initialView = "betting",
@@ -3640,9 +3750,12 @@ export default function FootballApp({
   cloudAccount = LOCAL_CLOUD_ACCOUNT,
   cloudPersonal = null,
   cloudSyncStatus = "saved",
-  onCloudPersonalMetadataChange = ignoreCloudPersonalMetadataChange,
+  onCloudSettingsChange = ignoreCloudSettingsChange,
+  onCloudFinanceCorrectionChange = ignoreCloudFinanceCorrectionChange,
   onCloudOrderMutation = ignoreCloudOrderMutation,
+  onCloudOrdersQueryChange = ignoreCloudOrdersQueryChange,
   onCloudMatchesChange = ignoreCloudMatchesChange,
+  onCloudMatchesRefresh = ignoreCloudMatchesRefresh,
   onRequireAccount = () => undefined,
   onLogout = async () => undefined,
 }: {
@@ -3651,9 +3764,12 @@ export default function FootballApp({
   cloudAccount?: CloudAccount | null;
   cloudPersonal?: CloudPersonalData | null;
   cloudSyncStatus?: CloudSyncStatus;
-  onCloudPersonalMetadataChange?: (state: CloudPersonalMetadata) => void;
+  onCloudSettingsChange?: (settings: AppSettings) => void;
+  onCloudFinanceCorrectionChange?: (correction: { expenseCorrection: number; incomeCorrection: number }) => Promise<CloudPersonalData["finance"]>;
   onCloudOrderMutation?: (intent: OrderSyncIntent) => Promise<CloudOrderMutationResult>;
+  onCloudOrdersQueryChange?: (query: CloudOrderQuery) => Promise<CloudOrderQueryResult>;
   onCloudMatchesChange?: (matches: MatchItem[]) => void;
+  onCloudMatchesRefresh?: (manual: boolean) => Promise<SportteryMatchSnapshot>;
   onRequireAccount?: (view?: AppView) => void;
   onLogout?: () => Promise<void>;
 }) {
@@ -3684,9 +3800,12 @@ export default function FootballApp({
           cloudAccount={cloudAccount}
           cloudPersonal={cloudPersonal}
           cloudSyncStatus={cloudSyncStatus}
-          onCloudPersonalMetadataChange={onCloudPersonalMetadataChange}
+          onCloudSettingsChange={onCloudSettingsChange}
+          onCloudFinanceCorrectionChange={onCloudFinanceCorrectionChange}
           onCloudOrderMutation={onCloudOrderMutation}
+          onCloudOrdersQueryChange={onCloudOrdersQueryChange}
           onCloudMatchesChange={onCloudMatchesChange}
+          onCloudMatchesRefresh={onCloudMatchesRefresh}
           onRequireAccount={onRequireAccount}
           onLogout={onLogout}
         />

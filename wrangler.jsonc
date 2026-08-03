@@ -15,6 +15,13 @@
   "observability": {
     "enabled": true
   },
+  "triggers": {
+    "crons": [
+      "0 0 * * *",
+      "*/5 1-2 * * *",
+      "0 3-14 * * *"
+    ]
+  },
   "images": {
     "binding": "IMAGES"
   },

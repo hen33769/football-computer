@@ -26,14 +26,20 @@ export type CloudAccount = {
 
 export type CloudPersonalData = {
   orders: SavedSlip[];
+  orderTotal?: number;
+  unsettledOrderCount?: number;
   finance: {
     expenseTotal: number;
     incomeTotal: number;
+    expenseOrders?: number;
+    incomeOrders?: number;
+    expenseCorrection?: number;
+    incomeCorrection?: number;
+    revision?: number;
   };
   settings: AppSettings;
+  settingsRevision?: number;
 };
-
-export type CloudPersonalMetadata = Pick<CloudPersonalData, "finance" | "settings">;
 
 export type CloudPersonalState = CloudPersonalData & {
   revision: number;

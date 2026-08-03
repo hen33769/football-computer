@@ -138,13 +138,14 @@ git push "$remote_name" "$branch_name"
 echo
 echo "[6/7] 应用远程 D1 迁移并部署 Cloudflare Worker"
 WRANGLER_LOG_PATH=.wrangler/d1-release.log npx wrangler d1 migrations apply "$d1_database" --remote
+npm run db:rewrite-orders:remote
 npm run deploy:cloudflare
 
 echo
 echo "[7/7] 验证正式域名"
 health_file="$(mktemp)"
 trap 'rm -f "$health_file"' EXIT
-health_url="https://${deployment_domain}/api/cloud/bootstrap"
+health_url="https://${deployment_domain}/api/matches/current"
 
 check_health() {
   local url="$1"
@@ -210,7 +211,7 @@ if [[ "$verification_skipped" -eq 0 ]]; then
   node -e '
     const fs = require("node:fs");
     const payload = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-    if (!Array.isArray(payload.matches)) throw new Error("bootstrap 响应缺少 matches 数组");
+    if (!Array.isArray(payload.matches)) throw new Error("matches/current 响应缺少 matches 数组");
   ' "$health_file"
   echo "  验证通过：${verification_method}，HTTP ${http_status}"
 fi

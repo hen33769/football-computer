@@ -36,6 +36,7 @@ export type CloudOrderMutationResult = {
   upsertedOrders: SavedSlip[];
   deletedOrderIds: string[];
   revision: number;
+  finance?: CloudPersonalData["finance"];
 };
 
 export function emptyPersonalSyncIntent(): PersonalSyncIntent {

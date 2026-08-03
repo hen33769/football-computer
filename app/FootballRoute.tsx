@@ -7,9 +7,7 @@ import {
   CLOUD_STORAGE_KEYS,
   ensureOrderIds,
   type CloudAccount,
-  type CloudBootstrapResponse,
   type CloudPersonalData,
-  type CloudPersonalMetadata,
   type CloudSyncStatus,
 } from "./cloud";
 import { localCache, sessionCache } from "./browser-storage";
@@ -17,18 +15,24 @@ import { APP_VERSION } from "./AppVersion";
 import FootballApp, { type AppView } from "./FootballApp";
 import { DEMO_APP_URL } from "./links";
 import {
-  applyPersonalSyncIntent,
-  createPersonalMetadataSyncIntent,
-  emptyPersonalSyncIntent,
   hasPersonalSyncIntent,
-  mergePersonalSyncIntents,
   type CloudOrderMutationResult,
-  type CloudPersonalMutation,
-  type CloudPersonalMutationResponse,
   type OrderSyncIntent,
   type PersonalSyncIntent,
 } from "./personal-sync";
 import type { MatchItem } from "./types";
+import { requestJson } from "./api-client/http";
+import { getCurrentUser, loginAccount, logoutAccount } from "./api-client/users";
+import { getUserSettings, updateUserSettings } from "./api-client/settings";
+import { getFinance, updateFinanceCorrections, type FinanceResponse } from "./api-client/finance";
+import { createOrder, deleteOrder, fetchOrders, updateOrder, type OrderQuery, type OrdersResponse } from "./api-client/orders";
+import {
+  getCurrentMatches as getCloudCurrentMatches,
+  refreshCurrentMatches as refreshCloudCurrentMatches,
+  saveMatchSnapshot,
+} from "./api-client/matches";
+import type { AppSettings } from "./settings";
+import type { SportteryMatchSnapshot } from "./sporttery";
 
 type RouteStatus = "loading" | "ready" | "error";
 type VersionResponse = { appVersion?: string };
@@ -66,22 +70,16 @@ function clearCloudPersonalStorage() {
   localCache.removeItem(CLOUD_STORAGE_KEYS.pendingMigration);
 }
 
-async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...init?.headers,
-    },
-    cache: "no-store",
-  });
-  const payload = await response.json().catch(() => ({})) as { error?: string } & T;
-  if (!response.ok) {
-    const error = new Error(payload.error || "云端请求失败");
-    Object.assign(error, { status: response.status, payload });
-    throw error;
-  }
-  return payload;
+function cloudFinanceFromResponse(finance: FinanceResponse): CloudPersonalData["finance"] {
+  return {
+    expenseTotal: finance.expense.total,
+    incomeTotal: finance.income.total,
+    expenseOrders: finance.expense.orders,
+    incomeOrders: finance.income.orders,
+    expenseCorrection: finance.expense.correction,
+    incomeCorrection: finance.income.correction,
+    revision: finance.revision,
+  };
 }
 
 export default function FootballRoute({ initialView }: { initialView: AppView }) {
@@ -100,55 +98,32 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
   const syncQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const pendingWritesRef = useRef(0);
   const logoutRunningRef = useRef(false);
-  const personalSyncRunningRef = useRef(false);
-  const pendingPersonalIntentRef = useRef<PersonalSyncIntent>(emptyPersonalSyncIntent());
-  const pendingPersonalVersionRef = useRef(0);
   const clientPersonalRef = useRef<CloudPersonalData | null>(null);
-  const serverRevisionRef = useRef(0);
   const accountIdRef = useRef<string | null>(null);
   const pendingViewRef = useRef<AppView | null>(initialPersonalView);
 
-  const sendPersonalMutation = useCallback(async (intent: PersonalSyncIntent, deleteOrders = [] as CloudPersonalMutation["deleteOrders"]) => {
-    const mutation: CloudPersonalMutation = {
-      ...intent,
-      upsertOrders: ensureOrderIds(intent.upsertOrders),
-      deleteOrders,
-      expectedRevision: serverRevisionRef.current,
-      orderMutationVersion: 2,
-    };
-    const response = await requestJson<CloudPersonalMutationResponse>("/api/cloud/personal", {
-      method: "PUT",
-      body: JSON.stringify(mutation),
-    });
-    serverRevisionRef.current = response.revision;
-    return response;
-  }, []);
-
   const saveMatchesImmediately = useCallback(async (matches: MatchItem[]) => {
-    await requestJson("/api/cloud/matches", {
-      method: "PUT",
-      body: JSON.stringify({ matches: clearMatchSelections(matches) }),
-    });
+    await saveMatchSnapshot(clearMatchSelections(matches));
   }, []);
 
   const bootstrap = useCallback(async (showLoading = true) => {
     if (showLoading) setRouteStatus("loading");
     setRouteErrorMessage("");
     try {
-      const result = await requestJson<CloudBootstrapResponse>("/api/cloud/bootstrap");
-      const cloudMatches = result.matches ?? [];
+      const [userResult, matchSnapshot] = await Promise.all([
+        getCurrentUser(),
+        getCloudCurrentMatches(),
+      ]);
+      const cloudMatches = matchSnapshot.matches;
       const localMatches = readJson<MatchItem[]>(CLOUD_STORAGE_KEYS.matches, []);
       if (cloudMatches.length > 0) {
         localCache.setItem(CLOUD_STORAGE_KEYS.matches, JSON.stringify(clearMatchSelections(cloudMatches)));
       }
 
-      if (result.requiresAccount || !result.account || !result.personal) {
+      if (!userResult.authenticated || !userResult.account) {
         clearCloudPersonalStorage();
         accountIdRef.current = null;
         clientPersonalRef.current = null;
-        serverRevisionRef.current = 0;
-        pendingPersonalIntentRef.current = emptyPersonalSyncIntent();
-        personalSyncRunningRef.current = false;
         setAccount(null);
         setCloudPersonal(null);
         setSyncStatus("saved");
@@ -156,11 +131,19 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
         return;
       }
 
-      const nextAccount = result.account;
+      const [ordersResult, financeResult, settingsResult] = await Promise.all([
+        fetchOrders({ limit: 500 }),
+        getFinance(),
+        getUserSettings(),
+      ]);
+      const nextAccount = userResult.account;
       const serverPersonal: CloudPersonalData = {
-        orders: ensureOrderIds(result.personal.orders),
-        finance: result.personal.finance,
-        settings: result.personal.settings,
+        orders: ensureOrderIds(ordersResult.orders),
+        orderTotal: ordersResult.total,
+        unsettledOrderCount: ordersResult.unsettledCount,
+        finance: cloudFinanceFromResponse(financeResult),
+        settings: settingsResult.settings,
+        settingsRevision: settingsResult.revision,
       };
       clearCloudPersonalStorage();
 
@@ -170,10 +153,6 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
 
       accountIdRef.current = nextAccount.id;
       clientPersonalRef.current = serverPersonal;
-      serverRevisionRef.current = result.personal.revision;
-      pendingPersonalIntentRef.current = emptyPersonalSyncIntent();
-      pendingPersonalVersionRef.current += 1;
-      personalSyncRunningRef.current = false;
       setAccount(nextAccount);
       setCloudPersonal(serverPersonal);
       setSyncStatus("saved");
@@ -266,10 +245,7 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
     setAccountSubmitting(true);
     setAccountError("");
     try {
-      await requestJson("/api/cloud/account", {
-        method: "POST",
-        body: JSON.stringify({ account: accountDraft }),
-      });
+      await loginAccount(accountDraft);
       await bootstrap(false);
       setAccountDraft("");
     } catch (error) {
@@ -283,13 +259,10 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
     if (logoutRunningRef.current) return;
     logoutRunningRef.current = true;
     try {
-      await requestJson("/api/cloud/account", { method: "DELETE" });
+      await logoutAccount();
     } finally {
       accountIdRef.current = null;
       clientPersonalRef.current = null;
-      serverRevisionRef.current = 0;
-      pendingPersonalIntentRef.current = emptyPersonalSyncIntent();
-      personalSyncRunningRef.current = false;
       clearCloudPersonalStorage();
       setAccount(null);
       setCloudPersonal(null);
@@ -320,9 +293,6 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
       if ((error as Error & { status?: number }).status === 401) {
         accountIdRef.current = null;
         clientPersonalRef.current = null;
-        serverRevisionRef.current = 0;
-        pendingPersonalIntentRef.current = emptyPersonalSyncIntent();
-        personalSyncRunningRef.current = false;
         clearCloudPersonalStorage();
         setAccount(null);
         setCloudPersonal(null);
@@ -333,58 +303,35 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
     });
   }, []);
 
-  const schedulePersonalSync = useCallback(() => {
+  const syncSettings = useCallback((settings: AppSettings) => {
     const accountId = accountIdRef.current;
-    if (
-      !accountId
-      || personalSyncRunningRef.current
-      || !hasPersonalSyncIntent(pendingPersonalIntentRef.current)
-    ) {
-      return;
-    }
-    personalSyncRunningRef.current = true;
-    void enqueueWrite(async () => {
-      try {
-        while (
-          accountIdRef.current === accountId
-          && hasPersonalSyncIntent(pendingPersonalIntentRef.current)
-        ) {
-          const sentVersion = pendingPersonalVersionRef.current;
-          const sentIntent = structuredClone(pendingPersonalIntentRef.current);
-          await sendPersonalMutation(sentIntent);
-          if (accountIdRef.current !== accountId) return;
-
-          if (pendingPersonalVersionRef.current === sentVersion) {
-            pendingPersonalIntentRef.current = emptyPersonalSyncIntent();
-          }
-        }
-      } finally {
-        personalSyncRunningRef.current = false;
-      }
-    }).catch(() => undefined);
-  }, [enqueueWrite, sendPersonalMutation]);
-
-  const syncPersonalMetadata = useCallback((metadata: CloudPersonalMetadata) => {
-    const accountId = accountIdRef.current;
-    if (!accountId) return;
     const previous = clientPersonalRef.current;
-    if (!previous) return;
+    if (!accountId || !previous) return;
+    void enqueueWrite(async () => {
+      const response = await updateUserSettings(settings, previous.settingsRevision);
+      const nextPersonal: CloudPersonalData = {
+        ...(clientPersonalRef.current ?? previous),
+        settings: response.settings,
+        settingsRevision: response.revision,
+      };
+      clientPersonalRef.current = nextPersonal;
+      setCloudPersonal(nextPersonal);
+    }).catch(() => undefined);
+  }, [enqueueWrite]);
+
+  const syncFinanceCorrections = useCallback(async (correction: { expenseCorrection: number; incomeCorrection: number }) => {
+    const accountId = accountIdRef.current;
+    const previous = clientPersonalRef.current;
+    if (!accountId || !previous) throw new Error("请先输入账号登录");
+    const response = await enqueueWrite(() => updateFinanceCorrections(correction, previous.finance.revision));
     const nextPersonal: CloudPersonalData = {
-      ...previous,
-      finance: metadata.finance,
-      settings: metadata.settings,
+      ...(clientPersonalRef.current ?? previous),
+      finance: cloudFinanceFromResponse(response),
     };
     clientPersonalRef.current = nextPersonal;
-    const incomingIntent = createPersonalMetadataSyncIntent(previous, nextPersonal);
-    if (hasPersonalSyncIntent(incomingIntent)) {
-      pendingPersonalIntentRef.current = mergePersonalSyncIntents(
-        pendingPersonalIntentRef.current,
-        incomingIntent,
-      );
-      pendingPersonalVersionRef.current += 1;
-    }
-    schedulePersonalSync();
-  }, [schedulePersonalSync]);
+    setCloudPersonal(nextPersonal);
+    return nextPersonal.finance;
+  }, [enqueueWrite]);
 
   const syncOrders = useCallback(async (orderIntent: OrderSyncIntent): Promise<CloudOrderMutationResult> => {
     const accountId = accountIdRef.current;
@@ -401,36 +348,78 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
         orders: previous.orders,
         upsertedOrders: [],
         deletedOrderIds: [],
-        revision: serverRevisionRef.current,
+        revision: 0,
       };
     }
-    const deleteOrders = incomingIntent.deleteOrderIds.map((id) => ({
-      id,
-      updatedAt: currentOrdersById.get(id)?.updatedAt,
-    }));
-    const response = await enqueueWrite(() => sendPersonalMutation(incomingIntent, deleteOrders));
-    const authoritativeIntent: PersonalSyncIntent = {
-      upsertOrders: response.upsertedOrders,
-      deleteOrderIds: response.deletedOrderIds,
+    await enqueueWrite(async () => {
+      for (const id of incomingIntent.deleteOrderIds) {
+        const order = currentOrdersById.get(id);
+        if (order) await deleteOrder(order);
+      }
+      for (const order of incomingIntent.upsertOrders) {
+        const current = order.id ? currentOrdersById.get(order.id) : undefined;
+        if (current) await updateOrder({ ...order, updatedAt: order.updatedAt ?? current.updatedAt });
+        else await createOrder(order);
+      }
+    });
+    const [ordersResult, financeResult] = await Promise.all([
+      fetchOrders({ limit: 500 }),
+      getFinance(),
+    ]);
+    const nextPersonal: CloudPersonalData = {
+      ...(clientPersonalRef.current ?? previous),
+      orders: ensureOrderIds(ordersResult.orders),
+      orderTotal: ordersResult.total,
+      unsettledOrderCount: ordersResult.unsettledCount,
+      finance: cloudFinanceFromResponse(financeResult),
     };
-    const base = clientPersonalRef.current ?? previous;
-    const nextPersonal = applyPersonalSyncIntent(base, authoritativeIntent);
     clientPersonalRef.current = nextPersonal;
     setCloudPersonal(nextPersonal);
     return {
       orders: nextPersonal.orders,
-      upsertedOrders: response.upsertedOrders,
-      deletedOrderIds: response.deletedOrderIds,
-      revision: response.revision,
+      upsertedOrders: incomingIntent.upsertOrders,
+      deletedOrderIds: incomingIntent.deleteOrderIds,
+      revision: 0,
+      finance: nextPersonal.finance,
     };
-  }, [enqueueWrite, sendPersonalMutation]);
+  }, [enqueueWrite]);
+
+  const queryCloudOrders = useCallback(async (query: OrderQuery): Promise<OrdersResponse> => {
+    const previous = clientPersonalRef.current;
+    if (!accountIdRef.current || !previous) throw new Error("云端订单尚未加载，请刷新后重试");
+    const result = await fetchOrders(query);
+    const visibleOrders = ensureOrderIds(result.orders);
+    const mergedOrders = new Map(previous.orders.flatMap((order) => order.id ? [[order.id, order] as const] : []));
+    visibleOrders.forEach((order) => {
+      if (order.id) mergedOrders.set(order.id, order);
+    });
+    const nextPersonal: CloudPersonalData = {
+      ...previous,
+      orders: [...mergedOrders.values()],
+      orderTotal: result.total,
+      unsettledOrderCount: result.unsettledCount,
+    };
+    clientPersonalRef.current = nextPersonal;
+    setCloudPersonal(nextPersonal);
+    return {
+      ...result,
+      orders: visibleOrders,
+    };
+  }, []);
 
   const syncMatches = useCallback((matches: MatchItem[]) => {
-    if (!account) return;
+    if (!accountIdRef.current) {
+      void saveMatchesImmediately(matches).catch(() => undefined);
+      return;
+    }
     void enqueueWrite(async () => {
       await saveMatchesImmediately(matches);
     }).catch(() => undefined);
-  }, [account, enqueueWrite, saveMatchesImmediately]);
+  }, [enqueueWrite, saveMatchesImmediately]);
+
+  const loadCloudMatches = useCallback(async (manual: boolean): Promise<SportteryMatchSnapshot> => (
+    manual ? refreshCloudCurrentMatches() : getCloudCurrentMatches()
+  ), []);
 
   const navigate = (view: AppView) => {
     if (view !== "betting" && !account) {
@@ -475,9 +464,12 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
         cloudAccount={account}
         cloudPersonal={cloudPersonal}
         cloudSyncStatus={syncStatus}
-        onCloudPersonalMetadataChange={syncPersonalMetadata}
+        onCloudSettingsChange={syncSettings}
+        onCloudFinanceCorrectionChange={syncFinanceCorrections}
         onCloudOrderMutation={syncOrders}
+        onCloudOrdersQueryChange={queryCloudOrders}
         onCloudMatchesChange={syncMatches}
+        onCloudMatchesRefresh={loadCloudMatches}
         onRequireAccount={openAccountDialog}
         onLogout={logout}
       />

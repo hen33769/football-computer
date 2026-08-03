@@ -175,7 +175,7 @@ test("同步时仅保留接口比赛和仍可用的已选项", () => {
   assert.equal(market(replaced[0], "spf").options[0].odds, 2.94);
 });
 
-test("比赛缓存覆盖最新数据、停售旧比赛并清除五天前数据", () => {
+test("比赛缓存覆盖最新数据、停售旧比赛并清除七天前数据", () => {
   const incoming = convertSportteryMatches(payload, beforeKickoff);
   const previous = cloneMatches(incoming)[0];
   previous.id = "sporttery-2040585";
@@ -184,8 +184,8 @@ test("比赛缓存覆盖最新数据、停售旧比赛并清除五天前数据",
   const stale = { ...createEmptyMatch(2), id: "2040001", date: "2026-07-20", saleStatus: "selling" as const };
   stale.time = "2026-07-20 20:00";
   market(stale, "spf").options[0].selected = true;
-  const expired = { ...createEmptyMatch(3), id: "2039999", date: "2026-07-17", saleStatus: "selling" as const };
-  expired.time = "2026-07-17 20:00";
+  const expired = { ...createEmptyMatch(3), id: "2039999", date: "2026-07-15", saleStatus: "selling" as const };
+  expired.time = "2026-07-15 20:00";
   const future = { ...createEmptyMatch(4), id: "2040002", date: "2026-07-24", saleStatus: "selling" as const };
   future.time = "2026-07-24 20:00";
   market(future, "spf").options[0].selected = true;
@@ -219,7 +219,7 @@ test("新增导入比赛以新值更新同场数据，并由现有数据补齐�
     options: [market(duplicate, "spf").options[0]],
   }];
   const added = { ...createEmptyMatch(2), id: "sporttery-2040002", date: "2026-07-24", code: "203" };
-  const expired = { ...createEmptyMatch(3), id: "2039999", date: "2026-07-17" };
+  const expired = { ...createEmptyMatch(3), id: "2039999", date: "2026-07-15" };
 
   const union = unionSportteryMatchCache(
     [existing, expired],

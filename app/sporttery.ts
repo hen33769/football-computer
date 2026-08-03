@@ -12,7 +12,7 @@ export const SPORTTERY_MATCH_SCORE_URL =
   "https://webapi.sporttery.cn/gateway/uniform/fb/getMatchScoreV1.qry";
 
 const LEGACY_SPORTTERY_MATCH_ID_PREFIX = "sporttery-";
-export const SPORTTERY_MATCH_CACHE_DAYS = 5;
+export const SPORTTERY_MATCH_CACHE_DAYS = 7;
 
 type SportteryOdds = Record<string, unknown>;
 
@@ -187,9 +187,31 @@ export const hasMatchStarted = (match: Pick<MatchItem, "date" | "time">, now = n
 
 export type MatchSaleState = "pending" | "selling" | "stopped";
 
-const localDateKey = (date: Date) => (
-  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
-);
+const beijingPartsFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: "Asia/Shanghai",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  hour12: false,
+});
+
+const beijingDateParts = (date: Date) => {
+  const parts = Object.fromEntries(beijingPartsFormatter.formatToParts(date).map((part) => [part.type, part.value]));
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour: Number(parts.hour) % 24,
+  };
+};
+
+const localDateKey = (date: Date) => {
+  const parts = beijingDateParts(date);
+  return `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
+};
+
+const beijingHour = (date: Date) => beijingDateParts(date).hour;
 
 /** 开赛时间是停售边界；开赛前无法正常销售的比赛统一视为待开售。 */
 export const getMatchSaleState = (match: MatchItem, now = new Date()): MatchSaleState => {
@@ -387,7 +409,7 @@ const clearSelections = (match: MatchItem): MatchItem => ({
 
 /**
  * 将接口本次返回覆盖到本地缓存；未再次返回的比赛保留原倍率但标记停售，
- * 并自动清除早于当前日期 5 天以上的数据。
+ * 并自动清除早于当前日期 7 天以上的数据。
  */
 export function mergeSportteryMatchCache(
   current: MatchItem[],
@@ -879,25 +901,25 @@ export async function fetchSportteryMatchSnapshot(
 }
 
 export function getSportteryRefreshPolicy(now = new Date()) {
-  const hour = now.getHours();
+  const hour = beijingHour(now);
   if (hour >= 9 && hour < 11) return { mode: "morning" as const, autoIntervalMs: 5 * 60 * 1000 };
   if (hour >= 11 && hour < 23) return { mode: "standard" as const, autoIntervalMs: 60 * 60 * 1000 };
   return { mode: "standard" as const, autoIntervalMs: null };
 }
 
-const millisecondsUntilHour = (now: Date, hour: number, nextDay = false) => {
-  const target = new Date(now);
-  target.setHours(hour, 0, 0, 0);
-  if (nextDay || target.getTime() <= now.getTime()) target.setDate(target.getDate() + 1);
-  return target.getTime() - now.getTime();
+const millisecondsUntilBeijingHour = (now: Date, hour: number, nextDay = false) => {
+  const parts = beijingDateParts(now);
+  const target = Date.UTC(parts.year, parts.month - 1, parts.day + (nextDay ? 1 : 0), hour - 8, 0, 0, 0);
+  const resolved = target <= now.getTime() ? target + 24 * 60 * 60 * 1000 : target;
+  return resolved - now.getTime();
 };
 
 export function getNextSportteryAutoRefreshDelay(now = new Date()) {
-  const hour = now.getHours();
-  if (hour < 9) return millisecondsUntilHour(now, 9);
-  if (hour < 11) return Math.min(5 * 60 * 1000, millisecondsUntilHour(now, 11));
-  if (hour < 23) return Math.min(60 * 60 * 1000, millisecondsUntilHour(now, 23));
-  return millisecondsUntilHour(now, 9, true);
+  const hour = beijingHour(now);
+  if (hour < 9) return millisecondsUntilBeijingHour(now, 9);
+  if (hour < 11) return Math.min(5 * 60 * 1000, millisecondsUntilBeijingHour(now, 11));
+  if (hour < 23) return Math.min(60 * 60 * 1000, millisecondsUntilBeijingHour(now, 23));
+  return millisecondsUntilBeijingHour(now, 9, true);
 }
 
 const normalizedKey = (value: string) => value.replace(/[_\-\s]/g, "").toLowerCase();

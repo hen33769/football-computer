@@ -31,7 +31,6 @@ export async function POST(request: Request) {
       const [firstUser] = await db.select({ id: users.id }).from(users).limit(1);
       const id = crypto.randomUUID();
       const role = firstUser ? "user" : "admin";
-
       try {
         await db.insert(users).values({
           id,

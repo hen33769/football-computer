@@ -95,9 +95,18 @@ export async function requireAuthenticatedCloudAccount(request: Request) {
 export function routeError(error: unknown) {
   const message = error instanceof Error ? error.message : "服务器暂时无法处理请求";
   const unavailable = /no such table|D1 binding|database/i.test(message);
+  const status = Number((error as { status?: unknown }).status);
+  const code = (error as { code?: unknown }).code;
+  const conflictOrderIds = (error as { conflictOrderIds?: unknown }).conflictOrderIds;
+  const revision = (error as { revision?: unknown }).revision;
   return Response.json(
-    { error: unavailable ? "云数据库正在初始化，请稍后重试" : message },
-    { status: 500 },
+    {
+      ...(typeof code === "string" ? { code } : {}),
+      error: unavailable ? "云数据库正在初始化，请稍后重试" : message,
+      ...(Array.isArray(conflictOrderIds) ? { conflictOrderIds } : {}),
+      ...(typeof revision === "number" ? { revision } : {}),
+    },
+    { status: unavailable ? 500 : Number.isInteger(status) ? status : 500 },
   );
 }
 
