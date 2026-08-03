@@ -136,11 +136,9 @@ WHERE user_id = ${quote(state.user_id)};
   });
 }
 
-const migrationSql = [
-  "BEGIN TRANSACTION;",
-  ...updateStatements,
-  "COMMIT;",
-].join("\n");
+const migrationSql = updateStatements.length > 0
+  ? updateStatements.join("\n")
+  : "-- No order rewrite needed.\n";
 
 const sqlFile = join(backupDir, `${remote ? "remote" : "local"}-${now.replace(/[:.]/g, "-")}.sql`);
 writeFileSync(sqlFile, migrationSql);
