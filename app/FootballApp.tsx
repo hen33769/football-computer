@@ -1054,7 +1054,9 @@ function InnerFootballApp({
 
   const loadSportterySnapshot = useCallback(async (manual: boolean) => {
     try {
-      return { snapshot: await onCloudMatchesRefresh(manual), source: "cloud" as const };
+      const snapshot = await onCloudMatchesRefresh(manual);
+      if (snapshot.fromCache && snapshot.refreshError) throw new Error(snapshot.refreshError);
+      return { snapshot, source: "cloud" as const };
     } catch (cloudError) {
       const mode = getSportteryRefreshPolicy(new Date()).mode;
       const snapshot = await fetchSportteryMatchSnapshot(mode);

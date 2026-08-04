@@ -11,6 +11,7 @@ export type MatchRefreshMetadata = {
   fixedBonusFailureCount: number;
   savedAt: string;
   fromCache: boolean;
+  error: string;
 };
 
 export type CurrentMatchesResponse = {
@@ -25,6 +26,8 @@ const toSportterySnapshot = (response: CurrentMatchesResponse): SportteryMatchSn
   leagues: [],
   lastUpdateTime: response.metadata.lastUpdateTime || response.metadata.savedAt,
   fixedBonusFailureCount: response.metadata.fixedBonusFailureCount,
+  fromCache: response.metadata.fromCache,
+  refreshError: response.metadata.error,
 });
 
 export async function getCurrentMatches() {

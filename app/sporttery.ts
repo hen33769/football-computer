@@ -101,6 +101,8 @@ export type SportteryMatchSnapshot = {
   leagues: SportteryLeague[];
   lastUpdateTime: string;
   fixedBonusFailureCount: number;
+  fromCache?: boolean;
+  refreshError?: string;
 };
 
 const POOL_BY_MARKET: Record<MarketType, string> = {
@@ -631,32 +633,28 @@ const hasPositiveOdds = (match: MatchItem) => (
   match.markets.some((market) => market.options.some((option) => option.odds > 0))
 );
 
-const mergeSportteryMatchSources = (primary: MatchItem[], supplement: MatchItem[]) => {
-  const mergedPrimary = primary.map((match) => {
-    if (hasPositiveOdds(match)) return match;
-    return supplement.find((item) => sameMatch(item, match)) ?? match;
+const mergeSportteryListWithCalculatorDetails = (listMatches: MatchItem[], calculatorMatches: MatchItem[]) => {
+  const mergedList = listMatches.map((match) => {
+    const detailed = calculatorMatches.find((item) => sameMatch(item, match));
+    return detailed && hasPositiveOdds(detailed) ? detailed : match;
   });
-  const supplementOnly = supplement.filter((match) => !primary.some((item) => sameMatch(item, match)));
-  return [...mergedPrimary, ...supplementOnly].sort((left, right) => (
+  const detailOnly = calculatorMatches.filter((match) => !listMatches.some((item) => sameMatch(item, match)));
+  return [...mergedList, ...detailOnly].sort((left, right) => (
     left.date.localeCompare(right.date)
     || left.code.localeCompare(right.code, "zh-CN", { numeric: true, sensitivity: "base" })
   ));
 };
 
-const selectSportterySupplementPayload = (
+const selectSportteryCurrentListPayload = (
   payload: SportteryMatchListResponse,
-  primaryMatches: MatchItem[],
   today: string,
 ): SportteryMatchListResponse => {
-  const primaryWithOdds = new Set(primaryMatches
-    .filter(hasPositiveOdds)
-    .map((match) => normalizeSportteryMatchId(match.id)));
   const groups = (payload.value?.matchInfoList ?? [])
     .map((group) => ({
       ...group,
       subMatchList: (group.subMatchList ?? []).filter((match) => {
         const businessDate = match.businessDate || group.businessDate;
-        return businessDate >= today && !primaryWithOdds.has(String(match.matchId));
+        return businessDate >= today;
       }),
     }))
     .filter((group) => group.subMatchList.length > 0);
@@ -670,28 +668,63 @@ const selectSportterySupplementPayload = (
   };
 };
 
-const fetchSportteryMorningMatches = async (
-  payload: SportteryMatchListResponse,
-  now = new Date(),
-) => {
-  const listedMatches = (payload.value?.matchInfoList ?? []).flatMap((group) => group.subMatchList ?? []);
+const canConvertSportteryCalculatorPayload = (payload: SportteryMatchCalculatorResponse) => (
+  Array.isArray(payload.value?.matchInfoList) || Boolean(payload.emptyFlag)
+);
+
+const listedSportteryMatches = (payload: SportteryMatchListResponse) => (
+  (payload.value?.matchInfoList ?? []).flatMap((group) => group.subMatchList ?? [])
+);
+
+const fetchSportteryFixedBonusPayloadMap = async (matches: SportteryMatch[]) => {
   let fixedBonusFailureCount = 0;
-  const fixedPayloads = await mapWithConcurrency(listedMatches, 6, async (match) => {
+  const matchIds = [...new Set(matches.map((match) => String(match.matchId)).filter(Boolean))];
+  const fixedPayloadEntries = await mapWithConcurrency(matchIds, 6, async (matchId) => {
     try {
-      return await fetchSportteryFixedBonusPayload(String(match.matchId));
+      return [matchId, await fetchSportteryFixedBonusPayload(matchId)] as const;
     } catch {
       fixedBonusFailureCount += 1;
       return null;
     }
   });
-  const fixedBonusPayloads = new Map<string, Record<string, unknown>>();
-  listedMatches.forEach((match, index) => {
-    const fixedPayload = fixedPayloads[index];
-    if (fixedPayload) fixedBonusPayloads.set(String(match.matchId), fixedPayload);
-  });
+  return {
+    fixedBonusPayloads: new Map(fixedPayloadEntries.filter((entry): entry is readonly [string, Record<string, unknown>] => Boolean(entry))),
+    fixedBonusFailureCount,
+  };
+};
+
+const fetchSportteryMorningMatches = async (
+  payload: SportteryMatchListResponse,
+  now = new Date(),
+) => {
+  const { fixedBonusPayloads, fixedBonusFailureCount } = await fetchSportteryFixedBonusPayloadMap(listedSportteryMatches(payload));
   return {
     matches: convertSportteryMorningMatches(payload, fixedBonusPayloads, now),
     fixedBonusFailureCount,
+    fixedBonusPayloads,
+  };
+};
+
+const enrichSportteryMatchesWithFixedBonus = async (
+  matches: MatchItem[],
+  fixedBonusPayloads = new Map<string, Record<string, unknown>>(),
+) => {
+  let fixedBonusFailureCount = 0;
+  const enriched = await mapWithConcurrency(matches, 6, async (match) => {
+    const matchId = normalizeSportteryMatchId(match.id);
+    try {
+      const payload = fixedBonusPayloads.get(matchId) ?? await fetchSportteryFixedBonusPayload(matchId);
+      fixedBonusPayloads.set(matchId, payload);
+      return enrichSportteryMatchOddsHistory(match, payload);
+    } catch {
+      fixedBonusFailureCount += 1;
+      return match;
+    }
+  });
+  return {
+    matches: enriched,
+    fixedBonusFailureCount,
+    fixedBonusPayloads,
   };
 };
 
@@ -834,57 +867,47 @@ export function convertSportteryMorningMatches(
   });
 }
 
-const fetchSportteryOddsHistories = async (matches: MatchItem[]) => {
-  let failureCount = 0;
-  const enriched = await mapWithConcurrency(matches, 6, async (match) => {
-    try {
-      const payload = await fetchSportteryFixedBonusPayload(match.id);
-      return enrichSportteryMatchOddsHistory(match, payload);
-    } catch {
-      failureCount += 1;
-      return match;
-    }
-  });
-  return { matches: enriched, failureCount };
-};
-
 export async function fetchSportteryMatchSnapshot(
   mode: SportteryMatchFetchMode,
   now = new Date(),
 ): Promise<SportteryMatchSnapshot> {
   if (mode === "standard") {
-    // 常规接口只返回当前有倍率的比赛，因此同时读取完整比赛列表，
-    // 并仅对今天及以后未取得有效倍率的比赛复用早间逐场补取逻辑。
-    const [payload, matchListPayload] = await Promise.all([
-      fetchSportteryMatchCalculator(),
+    // getMatchListV1 覆盖更完整的比赛全集；calculator 只作为同场赔率与玩法详情覆盖源。
+    const [matchListPayload, calculatorPayload] = await Promise.all([
       fetchSportteryMatchList().catch(() => null),
+      fetchSportteryMatchCalculator().catch(() => null),
     ]);
-    const primaryMatches = convertSportteryMatches(payload, now);
-    const primaryHistoryPromise = fetchSportteryOddsHistories(primaryMatches);
     if (!matchListPayload) {
-      const primaryHistory = await primaryHistoryPromise;
+      if (!calculatorPayload || !canConvertSportteryCalculatorPayload(calculatorPayload)) {
+        throw new Error("体彩比赛列表接口缺少 matchInfoList");
+      }
+      const calculatorMatches = convertSportteryMatches(calculatorPayload, now);
+      const calculatorDetails = await enrichSportteryMatchesWithFixedBonus(calculatorMatches);
       return {
         mode,
-        matches: primaryHistory.matches,
-        matchDates: payload.value?.matchDateList ?? [],
-        leagues: payload.value?.leagueList ?? [],
-        lastUpdateTime: payload.value?.lastUpdateTime ?? "",
-        fixedBonusFailureCount: primaryHistory.failureCount,
+        matches: calculatorDetails.matches,
+        matchDates: calculatorPayload.value?.matchDateList ?? [],
+        leagues: calculatorPayload.value?.leagueList ?? [],
+        lastUpdateTime: calculatorPayload.value?.lastUpdateTime ?? "",
+        fixedBonusFailureCount: calculatorDetails.fixedBonusFailureCount,
       };
     }
 
-    const supplementPayload = selectSportterySupplementPayload(matchListPayload, primaryMatches, localDateKey(now));
-    const [primaryHistory, supplement] = await Promise.all([
-      primaryHistoryPromise,
-      fetchSportteryMorningMatches(supplementPayload, now),
-    ]);
+    const listPayload = selectSportteryCurrentListPayload(matchListPayload, localDateKey(now));
+    const listMatches = await fetchSportteryMorningMatches(listPayload, now);
+    const calculatorMatches = calculatorPayload && canConvertSportteryCalculatorPayload(calculatorPayload)
+      ? convertSportteryMatches(calculatorPayload, now)
+      : [];
+    const calculatorDetails = calculatorMatches.length > 0
+      ? await enrichSportteryMatchesWithFixedBonus(calculatorMatches, listMatches.fixedBonusPayloads)
+      : { matches: [] as MatchItem[], fixedBonusFailureCount: 0 };
     return {
       mode,
-      matches: mergeSportteryMatchSources(primaryHistory.matches, supplement.matches),
-      matchDates: matchListPayload.value?.matchDateList ?? payload.value?.matchDateList ?? [],
-      leagues: matchListPayload.value?.leagueList ?? payload.value?.leagueList ?? [],
-      lastUpdateTime: payload.value?.lastUpdateTime ?? "",
-      fixedBonusFailureCount: primaryHistory.failureCount + supplement.fixedBonusFailureCount,
+      matches: mergeSportteryListWithCalculatorDetails(listMatches.matches, calculatorDetails.matches),
+      matchDates: matchListPayload.value?.matchDateList ?? calculatorPayload?.value?.matchDateList ?? [],
+      leagues: matchListPayload.value?.leagueList ?? calculatorPayload?.value?.leagueList ?? [],
+      lastUpdateTime: matchListPayload.value?.lastUpdateTime || calculatorPayload?.value?.lastUpdateTime || "",
+      fixedBonusFailureCount: listMatches.fixedBonusFailureCount + calculatorDetails.fixedBonusFailureCount,
     };
   }
 

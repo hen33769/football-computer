@@ -20,6 +20,7 @@ export type MatchRefreshMetadata = {
   fixedBonusFailureCount: number;
   savedAt: string;
   fromCache: boolean;
+  error: string;
 };
 
 export type CurrentMatchesResponse = {
@@ -212,6 +213,7 @@ function stateMetadata(state: RefreshStateRow | null, fromCache: boolean, now = 
     fixedBonusFailureCount: Number(state?.fixed_bonus_failure_count ?? 0),
     savedAt: state?.last_refresh_finished_at ?? state?.updated_at ?? "",
     fromCache,
+    error: state?.error ?? "",
   };
 }
 
@@ -299,7 +301,7 @@ export async function getMatchesByIds(d1: D1Database, ids: string[]) {
 
 export async function saveClientMatchSnapshot(d1: D1Database, matches: unknown, now = new Date()) {
   const state = await getRefreshState(d1);
-  if (isCoolingDown(state, now, MANUAL_REFRESH_COOLDOWN_MS)) {
+  if (isCoolingDown(state, now, MANUAL_REFRESH_COOLDOWN_MS) && !state?.error) {
     return {
       matches: await loadStoredMatches(d1),
       metadata: stateMetadata(state, true, now),

@@ -524,7 +524,7 @@ test("比赛缓存同步不会用空倍率覆盖旧有效倍率", () => {
   assert.deepEqual(cachedSpf.options.map((option) => option.selected), [true, true, false]);
 });
 
-test("常规模式按小时为今天及以后的缺失比赛逐场补取倍率", async () => {
+test("常规模式以完整列表为主并用 calculator 覆盖同场详细赔率", async () => {
   const now = new Date("2026-07-24T12:00:00");
   const standardPayload = structuredClone(payload);
   const standardMatch = standardPayload.value!.matchInfoList![0].subMatchList[0];
@@ -604,10 +604,92 @@ test("常规模式按小时为今天及以后的缺失比赛逐场补取倍率",
     assert.equal(snapshot.mode, "standard");
     assert.deepEqual(fixedBonusMatchIds.sort(), ["2040585", "2040999"]);
     assert.deepEqual(snapshot.matches.map((match) => match.id), ["2040585", "2040999"]);
+    const detailed = snapshot.matches.find((match) => match.id === "2040585")!;
+    assert.equal(detailed.saleStatus, "selling");
+    assert.equal(getMatchSaleState(detailed, now), "selling");
+    assert.equal(market(detailed, "spf").options.find((option) => option.id === "win")?.odds, 2.94);
     const supplemented = snapshot.matches.find((match) => match.id === "2040999")!;
     assert.equal(supplemented.saleStatus, "pending");
     assert.equal(market(supplemented, "spf").options.find((option) => option.id === "win")?.odds, 2.25);
     assert.equal(market(supplemented, "rqspf").handicap, -1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("常规模式在 calculator 暂无比赛列表时使用完整列表补充待开售比赛", async () => {
+  const now = new Date("2026-08-04T12:00:00");
+  const calculatorPayload: SportteryMatchCalculatorResponse = {
+    success: true,
+    errorCode: "0",
+    errorMessage: "处理成功",
+    value: {
+      vtoolsConfig: { onLineSaleStatus: 1 },
+    },
+  };
+  const baseMatch = structuredClone(payload.value!.matchInfoList![0].subMatchList[0]);
+  baseMatch.matchId = 2040716;
+  baseMatch.matchNum = 2001;
+  baseMatch.matchNumStr = "周二001";
+  baseMatch.businessDate = "2026-08-04";
+  baseMatch.matchDate = "2026-08-05";
+  baseMatch.matchTime = "08:30:00";
+  baseMatch.matchStatus = "Define";
+  baseMatch.homeTeamAbbName = "里莫";
+  baseMatch.awayTeamAbbName = "桑托斯";
+  baseMatch.leagueAbbName = "巴西杯";
+  const euroMatch = structuredClone(baseMatch);
+  euroMatch.matchId = 2040727;
+  euroMatch.matchNum = 2002;
+  euroMatch.matchNumStr = "周二002";
+  euroMatch.matchTime = "00:00:00";
+  euroMatch.homeTeamAbbName = "米亚尔比";
+  euroMatch.awayTeamAbbName = "布拉迪斯";
+  euroMatch.leagueAbbName = "欧冠";
+  const matchListPayload: SportteryMatchListResponse = {
+    success: true,
+    errorCode: "0",
+    errorMessage: "处理成功",
+    value: {
+      totalCount: 2,
+      lastUpdateTime: "2026-08-04 08:26:11",
+      matchInfoList: [{
+        businessDate: "2026-08-04",
+        subMatchList: [baseMatch, euroMatch],
+      }],
+      matchDateList: [{ businessDate: "2026-08-04", businessDateCn: "周二" }],
+      leagueList: [
+        { leagueId: "7", leagueName: "巴西杯", leagueNameAbbr: "巴西杯" },
+        { leagueId: "69", leagueName: "欧洲冠军联赛", leagueNameAbbr: "欧冠" },
+      ],
+    },
+  };
+
+  const originalFetch = globalThis.fetch;
+  const fixedBonusMatchIds: string[] = [];
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/getMatchCalculatorV1.qry")) {
+      return Response.json(calculatorPayload);
+    }
+    if (url.pathname.endsWith("/getMatchListV1.qry")) {
+      return Response.json(matchListPayload);
+    }
+    if (url.pathname.endsWith("/getFixedBonusV1.qry")) {
+      fixedBonusMatchIds.push(url.searchParams.get("matchId") ?? "");
+      return Response.json({ success: true, value: { oddsHistory: {} } });
+    }
+    throw new Error(`未处理的测试请求：${url}`);
+  };
+
+  try {
+    const snapshot = await fetchSportteryMatchSnapshot("standard", now);
+    assert.deepEqual(snapshot.matches.map((match) => match.id), ["2040716", "2040727"]);
+    assert.deepEqual(snapshot.leagues.map((league) => league.leagueNameAbbr), ["巴西杯", "欧冠"]);
+    assert.equal(snapshot.lastUpdateTime, "2026-08-04 08:26:11");
+    assert.deepEqual(fixedBonusMatchIds.sort(), ["2040716", "2040727"]);
+    assert.equal(getMatchSaleState(snapshot.matches[0], now), "pending");
+    assert.equal(getMatchSaleState(snapshot.matches[1], now), "pending");
   } finally {
     globalThis.fetch = originalFetch;
   }
