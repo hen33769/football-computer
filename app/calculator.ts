@@ -28,6 +28,10 @@ export function selectedMatches(matches: MatchItem[]): MatchItem[] {
   return matches.filter((match) => selectedOptions(match).length > 0);
 }
 
+const selectedPricedOptions = (match: MatchItem) => selectedOptions(match).filter((option) => option.odds > 0);
+
+const selectedPricedMatches = (matches: MatchItem[]) => matches.filter((match) => selectedPricedOptions(match).length > 0);
+
 export const MAX_SELECTED_MATCHES = 8;
 
 export function isNewMatchSelectionBlocked(matches: MatchItem[], matchId: string): boolean {
@@ -41,9 +45,9 @@ export function isNewMatchSelectionBlocked(matches: MatchItem[], matchId: string
 
 export function getPassLimit(matches: MatchItem[]): number {
   const selectedTypes = new Set<MarketType>();
-  selectedMatches(matches).forEach((match) => {
+  selectedPricedMatches(matches).forEach((match) => {
     match.markets.forEach((market) => {
-      if (market.options.some((item) => item.selected)) selectedTypes.add(market.type);
+      if (market.options.some((item) => item.selected && item.odds > 0)) selectedTypes.add(market.type);
     });
   });
   if (selectedTypes.size === 0) return 8;
@@ -51,14 +55,14 @@ export function getPassLimit(matches: MatchItem[]): number {
 }
 
 export function getPassOptions(matches: MatchItem[]): number[] {
-  const chosenMatches = selectedMatches(matches);
+  const chosenMatches = selectedPricedMatches(matches);
   if (chosenMatches.length === 0) return [];
   const chosenMarkets = chosenMatches.flatMap((match) => match.markets.filter((market) => (
-    market.options.some((option) => option.selected)
+    market.options.some((option) => option.selected && option.odds > 0)
   )));
   const options: number[] = [];
-  if (chosenMarkets.every((market) => market.singleAvailable !== false)) options.push(1);
-  if (chosenMatches.length >= 2 && chosenMarkets.every((market) => market.passAvailable !== false)) {
+  if (chosenMarkets.length > 0) options.push(1);
+  if (chosenMatches.length >= 2) {
     const limit = Math.min(chosenMatches.length, getPassLimit(matches));
     for (let pass = 2; pass <= limit; pass += 1) options.push(pass);
   }
@@ -66,7 +70,7 @@ export function getPassOptions(matches: MatchItem[]): number[] {
 }
 
 export function countBets(matches: MatchItem[], passes: number[]): number {
-  const counts = selectedMatches(matches).map((match) => selectedOptions(match).length);
+  const counts = selectedPricedMatches(matches).map((match) => selectedPricedOptions(match).length);
   return passes.reduce((grandTotal, pass) => {
     const passTotal = combinations(counts, pass).reduce(
       (total, group) => total + group.reduce((product, value) => product * value, 1),
@@ -152,10 +156,11 @@ export type PassMultiplierDetail = {
 };
 
 export function calculatePassMultipliers(matches: MatchItem[], passes: number[], hits: CurrentHits): PassMultiplierDetail[] {
-  const chosen = selectedMatches(matches);
+  const chosen = selectedPricedMatches(matches);
   const optionGroups = chosen.map((match) => match.markets.flatMap((market) => market.options
-    .filter((option) => option.selected)
-    .map((option): PassMultiplierFactor => ({
+      .filter((option) => option.selected)
+      .filter((option) => option.odds > 0)
+      .map((option): PassMultiplierFactor => ({
       matchId: match.id,
       matchLabel: `${match.weekday}${match.code} ${match.home} VS ${match.away}`,
       marketType: market.type,
@@ -260,7 +265,7 @@ function selectedHitOdds(match: MatchItem, hits: CurrentHits): number[] {
     const hitId = matchHits[market.type];
     if (!hitId) return [];
     const hit = market.options.find((option) => option.selected && option.id === hitId);
-    return hit ? [hit.odds] : [];
+    return hit && hit.odds > 0 ? [hit.odds] : [];
   });
 }
 
@@ -270,7 +275,7 @@ function scenarioWinningOdds(match: MatchItem, hits: CurrentHits): number[][] {
 
   const selectedByKey = new Map<string, OddsOption>();
   match.markets.forEach((market) => market.options.forEach((item) => {
-    if (item.selected) selectedByKey.set(`${market.type}:${item.id}`, item);
+    if (item.selected && item.odds > 0) selectedByKey.set(`${market.type}:${item.id}`, item);
   }));
   if (selectedByKey.size === 0) return [[]];
 
@@ -296,21 +301,21 @@ function scenarioWinningOdds(match: MatchItem, hits: CurrentHits): number[][] {
 }
 
 export function calculateCurrentPrize(matches: MatchItem[], passes: number[], multiple: number, hits: CurrentHits): number {
-  const chosen = selectedMatches(matches);
+  const chosen = selectedPricedMatches(matches);
   const winning = chosen.map((match) => {
     const matchHits = hits[match.id] ?? {};
     return match.markets.flatMap((market) => {
       const hitId = matchHits[market.type];
       if (!hitId) return [];
       const hit = market.options.find((item) => item.selected && item.id === hitId);
-      return hit ? [hit.odds] : [];
+      return hit && hit.odds > 0 ? [hit.odds] : [];
     });
   });
   return payoutForWinningOdds(winning, passes, multiple, true);
 }
 
 export function calculatePrizeRange(matches: MatchItem[], passes: number[], multiple: number, hits: CurrentHits = {}): PrizeRange {
-  const chosen = selectedMatches(matches);
+  const chosen = selectedPricedMatches(matches);
   if (chosen.length === 0 || passes.length === 0) return { min: 0, max: 0, uncappedMax: 0 };
   const scenarios = chosen.map((match) => scenarioWinningOdds(match, hits));
   const maxWinning = scenarios.map((items) => [...items].sort((left, right) => sum(right) - sum(left))[0] ?? []);

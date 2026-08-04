@@ -269,19 +269,40 @@ test("各玩法串关上限与混合过关取最小值", () => {
   assert.equal(limitFor("spf", "rqspf", "score", "goals", "halfFull"), 4);
 });
 
-test("多场均支持单场时同时提供单场与串关选项", () => {
+test("预测串关按有效赔率和玩法上限生成，不受销售标记阻断", () => {
   const matches = select();
   assert.deepEqual(getPassOptions(matches), [1, 2]);
 
   matches[0].markets[0].singleAvailable = false;
-  assert.deepEqual(getPassOptions(matches), [2]);
-
-  matches[0].markets[0].singleAvailable = true;
   matches[0].markets[0].passAvailable = false;
-  assert.deepEqual(getPassOptions(matches), [1]);
+  assert.deepEqual(getPassOptions(matches), [1, 2]);
+  assert.equal(countBets(matches, [2]), 1);
+  assert.equal(calculateStake(matches, [2], 1), 2);
+});
 
-  matches[0].markets[0].singleAvailable = false;
-  assert.deepEqual(getPassOptions(matches), []);
+test("无有效赔率的已选项不参与预测串关计算", () => {
+  const matches = select();
+  matches[1].markets[0].options[0].odds = 0;
+
+  assert.deepEqual(getPassOptions(matches), [1]);
+  assert.equal(countBets(matches, [1, 2]), 1);
+  assert.equal(calculateStake(matches, [1, 2], 1), 2);
+});
+
+test("待开售比分多选仍按普通预测单实时计算并可形成串关", () => {
+  const matches = cloneMatches(initialMatches.slice(0, 3));
+  matches.forEach((match) => {
+    const score = match.markets.find((market) => market.type === "score")!;
+    score.singleAvailable = false;
+    score.passAvailable = false;
+    score.options.find((option) => option.id === "1:0")!.selected = true;
+    score.options.find((option) => option.id === "0:1")!.selected = true;
+  });
+
+  assert.deepEqual(getPassOptions(matches), [1, 2, 3]);
+  assert.equal(countBets(matches, [3]), 8);
+  assert.equal(calculateStake(matches, [3], 1), 16);
+  assert.ok(calculatePrizeRange(matches, [3], 1).max > 0);
 });
 
 test("最多选择八场比赛，同场追加选项不受限制", () => {
