@@ -32,6 +32,15 @@ const selectedPricedOptions = (match: MatchItem) => selectedOptions(match).filte
 
 const selectedPricedMatches = (matches: MatchItem[]) => matches.filter((match) => selectedPricedOptions(match).length > 0);
 
+const selectedPricedMarketCount = (match: MatchItem) => match.markets.reduce((count, market) => (
+  count + Number(market.options.some((option) => option.selected && option.odds > 0))
+), 0);
+
+function groupBetCount(marketCounts: number[], includedIndexes: number[]): number {
+  const included = new Set(includedIndexes);
+  return marketCounts.reduce((product, count, index) => included.has(index) ? product : product * count, 1);
+}
+
 export const MAX_SELECTED_MATCHES = 8;
 
 export function isNewMatchSelectionBlocked(matches: MatchItem[], matchId: string): boolean {
@@ -69,15 +78,39 @@ export function getPassOptions(matches: MatchItem[]): number[] {
   return options;
 }
 
+export type BetSummary = {
+  ticketCount: number;
+  groupCount: number;
+  betCount: number;
+};
+
+export function calculateBetSummary(matches: MatchItem[], passes: number[]): BetSummary {
+  const chosen = selectedPricedMatches(matches);
+  const optionCounts = chosen.map((match) => selectedPricedOptions(match).length);
+  const marketCounts = chosen.map(selectedPricedMarketCount);
+  let groupCount = 0;
+  let betCount = 0;
+
+  for (const pass of passes) {
+    for (const matchIndexes of combinations(chosen.map((_, index) => index), pass)) {
+      const groups = matchIndexes.reduce((product, index) => product * optionCounts[index], 1);
+      groupCount += groups;
+      betCount += groups * groupBetCount(marketCounts, matchIndexes);
+    }
+  }
+
+  const validPasses = passes.filter((pass) => Number.isInteger(pass) && pass >= 1 && pass <= chosen.length);
+  const batchCount = Number(validPasses.includes(1)) + Number(validPasses.some((pass) => pass >= 2));
+  const marketTicketCount = marketCounts.reduce((product, count) => product * count, 1);
+  return {
+    ticketCount: groupCount > 0 ? marketTicketCount * batchCount : 0,
+    groupCount,
+    betCount,
+  };
+}
+
 export function countBets(matches: MatchItem[], passes: number[]): number {
-  const counts = selectedPricedMatches(matches).map((match) => selectedPricedOptions(match).length);
-  return passes.reduce((grandTotal, pass) => {
-    const passTotal = combinations(counts, pass).reduce(
-      (total, group) => total + group.reduce((product, value) => product * value, 1),
-      0,
-    );
-    return grandTotal + passTotal;
-  }, 0);
+  return calculateBetSummary(matches, passes).betCount;
 }
 
 export const SINGLE_BET_PRICE = 2;
@@ -149,6 +182,7 @@ export type PassMultiplierFactor = {
 
 export type PassMultiplierDetail = {
   pass: number;
+  betCount: number;
   multiplier: number;
   hitMultiplier: number;
   fullyHit: boolean;
@@ -157,6 +191,7 @@ export type PassMultiplierDetail = {
 
 export function calculatePassMultipliers(matches: MatchItem[], passes: number[], hits: CurrentHits): PassMultiplierDetail[] {
   const chosen = selectedPricedMatches(matches);
+  const marketCounts = chosen.map(selectedPricedMarketCount);
   const optionGroups = chosen.map((match) => match.markets.flatMap((market) => market.options
       .filter((option) => option.selected)
       .filter((option) => option.odds > 0)
@@ -172,10 +207,12 @@ export function calculatePassMultipliers(matches: MatchItem[], passes: number[],
   const details: PassMultiplierDetail[] = [];
   for (const pass of passes) {
     for (const matchIndexes of combinations(chosen.map((_, index) => index), pass)) {
+      const betCount = groupBetCount(marketCounts, matchIndexes);
       for (const factors of cartesianProduct(matchIndexes.map((index) => optionGroups[index]))) {
         const hitFactors = factors.filter((factor) => factor.hit);
         details.push({
           pass,
+          betCount,
           multiplier: factors.reduce((product, factor) => product * factor.odds, 1),
           hitMultiplier: hitFactors.length > 0 ? hitFactors.reduce((product, factor) => product * factor.odds, 1) : 0,
           fullyHit: factors.every((factor) => factor.hit),
@@ -187,15 +224,16 @@ export function calculatePassMultipliers(matches: MatchItem[], passes: number[],
   return details;
 }
 
-function payoutForWinningOdds(winning: number[][], passes: number[], multiple: number, applyCap: boolean): number {
+function payoutForWinningOdds(winning: number[][], marketCounts: number[], passes: number[], multiple: number, applyCap: boolean): number {
   let baseTotal = 0;
   for (const pass of passes) {
     for (const matchIndexes of combinations(winning.map((_, index) => index), pass)) {
       const optionGroups = matchIndexes.map((index) => winning[index]);
       if (optionGroups.some((group) => group.length === 0)) continue;
+      const betCount = groupBetCount(marketCounts, matchIndexes);
       for (const oddsGroup of cartesianProduct(optionGroups)) {
         const raw = bankersRound(2 * oddsGroup.reduce((product, odds) => product * odds, 1));
-        baseTotal += applyCap ? Math.min(raw, singlePrizeCap(pass)) : raw;
+        baseTotal += (applyCap ? Math.min(raw, singlePrizeCap(pass)) : raw) * betCount;
       }
     }
   }
@@ -302,6 +340,7 @@ function scenarioWinningOdds(match: MatchItem, hits: CurrentHits): number[][] {
 
 export function calculateCurrentPrize(matches: MatchItem[], passes: number[], multiple: number, hits: CurrentHits): number {
   const chosen = selectedPricedMatches(matches);
+  const marketCounts = chosen.map(selectedPricedMarketCount);
   const winning = chosen.map((match) => {
     const matchHits = hits[match.id] ?? {};
     return match.markets.flatMap((market) => {
@@ -311,16 +350,17 @@ export function calculateCurrentPrize(matches: MatchItem[], passes: number[], mu
       return hit && hit.odds > 0 ? [hit.odds] : [];
     });
   });
-  return payoutForWinningOdds(winning, passes, multiple, true);
+  return payoutForWinningOdds(winning, marketCounts, passes, multiple, true);
 }
 
 export function calculatePrizeRange(matches: MatchItem[], passes: number[], multiple: number, hits: CurrentHits = {}): PrizeRange {
   const chosen = selectedPricedMatches(matches);
   if (chosen.length === 0 || passes.length === 0) return { min: 0, max: 0, uncappedMax: 0 };
+  const marketCounts = chosen.map(selectedPricedMarketCount);
   const scenarios = chosen.map((match) => scenarioWinningOdds(match, hits));
   const maxWinning = scenarios.map((items) => [...items].sort((left, right) => sum(right) - sum(left))[0] ?? []);
-  const max = payoutForWinningOdds(maxWinning, passes, multiple, true);
-  const uncappedMax = payoutForWinningOdds(maxWinning, passes, multiple, false);
+  const max = payoutForWinningOdds(maxWinning, marketCounts, passes, multiple, true);
+  const uncappedMax = payoutForWinningOdds(maxWinning, marketCounts, passes, multiple, false);
 
   const minimumPositive = scenarios.map((items) => [...items].filter((item) => item.length > 0).sort((left, right) => sum(left) - sum(right))[0] ?? []);
   const canLose = scenarios.map((items) => items.some((item) => item.length === 0));
@@ -331,7 +371,7 @@ export function calculatePrizeRange(matches: MatchItem[], passes: number[], mult
     optionalIndexes.forEach((matchIndex, optionalIndex) => {
       if ((mask & (1 << optionalIndex)) !== 0) winning[matchIndex] = minimumPositive[matchIndex];
     });
-    const prize = payoutForWinningOdds(winning, passes, multiple, true);
+    const prize = payoutForWinningOdds(winning, marketCounts, passes, multiple, true);
     if (prize > 0 && prize < minimum) minimum = prize;
   }
   return { min: Number.isFinite(minimum) ? minimum : 0, max, uncappedMax };

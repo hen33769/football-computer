@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  calculateBetSummary,
   calculateCurrentPrize,
   calculatePassMultipliers,
   calculatePrizeRange,
@@ -172,8 +173,80 @@ test("2 串 1 的注数、投入和命中奖金", () => {
 test("同一场多选作为多个备选项计注", () => {
   const matches = select();
   matches[0].markets[0].options[1].selected = true;
+  assert.deepEqual(calculateBetSummary(matches, [2]), {
+    ticketCount: 1,
+    groupCount: 2,
+    betCount: 2,
+  });
   assert.equal(countBets(matches, [2]), 2);
   assert.equal(calculateStake(matches, [2], 1), 4);
+});
+
+test("同场跨玩法按完整票拆分并重复计算未包含该场的组合", () => {
+  const matches = Array.from({ length: 8 }, (_, index) => {
+    const match = cloneMatches(initialMatches.slice(index % initialMatches.length, (index % initialMatches.length) + 1))[0];
+    match.id = `split-ticket-${index}`;
+    match.code = String(index + 1).padStart(3, "0");
+    match.markets[0].options[0].selected = true;
+    return match;
+  });
+  matches[7].markets[1].options[0].selected = true;
+
+  assert.deepEqual(calculateBetSummary(matches, [6, 7, 8]), {
+    ticketCount: 2,
+    groupCount: 66,
+    betCount: 74,
+  });
+  assert.equal(countBets(matches, [6, 7, 8]), 74);
+  assert.equal(calculateStake(matches, [6, 7, 8], 1), 148);
+
+  const details = calculatePassMultipliers(matches, [6, 7, 8], {});
+  assert.equal(details.length, 66);
+  assert.equal(details.reduce((total, item) => total + item.betCount, 0), 74);
+  assert.equal(details.filter((item) => item.betCount === 2).length, 8);
+  assert.equal(details.filter((item) => item.betCount === 1).length, 58);
+  assert.deepEqual(
+    [6, 7, 8].map((pass) => ({
+      pass,
+      groups: details.filter((item) => item.pass === pass).length,
+      bets: details.filter((item) => item.pass === pass).reduce((total, item) => total + item.betCount, 0),
+    })),
+    [
+      { pass: 6, groups: 49, bets: 56 },
+      { pass: 7, groups: 15, bets: 16 },
+      { pass: 8, groups: 2, bets: 2 },
+    ],
+  );
+});
+
+test("单场与多关同时选择时保持一个选择单并拆成两个出票批次", () => {
+  const matches = cloneMatches(initialMatches.slice(0, 3));
+  matches.forEach((match, index) => {
+    match.markets[0].options[0].selected = true;
+    match.markets[0].options[0].odds = index + 2;
+  });
+  matches[2].markets[1].options[0].selected = true;
+
+  assert.deepEqual(calculateBetSummary(matches, [1, 2]), {
+    ticketCount: 4,
+    groupCount: 9,
+    betCount: 12,
+  });
+  assert.equal(calculateStake(matches, [1, 2], 1), 24);
+});
+
+test("中奖组合未包含跨玩法场次时按出票张数重复派奖", () => {
+  const matches = cloneMatches(initialMatches.slice(0, 3));
+  matches.forEach((match, index) => {
+    match.markets[0].options[0].selected = true;
+    match.markets[0].options[0].odds = index + 2;
+  });
+  matches[2].markets[1].options[0].selected = true;
+
+  assert.equal(calculateCurrentPrize(matches, [2], 1, {
+    [matches[0].id]: { spf: "win" },
+    [matches[1].id]: { spf: "win" },
+  }), 24);
 });
 
 test("串关倍数明细标记完整命中与单项命中", () => {

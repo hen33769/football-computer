@@ -55,6 +55,7 @@ import {
 import dayjs from "dayjs";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import {
+  calculateBetSummary,
   calculateCurrentPrize,
   calculatePassMultipliers,
   calculatePrizeRange,
@@ -409,18 +410,28 @@ function DetailPrizeRange({ range, metrics, live = false }: { range: PrizeRange;
 function PassMultiplierDetails({ matches, passes, hits }: { matches: MatchItem[]; passes: number[]; hits: CurrentHits }) {
   const orderedMatches = useMemo(() => sortMatchesForDisplay(matches), [matches]);
   const details = useMemo(() => calculatePassMultipliers(orderedMatches, passes, hits), [orderedMatches, passes, hits]);
+  const summary = useMemo(() => calculateBetSummary(orderedMatches, passes), [orderedMatches, passes]);
   if (details.length === 0) return null;
   const grouped = [...passes].sort((left, right) => left - right).map((pass) => ({ pass, items: details.filter((item) => item.pass === pass) }));
   const fullMultiplier = (value: number) => value.toLocaleString("zh-CN", { useGrouping: false, minimumFractionDigits: 0, maximumFractionDigits: 4 });
   return (
     <section className="pass-multiplier-details">
-      <div className="pass-multiplier-title"><span>串关明细</span><Tag color="cyan">完整显示 {details.length} 组</Tag></div>
+      <div className="pass-multiplier-title">
+        <span>串关明细</span>
+        <div className="pass-multiplier-title-tags">
+          <Tag color="geekblue">{summary.ticketCount} 张</Tag>
+          <Tag color="cyan">{summary.groupCount} 组</Tag>
+          <Tag color="orange">{summary.betCount} 注</Tag>
+        </div>
+      </div>
       {grouped.map(({ pass, items }) => (
         <div className="pass-multiplier-group" key={pass}>
           <h4>{pass === 1 ? "单场" : `${pass} 串 1`}<small>{items.length} 组</small></h4>
           <div className="pass-multiplier-lines">
             {items.map((item, index) => (
               <div className="pass-multiplier-line" key={`${pass}-${index}`}>
+                <strong className="pass-multiplier-bet-count">{item.betCount} 注</strong>
+                <i>|</i>
                 <strong className={item.fullyHit ? "complete-hit" : "incomplete-hit"}>@{item.hitMultiplier.toFixed(2)}</strong>
                 <i>|</i>
                 <strong className="full-multiplier">@{fullMultiplier(item.multiplier)}</strong>
