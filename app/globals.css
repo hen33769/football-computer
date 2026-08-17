@@ -913,6 +913,15 @@ button, input, textarea { font: inherit; }
 }
 
 @media (max-width: 560px) {
+  .responsive-date-picker-popup.ant-picker-dropdown { max-width: calc(100vw - 16px); }
+  .responsive-date-picker-popup .ant-picker-panel-container {
+    max-width: calc(100vw - 16px);
+    max-height: calc(100dvh - 24px);
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+  .responsive-date-picker-popup .ant-picker-panels,
+  .responsive-date-picker-popup .ant-picker-datetime-panel { flex-direction: column; }
   .brand-logo { border-radius: 14px; }
   .brand-lockup p { font-size: 9px; }
   .hero-actions .ant-badge { width: auto; }

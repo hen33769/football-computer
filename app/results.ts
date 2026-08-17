@@ -8,6 +8,26 @@ const cloneHits = (hits: CurrentHits | undefined): CurrentHits => Object.fromEnt
   Object.entries(hits ?? {}).map(([matchId, values]) => [matchId, { ...values }]),
 );
 
+const sameHits = (left: CurrentHits | undefined, right: CurrentHits | undefined) => {
+  const leftEntries = Object.entries(left ?? {});
+  const rightEntries = Object.entries(right ?? {});
+  if (leftEntries.length !== rightEntries.length) return false;
+  return leftEntries.every(([matchId, values]) => {
+    if (!Object.prototype.hasOwnProperty.call(right ?? {}, matchId)) return false;
+    const otherValues = right?.[matchId] ?? {};
+    const markets = new Set([...Object.keys(values), ...Object.keys(otherValues)] as MarketType[]);
+    return markets.size === Object.keys(values).length
+      && markets.size === Object.keys(otherValues).length
+      && [...markets].every((market) => values[market] === otherValues[market]);
+  });
+};
+
+const sameStringSet = (left: string[] | undefined, right: string[] | undefined) => {
+  const leftSet = new Set(left ?? []);
+  const rightSet = new Set(right ?? []);
+  return leftSet.size === rightSet.size && [...leftSet].every((value) => rightSet.has(value));
+};
+
 export function resultForMatch(results: MatchResults, matchId: string) {
   return results[normalizeSportteryMatchId(matchId)];
 }
@@ -69,6 +89,30 @@ export function judgeSlipWithResults(slip: SavedSlip, results: MatchResults): Sa
     resultValues,
     failedMatches: [...failedMatches],
   };
+}
+
+/** 已选玩法均有赛果，或旧订单已被手动标记成功/失败时，才视为该场已判断。 */
+export function isOrderMatchJudged(order: SavedSlip, match: MatchItem): boolean {
+  if ((order.failedMatches ?? []).includes(match.id)) return true;
+  const selectedMarkets = match.markets.filter((market) => market.options.some((option) => option.selected));
+  if (selectedMarkets.length === 0) return true;
+  const resultValues = order.resultValues?.[match.id];
+  if (resultValues && Object.keys(resultValues).length > 0) {
+    return selectedMarkets.every((market) => Boolean(resultValues[market.type]));
+  }
+  return matchHasSelectedHit(match, order.hits ?? {});
+}
+
+/** 只返回传入的当前已渲染订单中，确实会被现有赛果改变的订单。 */
+export function judgeLoadedOrdersWithResults(orders: SavedSlip[], results: MatchResults): SavedSlip[] {
+  return orders.flatMap((order) => {
+    const judged = judgeSlipWithResults(order, results);
+    const changed = judged.matches !== order.matches
+      || !sameHits(judged.hits, order.hits)
+      || !sameHits(judged.resultValues, order.resultValues)
+      || !sameStringSet(judged.failedMatches, order.failedMatches);
+    return changed ? [judged] : [];
+  });
 }
 
 export function repairSlipHandicapResults(slip: SavedSlip): SavedSlip {

@@ -119,7 +119,7 @@ import {
   type SportteryMatchSnapshot,
   type SportteryMatchDate,
 } from "./sporttery";
-import { judgeSlipWithResults, repairSlipHandicapResults, RESULT_MARKETS, resultSelectOptions } from "./results";
+import { isOrderMatchJudged, judgeLoadedOrdersWithResults, repairSlipHandicapResults, RESULT_MARKETS, resultSelectOptions } from "./results";
 import {
   createDefaultSettings,
   DEFAULT_LEAGUE_TAG_COLORS,
@@ -144,6 +144,7 @@ const LOADED_ORDER_KEY = "football-simulator-loaded-order-v1";
 const MATCH_CACHE_KEY = CLOUD_STORAGE_KEYS.matches;
 const LEGACY_MATCH_RESULTS_KEY = "football-simulator-match-results-v1";
 const ORDER_LIST_BATCH_SIZE = 10;
+const RESPONSIVE_DATE_PICKER_CLASS_NAMES = { popup: { root: "responsive-date-picker-popup" } };
 
 export type AppView = "betting" | "orders" | "settings";
 type DataTransferMode = "orders" | "settings" | "matches" | "full";
@@ -1446,10 +1447,6 @@ function InnerFootballApp({
     () => filteredSavedSlips.filter((slip) => !isOrderOddsLocked(slip)).length,
     [filteredSavedSlips],
   );
-  const visibleSettleableOrders = useMemo(
-    () => filteredSavedSlips.filter(isOrderSettleable),
-    [filteredSavedSlips],
-  );
   const filteredOrderLedger = useMemo(() => orderLedgerTotals(filteredSavedSlips), [filteredSavedSlips]);
   const filteredOrderStake = filteredOrderLedger.expense;
   const filteredOrderIncome = filteredOrderLedger.income;
@@ -1458,20 +1455,23 @@ function InnerFootballApp({
     () => filteredSavedSlips.slice(0, renderedOrderCount),
     [filteredSavedSlips, renderedOrderCount],
   );
+  const visibleSettleableOrders = useMemo(
+    () => renderedSavedSlips.filter(isOrderSettleable),
+    [renderedSavedSlips],
+  );
   const hasMoreRenderedOrders = renderedSavedSlips.length < filteredSavedSlips.length;
   const resultMatches = useMemo(() => {
     const unique = new Map<string, MatchItem>();
     const officialById = new Map(matches.map((match) => [normalizeSportteryMatchId(match.id), match]));
-    filteredSavedSlips
-      .filter((slip) => !slip.settledAt)
+    renderedSavedSlips
       .forEach((slip) => selectedMatches(slip.matches)
-        .filter((match) => !(slip.failedMatches ?? []).includes(match.id) && !matchHasSelectedHit(match, slip.hits ?? {}))
+        .filter((match) => !isOrderMatchJudged(slip, match))
         .forEach((match) => {
         const matchId = normalizeSportteryMatchId(match.id);
         if (!unique.has(matchId)) unique.set(matchId, officialById.get(matchId) ?? match);
         }));
     return sortMatchesForDisplay([...unique.values()]);
-  }, [filteredSavedSlips, matches]);
+  }, [matches, renderedSavedSlips]);
 
   useEffect(() => {
     if (activeView !== "orders" || !hasMoreRenderedOrders || typeof IntersectionObserver === "undefined") return;
@@ -2202,9 +2202,8 @@ function InnerFootballApp({
 
   const judgeVisibleOrders = async () => {
     if (judgingOrders) return;
-    const visibleOrders = new Set(filteredSavedSlips.filter((slip) => !slip.settledAt));
-    if (visibleOrders.size === 0) {
-      message.info("当前没有可判断的未结账订单");
+    if (renderedSavedSlips.length === 0 || resultMatches.length === 0) {
+      message.info("当前已渲染订单中没有待判断比赛");
       return;
     }
     const availableResultCount = resultMatches.filter((match) => Object.keys(matchResults[normalizeSportteryMatchId(match.id)]?.values ?? {}).length > 0).length;
@@ -2212,8 +2211,11 @@ function InnerFootballApp({
       message.warning("请先填写或获取赛果");
       return;
     }
-    const next = savedSlips.map((slip) => visibleOrders.has(slip) ? judgeSlipWithResults(slip, matchResults) : slip);
-    const updatedOrders = next.filter((slip, index) => slip !== savedSlips[index]);
+    const updatedOrders = judgeLoadedOrdersWithResults(renderedSavedSlips, matchResults);
+    if (updatedOrders.length === 0) {
+      message.info("当前已渲染订单没有需要按现有赛果更新的内容");
+      return;
+    }
     setJudgingOrders(true);
     try {
       const committedOrders = await commitOrderMutation({ upsertOrders: updatedOrders, deleteOrderIds: [] });
@@ -2227,7 +2229,7 @@ function InnerFootballApp({
         }
       }
       const failedOrders = updatedOrders.filter(isOrderFailed).length;
-      notification.success({ message: "订单判断完成", description: `已判断 ${visibleOrders.size} 个未结账订单${failedOrders ? `，其中 ${failedOrders} 个订单已不符合串关条件` : ""}`, placement: "bottomRight" });
+      notification.success({ message: "订单判断完成", description: `已更新 ${updatedOrders.length} 个当前已渲染且需要判断的订单${failedOrders ? `，其中 ${failedOrders} 个订单已不符合串关条件` : ""}`, placement: "bottomRight" });
     } finally {
       setJudgingOrders(false);
     }
@@ -2830,7 +2832,9 @@ function InnerFootballApp({
               <div className="match-date-filters">
                 <DatePicker
                   allowClear
+                  classNames={RESPONSIVE_DATE_PICKER_CLASS_NAMES}
                   format="YYYY-MM-DD"
+                  inputReadOnly={isMobileViewport}
                   placeholder="全部日期"
                   value={selectedMatchDate ? dayjs(selectedMatchDate) : null}
                   disabled={sportteryLoading}
@@ -3016,7 +3020,10 @@ function InnerFootballApp({
                     <span>订单日期</span>
                     <DatePicker.RangePicker
                       allowClear
+                      allowEmpty={[true, true]}
+                      classNames={RESPONSIVE_DATE_PICKER_CLASS_NAMES}
                       format="YYYY-MM-DD"
+                      inputReadOnly={isMobileViewport}
                       placeholder={["开始日期", "结束日期"]}
                       disabled={cloudOrdersLoading}
                       disabledDate={(current) => current.startOf("day").isAfter(dayjs().startOf("day"))}
@@ -3203,7 +3210,7 @@ function InnerFootballApp({
                       <button type="button" className="match-phase-info" aria-label="查看比赛阶段映射与常规时间判断规则"><InfoCircleOutlined /></button>
                     </Tooltip>
                   </div>
-                  <p>汇总当前未结账订单中尚未判断成功或失败的比赛；让球数按比赛 ID 从官方比赛数据重新获取，并同步到订单。</p>
+                  <p>汇总当前已渲染订单中尚未完整判断赛果的比赛，包含已结账订单；让球数按比赛 ID 从官方比赛数据重新获取，并同步到订单。</p>
                 </div>
                 <Space wrap>
 	                  {!matchResultsCollapsed && <Button icon={<ReloadOutlined />} loading={allResultsFetching} disabled={resultMatches.length === 0 || resultFetchingMatchIds.length > 0 || judgingOrders} onClick={() => { void fetchAllMatchResults(); }}>获取全部赛果</Button>}
@@ -3550,9 +3557,11 @@ function InnerFootballApp({
           </label>
           <label>订单创建时间
             <DatePicker
+              classNames={RESPONSIVE_DATE_PICKER_CLASS_NAMES}
               showTime={{ format: "HH:mm:ss" }}
               showNow
               format="YYYY-MM-DD HH:mm:ss"
+              inputReadOnly={isMobileViewport}
               value={orderEditTime && dayjs(orderEditTime).isValid() ? dayjs(orderEditTime) : null}
               disabled={orderEditSaving}
               onChange={(value) => setOrderEditTime(value?.toISOString() ?? "")}

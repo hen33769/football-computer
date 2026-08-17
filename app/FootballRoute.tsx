@@ -15,12 +15,13 @@ import { APP_VERSION } from "./AppVersion";
 import FootballApp, { type AppView } from "./FootballApp";
 import { DEMO_APP_URL } from "./links";
 import {
+  applyOrderSyncIntent,
   hasPersonalSyncIntent,
   type CloudOrderMutationResult,
   type OrderSyncIntent,
   type PersonalSyncIntent,
 } from "./personal-sync";
-import type { MatchItem } from "./types";
+import type { MatchItem, SavedSlip } from "./types";
 import { requestJson } from "./api-client/http";
 import { getCurrentUser, loginAccount, logoutAccount } from "./api-client/users";
 import { getUserSettings, updateUserSettings } from "./api-client/settings";
@@ -351,34 +352,68 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
         revision: 0,
       };
     }
-    await enqueueWrite(async () => {
+    const mutationResult = await enqueueWrite(async () => {
+      const upsertedOrders: SavedSlip[] = [];
+      const deletedOrderIds: string[] = [];
       for (const id of incomingIntent.deleteOrderIds) {
         const order = currentOrdersById.get(id);
-        if (order) await deleteOrder(order);
+        if (order) {
+          await deleteOrder(order);
+          deletedOrderIds.push(id);
+        }
       }
       for (const order of incomingIntent.upsertOrders) {
         const current = order.id ? currentOrdersById.get(order.id) : undefined;
-        if (current) await updateOrder({ ...order, updatedAt: order.updatedAt ?? current.updatedAt });
-        else await createOrder(order);
+        upsertedOrders.push(current
+          ? await updateOrder({ ...order, updatedAt: order.updatedAt ?? current.updatedAt })
+          : await createOrder(order));
       }
+      return {
+        upsertedOrders,
+        deletedOrderIds,
+        finance: await getFinance(),
+      };
     });
-    const [ordersResult, financeResult] = await Promise.all([
-      fetchOrders({ limit: 500 }),
-      getFinance(),
-    ]);
+    const latestPersonal = clientPersonalRef.current ?? previous;
+    const latestOrdersById = new Map(latestPersonal.orders.flatMap((order) => (
+      order.id ? [[order.id, order] as const] : []
+    )));
+    let orderTotal = latestPersonal.orderTotal ?? latestPersonal.orders.length;
+    let unsettledOrderCount = latestPersonal.unsettledOrderCount
+      ?? latestPersonal.orders.filter((order) => !order.settledAt).length;
+    mutationResult.deletedOrderIds.forEach((id) => {
+      const deleted = latestOrdersById.get(id) ?? currentOrdersById.get(id);
+      if (!deleted) return;
+      orderTotal = Math.max(0, orderTotal - 1);
+      if (!deleted.settledAt) unsettledOrderCount = Math.max(0, unsettledOrderCount - 1);
+      latestOrdersById.delete(id);
+    });
+    mutationResult.upsertedOrders.forEach((order) => {
+      const current = order.id ? latestOrdersById.get(order.id) : undefined;
+      if (!current) {
+        orderTotal += 1;
+        if (!order.settledAt) unsettledOrderCount += 1;
+      } else if (Boolean(current.settledAt) !== Boolean(order.settledAt)) {
+        unsettledOrderCount += order.settledAt ? -1 : 1;
+      }
+      if (order.id) latestOrdersById.set(order.id, order);
+    });
     const nextPersonal: CloudPersonalData = {
-      ...(clientPersonalRef.current ?? previous),
-      orders: ensureOrderIds(ordersResult.orders),
-      orderTotal: ordersResult.total,
-      unsettledOrderCount: ordersResult.unsettledCount,
-      finance: cloudFinanceFromResponse(financeResult),
+      ...latestPersonal,
+      orders: applyOrderSyncIntent(latestPersonal.orders, {
+        upsertOrders: mutationResult.upsertedOrders,
+        deleteOrderIds: mutationResult.deletedOrderIds,
+      }),
+      orderTotal,
+      unsettledOrderCount,
+      finance: cloudFinanceFromResponse(mutationResult.finance),
     };
     clientPersonalRef.current = nextPersonal;
     setCloudPersonal(nextPersonal);
     return {
       orders: nextPersonal.orders,
-      upsertedOrders: incomingIntent.upsertOrders,
-      deletedOrderIds: incomingIntent.deleteOrderIds,
+      upsertedOrders: mutationResult.upsertedOrders,
+      deletedOrderIds: mutationResult.deletedOrderIds,
       revision: 0,
       finance: nextPersonal.finance,
     };

@@ -19,7 +19,7 @@ import { cloneMatches, initialMatches } from "../app/data";
 import { sortSavedOrders, unionSavedOrders } from "../app/imports";
 import { matchPassesLeagueFilter, orderContainsTeam, orderPassesLeagueFilter } from "../app/order-filters";
 import { appendOrderPassValue, inferOrderPasses, parseOrderPassValues } from "../app/order-passes";
-import { judgeSlipWithResults, repairSlipHandicapResults } from "../app/results";
+import { isOrderMatchJudged, judgeLoadedOrdersWithResults, judgeSlipWithResults, repairSlipHandicapResults } from "../app/results";
 import { prioritizeLeagueNames, sortMatchesForManualOrder } from "../app/sorting";
 import type { MatchItem, SavedSlip } from "../app/types";
 
@@ -341,6 +341,60 @@ test("赛果判断写入命中；全部已选玩法均未中才标记比赛失�
   assert.deepEqual(judged.resultValues?.["2040595"], { spf: "lose", score: "0:1", halfFull: "DL" });
   assert.deepEqual(judged.failedMatches, ["2040595"]);
   assert.equal(isOrderFailed(judged), true);
+});
+
+test("一键判断只返回当前已渲染且确实会被赛果改变的订单，包含已结账订单", () => {
+  const createSlip = (name: string, matchId: string, settledAt?: string): SavedSlip => {
+    const matches = cloneMatches(initialMatches.slice(0, 1));
+    matches[0].id = matchId;
+    matches[0].markets[0].options[0].selected = true;
+    return { name, savedAt: new Date(0).toISOString(), matches, passes: [1], multiple: 1, settledAt };
+  };
+  const needsJudging = createSlip("需要判断", "2040594");
+  const unrelated = createSlip("没有对应赛果", "2040595");
+  const settled = createSlip("已经结账", "2040594", new Date(1).toISOString());
+  const results = {
+    "2040594": {
+      matchId: "2040594",
+      updatedAt: new Date(0).toISOString(),
+      source: "manual" as const,
+      values: { spf: "win" },
+    },
+  };
+
+  const updates = judgeLoadedOrdersWithResults([needsJudging, unrelated, settled], results);
+  assert.deepEqual(updates.map((order) => order.name), ["需要判断", "已经结账"]);
+  assert.equal(updates[0].hits?.["2040594"]?.spf, "win");
+  assert.deepEqual(judgeLoadedOrdersWithResults(updates, results), []);
+});
+
+test("订单比赛仅在全部已选玩法有赛果后视为已判断", () => {
+  const matches = cloneMatches(initialMatches.slice(0, 1));
+  const match = matches[0];
+  match.id = "2040594";
+  match.markets.find((market) => market.type === "spf")!.options.find((option) => option.id === "win")!.selected = true;
+  match.markets.find((market) => market.type === "halfFull")!.options.find((option) => option.id === "WW")!.selected = true;
+  const base: SavedSlip = {
+    name: "部分赛果",
+    savedAt: new Date(0).toISOString(),
+    matches,
+    passes: [1],
+    multiple: 1,
+    settledAt: new Date(1).toISOString(),
+  };
+
+  assert.equal(isOrderMatchJudged(base, match), false);
+  assert.equal(isOrderMatchJudged({
+    ...base,
+    hits: { [match.id]: { spf: "win" } },
+    resultValues: { [match.id]: { spf: "win" } },
+  }, match), false);
+  assert.equal(isOrderMatchJudged({
+    ...base,
+    hits: { [match.id]: { spf: "win", halfFull: "WW" } },
+    resultValues: { [match.id]: { spf: "win", halfFull: "WW" } },
+  }, match), true);
+  assert.equal(isOrderMatchJudged({ ...base, failedMatches: [match.id] }, match), true);
 });
 
 test("同场比赛统一按赛果接口重新取得的固定让球数判断并修正订单快照", () => {
