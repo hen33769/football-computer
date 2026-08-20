@@ -799,8 +799,8 @@ button, input, textarea { font: inherit; }
 .bulk-action-popover > b { display: block; color: #213b41; font-size: 15px; }
 .bulk-action-popover > p { margin: 5px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .bulk-action-popover > div { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 7px 0; border-top: 1px solid var(--line); }
-.bulk-action-popover > div span { color: var(--muted); font-size: 12px; }
-.bulk-action-popover > div strong { color: #17383d; font-size: 13px; }
+.bulk-action-popover > div:not(.ant-space) span { color: var(--muted); font-size: 12px; }
+.bulk-action-popover > div:not(.ant-space) strong { color: #17383d; font-size: 13px; }
 .bulk-action-popover > small { display: block; margin: 8px 0 12px; color: #7b8b8f; line-height: 1.55; }
 .bulk-action-popover > .ant-space { width: 100%; justify-content: flex-end; }
 .withdraw-checkout-button { border-color: #d99b45; color: #a56816; background: #fff9ef; }
