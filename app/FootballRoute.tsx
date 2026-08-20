@@ -26,11 +26,12 @@ import { requestJson } from "./api-client/http";
 import { getCurrentUser, loginAccount, logoutAccount } from "./api-client/users";
 import { getUserSettings, updateUserSettings } from "./api-client/settings";
 import { getFinance, updateFinanceCorrections, type FinanceResponse } from "./api-client/finance";
-import { createOrder, deleteOrder, fetchOrders, updateOrder, type OrderQuery, type OrdersResponse } from "./api-client/orders";
+import { bulkUpdateOrders, createOrder, deleteOrder, fetchOrders, type OrderQuery, type OrdersResponse } from "./api-client/orders";
 import {
   getCurrentMatches as getCloudCurrentMatches,
   refreshCurrentMatches as refreshCloudCurrentMatches,
   saveMatchSnapshot,
+  updateMatches,
 } from "./api-client/matches";
 import type { AppSettings } from "./settings";
 import type { SportteryMatchSnapshot } from "./sporttery";
@@ -362,11 +363,19 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
           deletedOrderIds.push(id);
         }
       }
+      const ordersToCreate: SavedSlip[] = [];
+      const ordersToUpdate: SavedSlip[] = [];
       for (const order of incomingIntent.upsertOrders) {
         const current = order.id ? currentOrdersById.get(order.id) : undefined;
-        upsertedOrders.push(current
-          ? await updateOrder({ ...order, updatedAt: order.updatedAt ?? current.updatedAt })
-          : await createOrder(order));
+        if (current) ordersToUpdate.push({ ...order, updatedAt: order.updatedAt ?? current.updatedAt });
+        else ordersToCreate.push(order);
+      }
+      if (ordersToUpdate.length > 0) {
+        upsertedOrders.push(...await bulkUpdateOrders(ordersToUpdate, orderIntent.operation ?? "update"));
+      }
+      for (const order of ordersToCreate) {
+        if (orderIntent.operation) throw new Error("批量操作只能更新已经存在的订单");
+        upsertedOrders.push(await createOrder(order));
       }
       return {
         upsertedOrders,
@@ -452,6 +461,8 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
     }).catch(() => undefined);
   }, [enqueueWrite, saveMatchesImmediately]);
 
+  const syncMatchUpdates = useCallback(async (matches: MatchItem[]) => updateMatches(clearMatchSelections(matches)), []);
+
   const loadCloudMatches = useCallback(async (manual: boolean): Promise<SportteryMatchSnapshot> => (
     manual ? refreshCloudCurrentMatches() : getCloudCurrentMatches()
   ), []);
@@ -504,6 +515,7 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
         onCloudOrderMutation={syncOrders}
         onCloudOrdersQueryChange={queryCloudOrders}
         onCloudMatchesChange={syncMatches}
+        onCloudMatchesUpdate={syncMatchUpdates}
         onCloudMatchesRefresh={loadCloudMatches}
         onRequireAccount={openAccountDialog}
         onLogout={logout}

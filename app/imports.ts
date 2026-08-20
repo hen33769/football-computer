@@ -1,5 +1,10 @@
 import { calculateStake } from "./calculator";
 import type { SavedSlip } from "./types";
+import { isOrderPaid } from "./order-model";
+
+const paidStake = (order: SavedSlip) => isOrderPaid(order)
+  ? calculateStake(order.matches, order.passes, order.multiple)
+  : 0;
 
 export const sortSavedOrders = (orders: SavedSlip[]) => [...orders].sort((left, right) => {
   const leftTime = new Date(left.savedAt).getTime();
@@ -12,7 +17,7 @@ export const sortSavedOrders = (orders: SavedSlip[]) => [...orders].sort((left, 
 });
 
 export const orderLedgerTotals = (orders: SavedSlip[]) => ({
-  expense: orders.reduce((total, order) => total + calculateStake(order.matches, order.passes, order.multiple), 0),
+  expense: orders.reduce((total, order) => total + paidStake(order), 0),
   income: orders.reduce((total, order) => total + (order.settledPrize ?? 0), 0),
 });
 
@@ -30,14 +35,13 @@ export function unionSavedOrders(current: SavedSlip[], incoming: SavedSlip[]) {
       const currentOrder = nextOrders[currentIndex];
       const mergedOrder = { ...currentOrder, ...order };
       nextOrders[currentIndex] = mergedOrder;
-      expenseDelta += calculateStake(mergedOrder.matches, mergedOrder.passes, mergedOrder.multiple)
-        - calculateStake(currentOrder.matches, currentOrder.passes, currentOrder.multiple);
+      expenseDelta += paidStake(mergedOrder) - paidStake(currentOrder);
       incomeDelta += (mergedOrder.settledPrize ?? 0) - (currentOrder.settledPrize ?? 0);
       updated += 1;
       return;
     }
     nextOrders.push(order);
-    expenseDelta += calculateStake(order.matches, order.passes, order.multiple);
+    expenseDelta += paidStake(order);
     incomeDelta += order.settledPrize ?? 0;
     added += 1;
   });

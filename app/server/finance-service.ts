@@ -40,7 +40,7 @@ export async function ensureFinanceCorrections(d1: D1Database, userId: string, n
 export async function getOrderFinanceCents(d1: D1Database, userId: string) {
   const row = await d1.prepare(`
     SELECT
-      COALESCE(SUM(stake_cents), 0) AS order_expense_cents,
+      COALESCE(SUM(CASE WHEN payment_status = 'paid' THEN stake_cents ELSE 0 END), 0) AS order_expense_cents,
       COALESCE(SUM(CASE WHEN settled_at IS NOT NULL THEN COALESCE(settled_prize_cents, 0) ELSE 0 END), 0) AS order_income_cents
     FROM user_orders
     WHERE user_id = ?1

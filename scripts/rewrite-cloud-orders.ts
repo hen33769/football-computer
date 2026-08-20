@@ -104,7 +104,7 @@ orders.forEach((row) => {
   });
   const summary = compactOrderSummary(compact);
   const userFinance = financeByUser.get(row.user_id) ?? { expenseCents: 0, incomeCents: 0 };
-  userFinance.expenseCents += toCents(summary.stake);
+  if (compact.paymentStatus === "paid") userFinance.expenseCents += toCents(summary.stake);
   if (compact.settledAt) userFinance.incomeCents += toCents(compact.settledPrize ?? 0);
   financeByUser.set(row.user_id, userFinance);
   const matchIdsJson = JSON.stringify([...new Set(compact.selections.map((selection) => selection.matchId))]);
@@ -114,6 +114,7 @@ SET name = ${quote(compact.name)},
     saved_at = ${quote(compact.savedAt)},
     settled_at = ${quote(compact.settledAt)},
     settled_prize_cents = ${numberValue(compact.settledAt ? toCents(compact.settledPrize ?? 0) : null)},
+    payment_status = ${quote(compact.paymentStatus === "paid" ? "paid" : "unpaid")},
     stake_cents = ${numberValue(toCents(summary.stake))},
     status = ${quote(summary.status)},
     match_ids_json = ${quote(matchIdsJson)},

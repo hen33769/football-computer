@@ -571,9 +571,11 @@ test("订单状态区分成功、有希望和失败", () => {
   };
   assert.equal(getOrderStatus(failed), "failed");
   assert.equal(isOrderSettleable(hopeful), false);
-  assert.equal(isOrderSettleable(success), true);
-  assert.equal(isOrderSettleable(failed), true);
-  assert.equal(isOrderSettleable({ ...success, settledAt: new Date(0).toISOString() }), false);
+  assert.equal(isOrderSettleable(success), false);
+  assert.equal(isOrderSettleable(failed), false);
+  assert.equal(isOrderSettleable({ ...success, paymentStatus: "paid" }), true);
+  assert.equal(isOrderSettleable({ ...failed, paymentStatus: "paid" }), true);
+  assert.equal(isOrderSettleable({ ...success, paymentStatus: "paid", settledAt: new Date(0).toISOString() }), false);
 });
 
 test("缺少半全场赛果时跳过失败判断，补齐后再判断", () => {

@@ -1,6 +1,7 @@
 import type { AppSettings } from "./settings";
 import type { CloudPersonalData } from "./cloud";
 import type { SavedSlip } from "./types";
+import type { BulkOrderOperation } from "./order-model";
 
 export type PersonalSyncIntent = {
   upsertOrders: SavedSlip[];
@@ -9,7 +10,9 @@ export type PersonalSyncIntent = {
   settings?: AppSettings;
 };
 
-export type OrderSyncIntent = Pick<PersonalSyncIntent, "upsertOrders" | "deleteOrderIds">;
+export type OrderSyncIntent = Pick<PersonalSyncIntent, "upsertOrders" | "deleteOrderIds"> & {
+  operation?: BulkOrderOperation;
+};
 
 export type CloudOrderDelete = {
   id: string;

@@ -4,6 +4,7 @@ import {
   compactOrderToSavedSlip,
   savedSlipToCompactOrder,
   type CompactOrder,
+  type BulkOrderOperation,
 } from "../order-model";
 import type { CurrentHits, SavedSlip } from "../types";
 import { requestJson } from "./http";
@@ -114,6 +115,14 @@ export async function saveOrderResults(order: SavedSlip, payload: {
 export const orderRefs = (orders: SavedSlip[]): OrderRef[] => orders.flatMap((order) => (
   order.id ? [{ id: order.id, updatedAt: order.updatedAt }] : []
 ));
+
+export async function bulkUpdateOrders(orders: SavedSlip[], operation: BulkOrderOperation) {
+  const response = await requestJson<{ orders: CompactOrder[] }>("/api/orders/bulk", {
+    method: "PATCH",
+    body: JSON.stringify({ operation, orders: orders.map(asCompact) }),
+  });
+  return response.orders.map(asSaved);
+}
 
 export async function bulkSettleOrders(orders: SavedSlip[]) {
   const response = await requestJson<{ orders: CompactOrder[] }>("/api/orders/bulk/settle", {

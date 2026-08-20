@@ -8,6 +8,7 @@ import {
   retainedSportteryMatchDateCutoff,
   type SportteryMatchFetchMode,
 } from "../sporttery";
+import { isMatchResult } from "../results";
 import type { MatchItem } from "../types";
 import { httpError } from "./errors";
 
@@ -49,6 +50,7 @@ const MANUAL_REFRESH_COOLDOWN_MS = 60 * 1000;
 const REFRESH_LOCK_MS = 2 * 60 * 1000;
 const MAX_MATCHES = 500;
 const MAX_MATCH_BYTES = 250_000;
+const MAX_MATCH_UPDATES = 100;
 
 const beijingDatePartsFormatter = new Intl.DateTimeFormat("en-US", {
   timeZone: "Asia/Shanghai",
@@ -297,6 +299,39 @@ export async function getMatchesByIds(d1: D1Database, ids: string[]) {
   return {
     matches: await loadStoredMatches(d1, ids),
   };
+}
+
+/** 仅按比赛 ID 合并可信的赛果字段，不允许局部更新覆盖共享赔率或比赛元数据。 */
+export async function updateMatchesById(d1: D1Database, rawMatches: unknown, now = new Date()) {
+  if (!Array.isArray(rawMatches) || rawMatches.length === 0) {
+    throw httpError("请传入需要更新的比赛数组", 400);
+  }
+  if (rawMatches.length > MAX_MATCH_UPDATES) {
+    throw httpError(`单次最多更新 ${MAX_MATCH_UPDATES} 场比赛`, 400);
+  }
+  const updates = rawMatches.flatMap((value) => {
+    if (!value || typeof value !== "object") return [];
+    const match = value as Partial<MatchItem>;
+    const id = typeof match.id === "string" ? normalizeSportteryMatchId(match.id) : "";
+    if (!id || !isMatchResult(match.result) || match.result.source !== "api" || normalizeSportteryMatchId(match.result.matchId) !== id) return [];
+    return [{ id, result: structuredClone(match.result) }];
+  });
+  if (updates.length !== rawMatches.length || new Set(updates.map((item) => item.id)).size !== updates.length) {
+    throw httpError("比赛更新数据无效或包含重复 ID", 400);
+  }
+  const existing = await loadStoredMatches(d1, updates.map((item) => item.id));
+  const existingById = new Map(existing.map((match) => [normalizeSportteryMatchId(match.id), match]));
+  const missingIds = updates.filter((item) => !existingById.has(item.id)).map((item) => item.id);
+  if (missingIds.length > 0) throw httpError(`找不到比赛：${missingIds.join("、")}`, 404);
+
+  const updatedAt = now.toISOString();
+  const matches = updates.map((item) => ({ ...existingById.get(item.id)!, result: item.result }));
+  await d1.batch(matches.map((match) => d1.prepare(`
+    UPDATE shared_matches
+    SET data_json = ?1, updated_at = ?2
+    WHERE match_id = ?3
+  `).bind(JSON.stringify(match), updatedAt, match.id)));
+  return { matches };
 }
 
 export async function saveClientMatchSnapshot(d1: D1Database, matches: unknown, now = new Date()) {

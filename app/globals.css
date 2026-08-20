@@ -325,10 +325,13 @@ button, input, textarea { font: inherit; }
 .league-color-popover .ant-color-picker-trigger { width: 100%; justify-content: flex-start; }
 .league-color-popover-actions { display: flex; justify-content: flex-end; gap: 7px; padding-top: 3px; border-top: 1px solid var(--line); }
 .match-time { font-variant-numeric: tabular-nums; }
-.teams-row { margin: 12px 0 13px; }
+.teams-row { flex-direction: column; justify-content: center; gap: 3px; margin: 12px 0 13px; }
 .teams { flex: 1; display: flex; align-items: center; justify-content: center; gap: 10px; min-width: 0; }
 .teams b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; }
 .teams span { color: #9caaad; font-size: 12px; font-weight: 500; }
+.teams .match-final-score { color: #243d43; font-size: 18px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.match-card.stopped .teams .match-final-score { color: #66777c; }
+.match-half-score { color: #a0adb0; font-size: 11px; line-height: 1; font-variant-numeric: tabular-nums; }
 .market-name-line { margin: 10px 2px 6px; font-size: 12px; color: #61747a; }
 .market-name-line span { font-weight: 700; }
 .market-name-line .ant-tag { margin: 0; font-size: 10px; line-height: 18px; }
@@ -776,6 +779,14 @@ button, input, textarea { font: inherit; }
 .order-closing-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .checkout-order-button:not(:disabled) { border-color: #2da783; color: #128767; background: #f1fbf7; }
 .checkout-order-button:not(:disabled):hover { border-color: #128767 !important; color: #0d7358 !important; background: #e8f8f1 !important; }
+.bulk-action-popover { width: 300px; }
+.bulk-action-popover > b { display: block; color: #213b41; font-size: 15px; }
+.bulk-action-popover > p { margin: 5px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.bulk-action-popover > div { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 7px 0; border-top: 1px solid var(--line); }
+.bulk-action-popover > div span { color: var(--muted); font-size: 12px; }
+.bulk-action-popover > div strong { color: #17383d; font-size: 13px; }
+.bulk-action-popover > small { display: block; margin: 8px 0 12px; color: #7b8b8f; line-height: 1.55; }
+.bulk-action-popover > .ant-space { width: 100%; justify-content: flex-end; }
 .withdraw-checkout-button { border-color: #d99b45; color: #a56816; background: #fff9ef; }
 .withdraw-checkout-button:hover { border-color: #bd791d !important; color: #8e570d !important; background: #fff4df !important; }
 .order-odds-editor { max-height: 58vh; overflow: auto; padding-right: 4px; }

@@ -42,6 +42,14 @@ export function getMatchesByIds(ids: string[]) {
   return requestJson<{ matches: MatchItem[] }>(`/api/matches?ids=${encodeURIComponent(ids.join(","))}`);
 }
 
+export async function updateMatches(matches: MatchItem[]) {
+  const response = await requestJson<{ matches: MatchItem[] }>("/api/matches", {
+    method: "PATCH",
+    body: JSON.stringify({ matches }),
+  });
+  return response.matches;
+}
+
 export async function saveMatchSnapshot(matches: MatchItem[]) {
   return toSportterySnapshot(await requestJson<CurrentMatchesResponse>("/api/matches/snapshot", {
     method: "POST",

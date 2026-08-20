@@ -35,6 +35,7 @@ import {
   CopyOutlined,
   DeleteOutlined,
   DownloadOutlined,
+  DollarOutlined,
   EditOutlined,
   ExpandOutlined,
   EyeOutlined,
@@ -92,6 +93,7 @@ import { applyOrderSyncIntent, type CloudOrderMutationResult, type OrderSyncInte
 import { localCache, sessionCache } from "./browser-storage";
 import { MatchPreviewModal, OfficialTrendModal } from "./FootballInsights";
 import { orderLedgerTotals, sortSavedOrders, unionSavedOrders } from "./imports";
+import { isOrderPaid } from "./order-model";
 import { CLOUD_APP_URL } from "./links";
 import { formatManualMatchText, formatManualOrderText } from "./manual-order-format";
 import { AppShellHeader } from "./components/AppShellHeader";
@@ -120,7 +122,7 @@ import {
   type SportteryMatchSnapshot,
   type SportteryMatchDate,
 } from "./sporttery";
-import { isOrderMatchJudged, judgeLoadedOrdersWithResults, repairSlipHandicapResults, RESULT_MARKETS, resultSelectOptions } from "./results";
+import { hasCompleteMatchResult, isMatchResult, isOrderMatchJudged, judgeLoadedOrdersWithResults, repairSlipHandicapResults, RESULT_MARKETS, resultSelectOptions } from "./results";
 import {
   createDefaultSettings,
   DEFAULT_LEAGUE_TAG_COLORS,
@@ -249,7 +251,9 @@ const matchesSaleFilter = (match: MatchItem, filter: MatchSaleFilter, now: Date)
   return state === filter;
 };
 
-const isOrderOddsLocked = (slip: Pick<SavedSlip, "oddsLocked" | "settledAt">) => Boolean(slip.settledAt || slip.oddsLocked);
+const isOrderOddsLocked = (slip: Pick<SavedSlip, "oddsLocked" | "settledAt" | "paymentStatus">) => (
+  Boolean(slip.settledAt || slip.oddsLocked || isOrderPaid(slip))
+);
 
 const formatHandicap = (handicap: number) => `${handicap > 0 ? "+" : ""}${handicap}`;
 
@@ -458,6 +462,7 @@ const isExportedMatch = (value: unknown): value is MatchItem => {
   const match = value as Partial<MatchItem>;
   if (![match.id, match.date, match.weekday, match.code, match.league, match.time, match.home, match.away].every((item) => typeof item === "string")) return false;
   if (typeof match.saleStatus !== "undefined" && !["pending", "selling", "stopped"].includes(match.saleStatus)) return false;
+  if (typeof match.result !== "undefined" && !isMatchResult(match.result)) return false;
   if (!Array.isArray(match.markets)) return false;
   return match.markets.every((market) => (
     Boolean(market)
@@ -510,6 +515,7 @@ const isExportedOrder = (value: unknown): value is SavedSlip => {
     && Number.isFinite(order.multiple)
     && order.multiple >= 1
     && order.multiple <= 50
+    && (typeof order.paymentStatus === "undefined" || order.paymentStatus === "unpaid" || order.paymentStatus === "paid")
     && (typeof order.oddsLocked === "undefined" || typeof order.oddsLocked === "boolean")
     && (typeof order.hits === "undefined" || isExportedHits(order.hits))
     && (typeof order.resultValues === "undefined" || isExportedHits(order.resultValues))
@@ -718,6 +724,8 @@ function MatchCard({
   const selectable = saleState !== "stopped";
   const spf = match.markets.find((market) => market.type === "spf")!;
   const rqspf = match.markets.find((market) => market.type === "rqspf")!;
+  const fullScore = match.result?.fullScore;
+  const halfScore = match.result?.halfScore;
   return (
     <article className={`match-card ${picked ? "has-selection" : ""} ${saleState}`}>
       <div className="match-meta">
@@ -730,7 +738,8 @@ function MatchCard({
         <div className="match-time">{formatMatchCardTime(match)}</div>
       </div>
       <div className="teams-row">
-        <div className="teams"><b>{match.home}</b><span>VS</span><b>{match.away}</b></div>
+        <div className="teams"><b>{match.home}</b><span className={fullScore ? "match-final-score" : ""}>{fullScore ? `${fullScore.home} : ${fullScore.away}` : "VS"}</span><b>{match.away}</b></div>
+        {halfScore && <small className="match-half-score">{halfScore.home} : {halfScore.away}</small>}
       </div>
       <MarketRow market={spf} matchId={match.id} onToggle={onToggle} disabled={!selectable} disableOddsTooltip={disableOddsTooltip} />
       <MarketRow market={rqspf} matchId={match.id} onToggle={onToggle} disabled={!selectable} disableOddsTooltip={disableOddsTooltip} />
@@ -756,6 +765,7 @@ function InnerFootballApp({
   onCloudOrderMutation,
   onCloudOrdersQueryChange,
   onCloudMatchesChange,
+  onCloudMatchesUpdate,
   onCloudMatchesRefresh,
   onRequireAccount,
   onLogout,
@@ -770,6 +780,7 @@ function InnerFootballApp({
   onCloudOrderMutation: (intent: OrderSyncIntent) => Promise<CloudOrderMutationResult>;
   onCloudOrdersQueryChange: (query: CloudOrderQuery) => Promise<CloudOrderQueryResult>;
   onCloudMatchesChange: (matches: MatchItem[]) => void;
+  onCloudMatchesUpdate: (matches: MatchItem[]) => Promise<MatchItem[]>;
   onCloudMatchesRefresh: (manual: boolean) => Promise<SportteryMatchSnapshot>;
   onRequireAccount: (view?: AppView) => void;
   onLogout: () => Promise<void>;
@@ -881,16 +892,25 @@ function InnerFootballApp({
   const [lockingOrderOdds, setLockingOrderOdds] = useState(false);
   const [loadingOrderId, setLoadingOrderId] = useState<string | null>(null);
   const [settlingOrderIds, setSettlingOrderIds] = useState<string[]>([]);
+  const [payingOrderIds, setPayingOrderIds] = useState<string[]>([]);
   const [withdrawingOrderIds, setWithdrawingOrderIds] = useState<string[]>([]);
   const [deletingOrderIds, setDeletingOrderIds] = useState<string[]>([]);
   const [expenseSaving, setExpenseSaving] = useState(false);
   const [incomeSaving, setIncomeSaving] = useState(false);
   const repairedOrdersSentRef = useRef(false);
   const [matchResults, setMatchResults] = useState<MatchResults>({});
+  const [bettingResultFetchingMatchIds, setBettingResultFetchingMatchIds] = useState<string[]>([]);
+  const autoResultAttemptedMatchIdsRef = useRef(new Set<string>());
+  const autoResultFetchingRef = useRef(false);
   const [resultFetchingMatchIds, setResultFetchingMatchIds] = useState<string[]>([]);
   const [allResultsFetching, setAllResultsFetching] = useState(false);
   const [matchResultsCollapsed, setMatchResultsCollapsed] = useState(true);
-  const [orderDateRange, setOrderDateRange] = useState<[string, string] | null>(null);
+  const [orderDateRange, setOrderDateRange] = useState<[string, string] | null>(() => {
+    const today = dayjs().format("YYYY-MM-DD");
+    return [today, today];
+  });
+  const [bulkPayPopoverOpen, setBulkPayPopoverOpen] = useState(false);
+  const [bulkSettlePopoverOpen, setBulkSettlePopoverOpen] = useState(false);
   const [orderProgressFilter, setOrderProgressFilter] = useState<OrderProgressFilter>("unsettled");
   const [orderStatusFilters, setOrderStatusFilters] = useState<OrderStatusFilter[]>([]);
   const [orderTeamQuery, setOrderTeamQuery] = useState("");
@@ -901,7 +921,7 @@ function InnerFootballApp({
     if (isCloudMode && cloudPersonal) return Math.max(0, cloudPersonal.finance.expenseTotal);
     const stored = Number(localCache.getItem(EXPENSE_KEY));
     if (localCache.getItem(EXPENSE_KEY) !== null && Number.isFinite(stored)) return Math.max(0, stored);
-    return savedSlips.reduce((total, slip) => total + calculateStake(slip.matches, slip.passes, slip.multiple), 0);
+    return savedSlips.reduce((total, slip) => total + (isOrderPaid(slip) ? calculateStake(slip.matches, slip.passes, slip.multiple) : 0), 0);
   });
   const [incomeTotal, setIncomeTotal] = useState(() => {
     if (!cloudAccount) return 0;
@@ -1001,6 +1021,7 @@ function InnerFootballApp({
     const normalizedIntent: OrderSyncIntent = {
       upsertOrders: ensureOrderIds(intent.upsertOrders),
       deleteOrderIds: [...new Set(intent.deleteOrderIds)],
+      operation: intent.operation,
     };
     if (isGuestMode) {
       const nextOrders = applyOrderSyncIntent(savedSlips, normalizedIntent);
@@ -1455,7 +1476,7 @@ function InnerFootballApp({
     isCloudMode ? cloudUnsettledOrderCount : savedSlips.filter((slip) => !slip.settledAt).length
   ), [cloudUnsettledOrderCount, isCloudMode, savedSlips]);
   const visibleUnlockedOrderCount = useMemo(
-    () => filteredSavedSlips.filter((slip) => !isOrderOddsLocked(slip)).length,
+    () => filteredSavedSlips.filter((slip) => !isOrderPaid(slip) && !isOrderOddsLocked(slip)).length,
     [filteredSavedSlips],
   );
   const filteredOrderLedger = useMemo(() => orderLedgerTotals(filteredSavedSlips), [filteredSavedSlips]);
@@ -1466,15 +1487,19 @@ function InnerFootballApp({
     () => filteredSavedSlips.slice(0, renderedOrderCount),
     [filteredSavedSlips, renderedOrderCount],
   );
-  const visibleSettleableOrders = useMemo(
-    () => renderedSavedSlips.filter(isOrderSettleable),
-    [renderedSavedSlips],
+  const filteredSettleableOrders = useMemo(
+    () => filteredSavedSlips.filter(isOrderSettleable),
+    [filteredSavedSlips],
+  );
+  const filteredPayableOrders = useMemo(
+    () => filteredSavedSlips.filter((slip) => !slip.settledAt && !isOrderPaid(slip)),
+    [filteredSavedSlips],
   );
   const hasMoreRenderedOrders = renderedSavedSlips.length < filteredSavedSlips.length;
   const resultMatches = useMemo(() => {
     const unique = new Map<string, MatchItem>();
     const officialById = new Map(matches.map((match) => [normalizeSportteryMatchId(match.id), match]));
-    renderedSavedSlips
+    filteredSavedSlips
       .forEach((slip) => selectedMatches(slip.matches)
         .filter((match) => !isOrderMatchJudged(slip, match))
         .forEach((match) => {
@@ -1482,7 +1507,7 @@ function InnerFootballApp({
         if (!unique.has(matchId)) unique.set(matchId, officialById.get(matchId) ?? match);
         }));
     return sortMatchesForDisplay([...unique.values()]);
-  }, [matches, renderedSavedSlips]);
+  }, [filteredSavedSlips, matches]);
 
   useEffect(() => {
     if (activeView !== "orders" || !hasMoreRenderedOrders || typeof IntersectionObserver === "undefined") return;
@@ -1593,12 +1618,12 @@ function InnerFootballApp({
       matches: cloneMatches(orderMatches),
       passes: [...orderPasses],
       multiple: orderMultiple,
+      paymentStatus: "unpaid",
       oddsLocked: false,
       hits: {},
     };
     const committedOrders = await commitOrderMutation({ upsertOrders: [nextOrder], deleteOrderIds: [] });
     if (!committedOrders) return false;
-    if (isGuestMode) setExpenseTotal((current) => current + calculateStake(nextOrder.matches, nextOrder.passes, nextOrder.multiple));
     notification.success({
       message: "订单添加完成",
       description: `新增 1 个订单，包含 ${selectedMatches(orderMatches).length} 场比赛`,
@@ -1783,8 +1808,8 @@ function InnerFootballApp({
     const orderId = temporaryOrder?.id ?? createSlipId();
     const loadedOrderIndex = temporaryOrder ? savedSlips.findIndex((slip) => slip.id === temporaryOrder.id) : -1;
     const previousOrder = loadedOrderIndex >= 0 ? savedSlips[loadedOrderIndex] : null;
-    if (previousOrder?.settledAt) {
-      message.warning("该订单已结账，不能再更新");
+    if (previousOrder && (previousOrder.settledAt || isOrderPaid(previousOrder))) {
+      message.warning(previousOrder.settledAt ? "该订单已结账，不能再更新" : "该订单已支付，投注内容已经冻结");
       return;
     }
     const next: SavedSlip = {
@@ -1795,6 +1820,7 @@ function InnerFootballApp({
       matches: cloneMatches(matches),
       passes: [...activePasses],
       multiple,
+      paymentStatus: previousOrder?.paymentStatus === "paid" ? "paid" : "unpaid",
       oddsLocked: previousOrder?.oddsLocked ?? false,
       hits: previousOrder ? filterHitsForSelections(previousOrder.hits, matches) : {},
       resultValues: previousOrder?.resultValues
@@ -1802,13 +1828,10 @@ function InnerFootballApp({
         : undefined,
       failedMatches: previousOrder?.failedMatches?.filter((matchId) => matches.some((match) => match.id === matchId)) ?? [],
     };
-    const previousStake = previousOrder ? calculateStake(previousOrder.matches, previousOrder.passes, previousOrder.multiple) : 0;
-    const nextStake = calculateStake(next.matches, next.passes, next.multiple);
     setSaveSlipLoading(true);
     try {
       const committedOrders = await commitOrderMutation({ upsertOrders: [next], deleteOrderIds: [] });
       if (!committedOrders) return;
-      if (isGuestMode) setExpenseTotal((current) => Math.max(0, current + nextStake - previousStake));
       setSaveOpen(false);
       setSaveName("");
       if (temporaryOrder) restoreSavedMatches();
@@ -1836,8 +1859,8 @@ function InnerFootballApp({
 
   const loadSlip = async (slip: SavedSlip) => {
     if (loadingOrderId) return;
-    if (slip.settledAt) {
-      message.warning("该订单已结账，不能再载入修改");
+    if (slip.settledAt || isOrderPaid(slip)) {
+      message.warning(slip.settledAt ? "该订单已结账，不能再载入修改" : "该订单已支付，投注内容已经冻结");
       return;
     }
     const availableMatches = selectAvailableOrderBets(matches, slip.matches, saleNow);
@@ -1915,7 +1938,7 @@ function InnerFootballApp({
       });
       if (!committedOrders) return;
       if (isGuestMode) {
-        setExpenseTotal((current) => Math.max(0, current - calculateStake(target.matches, target.passes, target.multiple)));
+        if (isOrderPaid(target)) setExpenseTotal((current) => Math.max(0, current - calculateStake(target.matches, target.passes, target.multiple)));
         if (target.settledAt) setIncomeTotal((current) => Math.max(0, current - (target.settledPrize ?? 0)));
       }
     } finally {
@@ -1950,7 +1973,7 @@ function InnerFootballApp({
 
   const lockVisibleOrderOdds = async () => {
     if (lockingOrderOdds) return;
-    const visibleUnlockedOrders = new Set(filteredSavedSlips.filter((slip) => !isOrderOddsLocked(slip)));
+    const visibleUnlockedOrders = new Set(filteredSavedSlips.filter((slip) => !isOrderPaid(slip) && !isOrderOddsLocked(slip)));
     if (visibleUnlockedOrders.size === 0) {
       message.info("当前查看的订单倍率均已锁定");
       return;
@@ -1961,7 +1984,7 @@ function InnerFootballApp({
     const detailOrderId = orderDetail?.id;
     setLockingOrderOdds(true);
     try {
-      const committedOrders = await commitOrderMutation({ upsertOrders: updatedOrders, deleteOrderIds: [] });
+      const committedOrders = await commitOrderMutation({ upsertOrders: updatedOrders, deleteOrderIds: [], operation: "lock-odds" });
       if (!committedOrders) return;
       if (detailOrderId) {
         const committedDetail = committedOrders.find((slip) => slip.id === detailOrderId);
@@ -1979,7 +2002,7 @@ function InnerFootballApp({
 
   const refreshUnlockedOrderOdds = async () => {
     if (orderOddsRefreshing) return;
-    const visibleUnlockedOrders = new Set(filteredSavedSlips.filter((slip) => !isOrderOddsLocked(slip)));
+    const visibleUnlockedOrders = new Set(filteredSavedSlips.filter((slip) => !isOrderPaid(slip) && !isOrderOddsLocked(slip)));
     if (visibleUnlockedOrders.size === 0) {
       message.info("当前查看的订单没有可更新的未锁定订单");
       return;
@@ -2002,7 +2025,7 @@ function InnerFootballApp({
       });
       const detailOrderId = orderDetail?.id;
       const updatedOrders = nextOrders.filter((slip, index) => slip !== savedSlips[index]);
-      const committedOrders = await commitOrderMutation({ upsertOrders: updatedOrders, deleteOrderIds: [] });
+      const committedOrders = await commitOrderMutation({ upsertOrders: updatedOrders, deleteOrderIds: [], operation: "refresh-odds" });
       if (!committedOrders) return;
       if (detailOrderId) {
         const committedDetail = committedOrders.find((slip) => slip.id === detailOrderId);
@@ -2154,9 +2177,10 @@ function InnerFootballApp({
       values,
       ...(typeof rqspfHandicap === "number" ? { rqspfHandicap } : {}),
       fullScore: parsedResult.fullScore,
+      halfScore: parsedResult.halfScore,
     };
     setMatchResults((current) => ({ ...current, [matchId]: nextResult }));
-    return { status: "success" as const, valueCount: Object.keys(values).length };
+    return { status: "success" as const, valueCount: Object.keys(values).length, result: nextResult };
   };
 
   const fetchMatchResult = async (match: MatchItem) => {
@@ -2211,10 +2235,83 @@ function InnerFootballApp({
     }
   };
 
+  useEffect(() => {
+    if (activeView !== "betting") {
+      autoResultAttemptedMatchIdsRef.current.clear();
+      return;
+    }
+    if (temporaryOrder || !sportteryLoaded || sportteryLoading || sportteryRefreshing || autoResultFetchingRef.current) return;
+    const candidates = groupedMatches.flatMap(([date, items]) => (
+      collapsedMatchDates.includes(date) || autoCollapsedMatchDatesRef.current.has(date) ? [] : items
+    )).filter((match) => (
+      getMatchSaleState(match, saleNow) === "stopped"
+      && !hasCompleteMatchResult(match)
+      && !autoResultAttemptedMatchIdsRef.current.has(normalizeSportteryMatchId(match.id))
+    ));
+    if (candidates.length === 0) return;
+    const candidateIds = candidates.map((match) => normalizeSportteryMatchId(match.id));
+    candidateIds.forEach((id) => autoResultAttemptedMatchIdsRef.current.add(id));
+    autoResultFetchingRef.current = true;
+    setBettingResultFetchingMatchIds(candidateIds);
+    void (async () => {
+      const resultUpdates: MatchItem[] = [];
+      for (const match of candidates) {
+        try {
+          const outcome = await requestMatchResult(match);
+          if (outcome.status === "success") resultUpdates.push({ ...match, result: outcome.result });
+        } catch (error) {
+          console.error("[体彩接口] 自动获取投注页赛果失败", { matchId: match.id, error });
+        }
+      }
+      if (resultUpdates.length === 0) return;
+      const resultById = new Map(resultUpdates.map((match) => [normalizeSportteryMatchId(match.id), match.result]));
+      const applyResults = (current: MatchItem[]) => current.map((match) => {
+        const result = resultById.get(normalizeSportteryMatchId(match.id));
+        return result ? { ...match, result } : match;
+      });
+      const localMatches = applyResults(matchesRef.current);
+      matchesRef.current = localMatches;
+      setMatches(localMatches);
+      saveCachedMatches(localMatches);
+      try {
+        const saved = await onCloudMatchesUpdate(resultUpdates);
+        const savedResultById = new Map(saved.map((match) => [normalizeSportteryMatchId(match.id), match.result]));
+        const persistedMatches = matchesRef.current.map((match) => {
+          const result = savedResultById.get(normalizeSportteryMatchId(match.id));
+          return result ? { ...match, result } : match;
+        });
+        matchesRef.current = persistedMatches;
+        setMatches(persistedMatches);
+        saveCachedMatches(persistedMatches);
+      } catch (error) {
+        console.error("[比赛接口] 自动赛果批量保存失败", error);
+        notification.error({
+          message: "赛果保存失败",
+          description: error instanceof Error ? error.message : "已取得赛果，但暂时无法保存到云端",
+          placement: "bottomRight",
+        });
+      }
+    })().finally(() => {
+      autoResultFetchingRef.current = false;
+      setBettingResultFetchingMatchIds([]);
+    });
+  }, [
+    activeView,
+    collapsedMatchDates,
+    groupedMatches,
+    notification,
+    onCloudMatchesUpdate,
+    saleNow,
+    sportteryLoaded,
+    sportteryLoading,
+    sportteryRefreshing,
+    temporaryOrder,
+  ]);
+
   const judgeVisibleOrders = async () => {
     if (judgingOrders) return;
-    if (renderedSavedSlips.length === 0 || resultMatches.length === 0) {
-      message.info("当前已渲染订单中没有待判断比赛");
+    if (filteredSavedSlips.length === 0 || resultMatches.length === 0) {
+      message.info("当前筛选订单中没有待判断比赛");
       return;
     }
     const availableResultCount = resultMatches.filter((match) => Object.keys(matchResults[normalizeSportteryMatchId(match.id)]?.values ?? {}).length > 0).length;
@@ -2222,14 +2319,14 @@ function InnerFootballApp({
       message.warning("请先填写或获取赛果");
       return;
     }
-    const updatedOrders = judgeLoadedOrdersWithResults(renderedSavedSlips, matchResults);
+    const updatedOrders = judgeLoadedOrdersWithResults(filteredSavedSlips, matchResults);
     if (updatedOrders.length === 0) {
-      message.info("当前已渲染订单没有需要按现有赛果更新的内容");
+      message.info("当前筛选订单没有需要按现有赛果更新的内容");
       return;
     }
     setJudgingOrders(true);
     try {
-      const committedOrders = await commitOrderMutation({ upsertOrders: updatedOrders, deleteOrderIds: [] });
+      const committedOrders = await commitOrderMutation({ upsertOrders: updatedOrders, deleteOrderIds: [], operation: "judge" });
       if (!committedOrders) return;
       if (orderDetail) {
         const updatedDetail = committedOrders.find((slip) => slip === orderDetail || Boolean(orderDetail.id && slip.id === orderDetail.id));
@@ -2240,7 +2337,7 @@ function InnerFootballApp({
         }
       }
       const failedOrders = updatedOrders.filter(isOrderFailed).length;
-      notification.success({ message: "订单判断完成", description: `已更新 ${updatedOrders.length} 个当前已渲染且需要判断的订单${failedOrders ? `，其中 ${failedOrders} 个订单已不符合串关条件` : ""}`, placement: "bottomRight" });
+      notification.success({ message: "订单判断完成", description: `已更新 ${updatedOrders.length} 个当前筛选且需要判断的订单${failedOrders ? `，其中 ${failedOrders} 个订单已不符合串关条件` : ""}`, placement: "bottomRight" });
     } finally {
       setJudgingOrders(false);
     }
@@ -2269,14 +2366,15 @@ function InnerFootballApp({
       message.warning("请选择有效的订单创建时间");
       return;
     }
-    const nextPasses = editingOrder.settledAt
+    const wagerFrozen = Boolean(editingOrder.settledAt || isOrderPaid(editingOrder));
+    const nextPasses = wagerFrozen
       ? [...editingOrder.passes]
       : [...new Set(orderEditPasses)].sort((left, right) => left - right);
-    if (!editingOrder.settledAt && selectedMatches(orderEditMatches).length > 0 && nextPasses.length === 0) {
+    if (!wagerFrozen && selectedMatches(orderEditMatches).length > 0 && nextPasses.length === 0) {
       message.warning("请至少选择一种串关方式");
       return;
     }
-    const hasInvalidOdds = !editingOrder.settledAt && selectedMatches(orderEditMatches).some((match) => match.markets.some((market) => market.options.some((option) => option.selected && option.odds <= 0)));
+    const hasInvalidOdds = !wagerFrozen && selectedMatches(orderEditMatches).some((match) => match.markets.some((market) => market.options.some((option) => option.selected && option.odds <= 0)));
     if (hasInvalidOdds) {
       message.warning("请为所有已选项填写大于 0 的倍率");
       return;
@@ -2286,10 +2384,10 @@ function InnerFootballApp({
       id: editingOrder.id || createSlipId(),
       name: nextName,
       savedAt: nextTime.millisecond(0).toISOString(),
-      matches: editingOrder.settledAt ? cloneMatches(editingOrder.matches) : cloneMatches(orderEditMatches),
+      matches: wagerFrozen ? cloneMatches(editingOrder.matches) : cloneMatches(orderEditMatches),
       passes: nextPasses,
-      multiple: editingOrder.settledAt ? editingOrder.multiple : orderEditMultiple,
-      oddsLocked: Boolean(editingOrder.settledAt || orderEditOddsLocked),
+      multiple: wagerFrozen ? editingOrder.multiple : orderEditMultiple,
+      oddsLocked: Boolean(wagerFrozen || orderEditOddsLocked),
     };
     const sameOrder = (slip: SavedSlip) => slip === editingOrder || Boolean(editingOrder.id && slip.id === editingOrder.id);
     setOrderEditSaving(true);
@@ -2297,11 +2395,6 @@ function InnerFootballApp({
       const committedOrders = await commitOrderMutation({ upsertOrders: [updated], deleteOrderIds: [] });
       if (!committedOrders) return;
       const committedOrder = committedOrders.find((slip) => slip.id === updated.id) ?? updated;
-      if (!editingOrder.settledAt) {
-        const previousStake = calculateStake(editingOrder.matches, editingOrder.passes, editingOrder.multiple);
-        const nextStake = calculateStake(committedOrder.matches, committedOrder.passes, committedOrder.multiple);
-        if (isGuestMode) setExpenseTotal((current) => Math.max(0, current + nextStake - previousStake));
-      }
       if (orderDetail && sameOrder(orderDetail)) setOrderDetail(committedOrder);
       if (temporaryOrder?.id === committedOrder.id) {
         setMatches(cloneMatches(committedOrder.matches));
@@ -2310,9 +2403,62 @@ function InnerFootballApp({
         setTemporaryOrder({ id: committedOrder.id!, name: committedOrder.name });
       }
       closeOrderEditor();
-      notification.success({ message: "订单已更新", description: `已保存“${committedOrder.name}”的${editingOrder.settledAt ? "名称和时间" : "名称、时间、投注倍数、串关和赔率"}`, placement: "bottomRight" });
+      notification.success({ message: "订单已更新", description: `已保存“${committedOrder.name}”的${wagerFrozen ? "名称和时间" : "名称、时间、投注倍数、串关和赔率"}`, placement: "bottomRight" });
     } finally {
       setOrderEditSaving(false);
+    }
+  };
+
+  const payOrders = async (targets: SavedSlip[]) => {
+    const payableTargets = targets.filter((target) => savedSlips.includes(target) && !target.settledAt && !isOrderPaid(target));
+    const payableKeys = payableTargets.map(orderActionKey);
+    if (payableTargets.length === 0 || payableKeys.some((key) => payingOrderIds.includes(key))) return;
+    setPayingOrderIds((current) => [...new Set([...current, ...payableKeys])]);
+    let matchedOptionCount = 0;
+    let changedOptionCount = 0;
+    let unmatchedOptionCount = 0;
+    let refreshError = "";
+    try {
+      let latestMatches: MatchItem[] = [];
+      try {
+        latestMatches = convertSportteryMatches(await fetchSportteryMatchCalculator());
+      } catch (error) {
+        refreshError = error instanceof Error ? error.message : "无法连接体彩比赛接口";
+      }
+      const paidOrders = payableTargets.map((target) => {
+        const refreshed = refreshSelectedOdds(target.matches, latestMatches);
+        matchedOptionCount += refreshed.matchedOptionCount;
+        changedOptionCount += refreshed.changedOptionCount;
+        unmatchedOptionCount += refreshed.unmatchedOptionCount;
+        return {
+          ...target,
+          matches: refreshed.matches,
+          paymentStatus: "paid" as const,
+          oddsLocked: true,
+        };
+      });
+      const committedOrders = await commitOrderMutation({
+        upsertOrders: paidOrders,
+        deleteOrderIds: [],
+        operation: "pay",
+      });
+      if (!committedOrders) return;
+      if (isGuestMode) {
+        const paidStake = payableTargets.reduce((total, order) => total + calculateStake(order.matches, order.passes, order.multiple), 0);
+        setExpenseTotal((current) => current + paidStake);
+      }
+      if (orderDetail?.id) {
+        const committedDetail = committedOrders.find((slip) => slip.id === orderDetail.id);
+        if (committedDetail) setOrderDetail(committedDetail);
+      }
+      setBulkPayPopoverOpen(false);
+      notification.success({
+        message: payableTargets.length === 1 ? "订单支付完成" : `${payableTargets.length} 个订单支付完成`,
+        description: `匹配 ${matchedOptionCount} 个投注项，更新 ${changedOptionCount} 项倍率，${unmatchedOptionCount} 项无法取得最新有效倍率并保留原值${refreshError ? `；接口异常：${refreshError}` : ""}；全部订单已锁定倍率`,
+        placement: "bottomRight",
+      });
+    } finally {
+      setPayingOrderIds((current) => current.filter((key) => !payableKeys.includes(key)));
     }
   };
 
@@ -2338,8 +2484,9 @@ function InnerFootballApp({
     const settledPrizeTotal = [...settledOrders.values()].reduce((total, slip) => total + (slip.settledPrize ?? 0), 0);
     setSettlingOrderIds((current) => [...new Set([...current, ...settleableTargetKeys])]);
     try {
-      const committedOrders = await commitOrderMutation({ upsertOrders: [...settledOrders.values()], deleteOrderIds: [] });
+      const committedOrders = await commitOrderMutation({ upsertOrders: [...settledOrders.values()], deleteOrderIds: [], operation: "settle" });
       if (!committedOrders) return;
+      setBulkSettlePopoverOpen(false);
       if (isGuestMode) setIncomeTotal((current) => current + settledPrizeTotal);
       const settledDetail = orderDetail?.id
         ? committedOrders.find((slip) => slip.id === orderDetail.id)
@@ -2726,9 +2873,15 @@ function InnerFootballApp({
 
   const toggleMatchDateCollapsed = (date: string) => {
     autoCollapsedMatchDatesRef.current.delete(date);
-    setCollapsedMatchDates((current) => current.includes(date)
-      ? current.filter((item) => item !== date)
-      : [...current, date]);
+    setCollapsedMatchDates((current) => {
+      const collapsed = current.includes(date);
+      if (!collapsed) {
+        filteredMatches.filter((match) => match.date === date).forEach((match) => {
+          autoResultAttemptedMatchIdsRef.current.delete(normalizeSportteryMatchId(match.id));
+        });
+      }
+      return collapsed ? current.filter((item) => item !== date) : [...current, date];
+    });
   };
 
   const copyMatchesForDate = async (date: string, dateMatches: MatchItem[]) => {
@@ -2806,6 +2959,44 @@ function InnerFootballApp({
     </div>
   );
 
+  const bulkPayStake = filteredPayableOrders.reduce(
+    (total, order) => total + calculateStake(order.matches, order.passes, order.multiple),
+    0,
+  );
+  const bulkSettlePrize = filteredSettleableOrders.reduce(
+    (total, order) => total + calculateCurrentPrize(order.matches, order.passes, order.multiple, order.hits ?? {}),
+    0,
+  );
+  const bulkSettleSuccessCount = filteredSettleableOrders.filter((order) => getOrderStatus(order) === "success").length;
+  const bulkSettleFailedCount = filteredSettleableOrders.length - bulkSettleSuccessCount;
+  const editingOrderWagerFrozen = Boolean(editingOrder && (editingOrder.settledAt || isOrderPaid(editingOrder)));
+  const bulkPayContent = (
+    <div className="bulk-action-popover">
+      <b>确认一键支付？</b>
+      <p>仅处理当前筛选结果中的未支付订单。</p>
+      <div><span>订单数量</span><strong>{filteredPayableOrders.length} 个</strong></div>
+      <div><span>支付金额</span><strong>¥{currency(bulkPayStake)}</strong></div>
+      <small>支付前会更新倍率；无法取得最新有效倍率的投注项保留原值。支付后投注内容与倍率全部冻结。</small>
+      <Space>
+        <Button size="small" onClick={() => setBulkPayPopoverOpen(false)}>取消</Button>
+        <Button size="small" type="primary" loading={payingOrderIds.length > 0} onClick={() => { void payOrders(filteredPayableOrders); }}>确认支付</Button>
+      </Space>
+    </div>
+  );
+  const bulkSettleContent = (
+    <div className="bulk-action-popover">
+      <b>确认一键结账？</b>
+      <p>仅处理当前筛选结果中已支付、未结账且已有判断结果的订单。</p>
+      <div><span>订单数量</span><strong>{filteredSettleableOrders.length} 个</strong></div>
+      <div><span>成功 / 失败</span><strong>{bulkSettleSuccessCount} / {bulkSettleFailedCount}</strong></div>
+      <div><span>预计计入收入</span><strong>¥{currency(bulkSettlePrize)}</strong></div>
+      <Space>
+        <Button size="small" onClick={() => setBulkSettlePopoverOpen(false)}>取消</Button>
+        <Button size="small" type="primary" loading={settlingOrderIds.length > 0} onClick={() => { void settleOrders(filteredSettleableOrders); }}>确认结账</Button>
+      </Space>
+    </div>
+  );
+
   return (
     <div className="football-app">
       <AppShellHeader
@@ -2835,6 +3026,7 @@ function InnerFootballApp({
             <Space wrap>
               <Tag color="cyan">显示 {filteredMatches.length} / 共 {matches.length} 场</Tag>
               <Tag color={pickedCount ? "red" : "default"}>{pickedCount} 个选项</Tag>
+              {bettingResultFetchingMatchIds.length > 0 && <Tag color="processing">正在获取 {bettingResultFetchingMatchIds.length} 场赛果</Tag>}
             </Space>
           </div>
           <div className="match-toolbar">
@@ -3009,9 +3201,12 @@ function InnerFootballApp({
                 <Button icon={<ExpandOutlined />} disabled={cloudOrdersLoading || filteredSavedSlips.length === 0} onClick={expandAllOrderOptions}>展开全部选项</Button>
                 <Button icon={<ReloadOutlined />} loading={orderOddsRefreshing} disabled={cloudOrdersLoading || lockingOrderOdds || filteredSavedSlips.length === 0} onClick={() => { void refreshUnlockedOrderOdds(); }}>更新倍率</Button>
                 <Button icon={<LockOutlined />} loading={lockingOrderOdds} disabled={cloudOrdersLoading || orderOddsRefreshing || visibleUnlockedOrderCount === 0} onClick={() => { void lockVisibleOrderOdds(); }}>锁定倍率</Button>
-                <Tooltip title="仅结账成功与失败账单">
-                  <span><Button className="checkout-order-button" icon={<CheckOutlined />} loading={settlingOrderIds.length > 0} disabled={cloudOrdersLoading || visibleSettleableOrders.length === 0 || settlingOrderIds.length > 0} onClick={() => { void settleOrders(visibleSettleableOrders); }}>一键结账</Button></span>
-                </Tooltip>
+                <Popover content={bulkPayContent} trigger="click" open={bulkPayPopoverOpen} onOpenChange={setBulkPayPopoverOpen}>
+                  <Button icon={<DollarOutlined />} loading={payingOrderIds.length > 0} disabled={cloudOrdersLoading || filteredPayableOrders.length === 0 || payingOrderIds.length > 0}>一键支付</Button>
+                </Popover>
+                <Popover content={bulkSettleContent} trigger="click" open={bulkSettlePopoverOpen} onOpenChange={setBulkSettlePopoverOpen}>
+                  <Button className="checkout-order-button" icon={<CheckOutlined />} loading={settlingOrderIds.length > 0} disabled={cloudOrdersLoading || filteredSettleableOrders.length === 0 || settlingOrderIds.length > 0}>一键结账</Button>
+                </Popover>
                 <Button type="primary" icon={<HomeOutlined />} onClick={() => navigateToView("betting")}>返回投注</Button>
               </Space>
             </div>
@@ -3221,7 +3416,7 @@ function InnerFootballApp({
                       <button type="button" className="match-phase-info" aria-label="查看比赛阶段映射与常规时间判断规则"><InfoCircleOutlined /></button>
                     </Tooltip>
                   </div>
-                  <p>汇总当前已渲染订单中尚未完整判断赛果的比赛，包含已结账订单；让球数按比赛 ID 从官方比赛数据重新获取，并同步到订单。</p>
+                  <p>汇总当前筛选订单中尚未完整判断赛果的比赛，包含已结账订单；让球数按比赛 ID 从官方比赛数据重新获取，并同步到订单。</p>
                 </div>
                 <Space wrap>
 	                  {!matchResultsCollapsed && <Button icon={<ReloadOutlined />} loading={allResultsFetching} disabled={resultMatches.length === 0 || resultFetchingMatchIds.length > 0 || judgingOrders} onClick={() => { void fetchAllMatchResults(); }}>获取全部赛果</Button>}
@@ -3304,12 +3499,14 @@ function InnerFootballApp({
                   const orderStatus = getOrderStatus(slip);
                   const orderFailed = orderStatus === "failed";
 	                  const orderSettleable = isOrderSettleable(slip);
+	                  const orderPaid = isOrderPaid(slip);
 	                  const actionKey = orderActionKey(slip);
 	                  const orderLoading = loadingOrderId === actionKey;
 	                  const orderSettling = settlingOrderIds.includes(actionKey);
+	                  const orderPaying = payingOrderIds.includes(actionKey);
 	                  const orderWithdrawing = withdrawingOrderIds.includes(actionKey);
 	                  const orderDeleting = deletingOrderIds.includes(actionKey);
-	                  const orderBusy = orderLoading || orderSettling || orderWithdrawing || orderDeleting;
+	                  const orderBusy = orderLoading || orderPaying || orderSettling || orderWithdrawing || orderDeleting;
 	                  return (
                     <Card key={orderKey} className={`order-card ${orderStatus === "hopeful" ? "" : orderStatus}`}>
                       <div className="order-card-head">
@@ -3320,7 +3517,11 @@ function InnerFootballApp({
                             {orderFailed && <Tag color="error">失败</Tag>}
                             {trackedPrize > 0 && <Tag color="green">已中奖 {trackedPrizeText} 元</Tag>}
                             {isOrderOddsLocked(slip) && <Tag color="gold" icon={<LockOutlined />}>倍率锁定</Tag>}
-                            {slip.settledAt && <Tag color="cyan">已结账 ¥{currency(slip.settledPrize ?? 0)}</Tag>}
+	                            {slip.settledAt
+	                              ? <Tag color="cyan">已结账 ¥{currency(slip.settledPrize ?? 0)}</Tag>
+	                              : orderPaid
+	                                ? <Tag color="success">已支付</Tag>
+	                                : <Tag>未支付</Tag>}
                           </div>
                           <time>{new Date(slip.savedAt).toLocaleString("zh-CN")}</time>
                         </div>
@@ -3382,7 +3583,7 @@ function InnerFootballApp({
 	                      <div className="order-actions">
 	                        <Button icon={<EyeOutlined />} onClick={() => openOrderDetails(slip)}>明细</Button>
 	                        <Button icon={<EditOutlined />} disabled={orderBusy || cloudOrdersLoading} onClick={() => openOrderEditor(slip)}>编辑</Button>
-	                        {!slip.settledAt && <Button type="primary" icon={<ImportOutlined />} loading={orderLoading} disabled={orderBusy || cloudOrdersLoading} onClick={() => { void loadSlip(slip); }}>载入投注</Button>}
+	                        {!slip.settledAt && !orderPaid && <Button type="primary" icon={<ImportOutlined />} loading={orderLoading} disabled={orderBusy || cloudOrdersLoading} onClick={() => { void loadSlip(slip); }}>载入投注</Button>}
 	                        <Button color="orange" variant="solid" icon={<CopyOutlined />} disabled={orderBusy || cloudOrdersLoading} onClick={() => copySlip(slip)}>复制投注</Button>
 	                        <div className="order-closing-actions">
 	                          {slip.settledAt ? (
@@ -3395,6 +3596,17 @@ function InnerFootballApp({
 	                              onConfirm={() => { void withdrawOrderSettlement(slip); }}
 	                            >
 	                              <Button className="withdraw-checkout-button" icon={<RollbackOutlined />} loading={orderWithdrawing} disabled={orderBusy || cloudOrdersLoading}>撤回</Button>
+	                            </Popconfirm>
+	                          ) : !orderPaid ? (
+	                            <Popconfirm
+	                              title="确认支付？"
+	                              description="支付前会更新倍率；无法取得最新倍率时保留原值。支付后投注内容与倍率全部冻结。"
+	                              okText="确认支付"
+	                              cancelText="取消"
+	                              okButtonProps={{ loading: orderPaying, disabled: orderPaying }}
+	                              onConfirm={() => { void payOrders([slip]); }}
+	                            >
+	                              <Button icon={<DollarOutlined />} loading={orderPaying} disabled={orderBusy || cloudOrdersLoading}>支付</Button>
 	                            </Popconfirm>
 	                          ) : orderSettleable ? (
 	                            <Popconfirm
@@ -3584,7 +3796,7 @@ function InnerFootballApp({
               controls={false}
               min={1}
               max={50}
-              disabled={Boolean(editingOrder?.settledAt) || orderEditSaving}
+              disabled={editingOrderWagerFrozen || orderEditSaving}
               value={orderEditMultiple}
               onChange={(value) => setOrderEditMultiple(Math.min(50, Math.max(1, Number(value ?? 1))))}
             />
@@ -3596,7 +3808,7 @@ function InnerFootballApp({
             mode="multiple"
             allowClear
             maxTagCount="responsive"
-            disabled={Boolean(editingOrder?.settledAt) || orderEditSaving}
+            disabled={editingOrderWagerFrozen || orderEditSaving}
             placeholder="请选择串关方式"
             value={orderEditPasses}
             options={orderEditPassOptions.map((value) => ({
@@ -3605,11 +3817,11 @@ function InnerFootballApp({
             }))}
             onChange={(values) => setOrderEditPasses([...values].sort((left, right) => left - right))}
           />
-          <small>{editingOrder?.settledAt ? "结账订单的串关方式已锁定。" : "修改串关后，累计投入会按新旧订单金额的差额同步调整。"}</small>
+          <small>{editingOrderWagerFrozen ? "已支付或已结账订单的投注内容已经冻结。" : "修改串关后，支付金额会按新的订单投入计算。"}</small>
         </label>
         <div className="order-editor-section-title">
           <b>已选项倍率</b>
-          <div className="order-odds-lock"><LockOutlined /><span>锁定倍率</span><Switch checked={orderEditOddsLocked} disabled={Boolean(editingOrder?.settledAt) || orderEditSaving} onChange={setOrderEditOddsLocked} /></div>
+          <div className="order-odds-lock"><LockOutlined /><span>锁定倍率</span><Switch checked={orderEditOddsLocked} disabled={editingOrderWagerFrozen || orderEditSaving} onChange={setOrderEditOddsLocked} /></div>
         </div>
         <p className="modal-help">锁定后不会参与订单页的批量倍率更新；结账订单必须锁定。倍率修改只影响当前订单快照，不会改动官方比赛列表；串关修改会同步调整累计投入。</p>
         <div className="order-odds-editor">
@@ -3632,7 +3844,7 @@ function InnerFootballApp({
                           precision={2}
                           value={option.odds > 0 ? option.odds : null}
                           prefix="@"
-                          disabled={Boolean(editingOrder?.settledAt || orderEditOddsLocked) || orderEditSaving}
+                          disabled={editingOrderWagerFrozen || orderEditOddsLocked || orderEditSaving}
                           onChange={(value) => updateOrderOptionOdds(match.id, market.type, option.id, Number(value ?? 0))}
                         />
                       </label>
@@ -3937,6 +4149,7 @@ const ignoreCloudOrdersQueryChange = async (): Promise<CloudOrderQueryResult> =>
   unsettledCount: 0,
 });
 const ignoreCloudMatchesChange = () => undefined;
+const ignoreCloudMatchesUpdate = async (matches: MatchItem[]) => matches;
 const ignoreCloudMatchesRefresh = async () => fetchSportteryMatchSnapshot(getSportteryRefreshPolicy(new Date()).mode);
 
 export default function FootballApp({
@@ -3950,6 +4163,7 @@ export default function FootballApp({
   onCloudOrderMutation = ignoreCloudOrderMutation,
   onCloudOrdersQueryChange = ignoreCloudOrdersQueryChange,
   onCloudMatchesChange = ignoreCloudMatchesChange,
+  onCloudMatchesUpdate = ignoreCloudMatchesUpdate,
   onCloudMatchesRefresh = ignoreCloudMatchesRefresh,
   onRequireAccount = () => undefined,
   onLogout = async () => undefined,
@@ -3964,6 +4178,7 @@ export default function FootballApp({
   onCloudOrderMutation?: (intent: OrderSyncIntent) => Promise<CloudOrderMutationResult>;
   onCloudOrdersQueryChange?: (query: CloudOrderQuery) => Promise<CloudOrderQueryResult>;
   onCloudMatchesChange?: (matches: MatchItem[]) => void;
+  onCloudMatchesUpdate?: (matches: MatchItem[]) => Promise<MatchItem[]>;
   onCloudMatchesRefresh?: (manual: boolean) => Promise<SportteryMatchSnapshot>;
   onRequireAccount?: (view?: AppView) => void;
   onLogout?: () => Promise<void>;
@@ -4000,6 +4215,7 @@ export default function FootballApp({
           onCloudOrderMutation={onCloudOrderMutation}
           onCloudOrdersQueryChange={onCloudOrdersQueryChange}
           onCloudMatchesChange={onCloudMatchesChange}
+          onCloudMatchesUpdate={onCloudMatchesUpdate}
           onCloudMatchesRefresh={onCloudMatchesRefresh}
           onRequireAccount={onRequireAccount}
           onLogout={onLogout}

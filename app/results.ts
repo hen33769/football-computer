@@ -167,14 +167,20 @@ export function isMatchResult(value: unknown): value is MatchResults[string] {
   if (!validValues) return false;
   if (typeof result.rqspfHandicap !== "undefined"
     && (typeof result.rqspfHandicap !== "number" || !Number.isFinite(result.rqspfHandicap))) return false;
-  if (typeof result.fullScore === "undefined") return true;
-  return Boolean(result.fullScore)
-    && typeof result.fullScore === "object"
-    && Number.isInteger(result.fullScore.home)
-    && result.fullScore.home >= 0
-    && Number.isInteger(result.fullScore.away)
-    && result.fullScore.away >= 0;
+  const isScore = (score: unknown): score is { home: number; away: number } => Boolean(score)
+    && typeof score === "object"
+    && Number.isInteger((score as { home?: unknown }).home)
+    && Number((score as { home: number }).home) >= 0
+    && Number.isInteger((score as { away?: unknown }).away)
+    && Number((score as { away: number }).away) >= 0;
+  if (typeof result.fullScore !== "undefined" && !isScore(result.fullScore)) return false;
+  if (typeof result.halfScore !== "undefined" && !isScore(result.halfScore)) return false;
+  return true;
 }
+
+export const hasCompleteMatchResult = (match: Pick<MatchItem, "result">) => Boolean(
+  match.result?.fullScore && match.result.halfScore,
+);
 
 export function isMatchResults(value: unknown): value is MatchResults {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)

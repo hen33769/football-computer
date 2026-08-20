@@ -32,6 +32,7 @@ export type CompactOrder = {
   updatedAt?: string;
   passes: number[];
   multiple: number;
+  paymentStatus?: "unpaid" | "paid";
   oddsLocked?: boolean;
   hits?: CurrentHits;
   resultValues?: CurrentHits;
@@ -48,6 +49,12 @@ export type OrderSummary = {
   status: OrderStatus;
   progress: "settled" | "unsettled";
 };
+
+export type BulkOrderOperation = "update" | "judge" | "refresh-odds" | "lock-odds" | "pay" | "settle";
+
+export const isOrderPaid = (order: Pick<CompactOrder | SavedSlip, "paymentStatus">) => (
+  order.paymentStatus === "paid"
+);
 
 const MARKET_ORDER: MarketType[] = ["spf", "rqspf", "score", "goals", "halfFull"];
 
@@ -78,6 +85,7 @@ export function savedSlipToCompactOrder(slip: SavedSlip): CompactOrder {
     updatedAt: slip.updatedAt,
     passes: [...slip.passes],
     multiple: slip.multiple,
+    paymentStatus: slip.paymentStatus === "paid" ? "paid" : "unpaid",
     ...(slip.oddsLocked !== undefined ? { oddsLocked: slip.oddsLocked } : {}),
     ...(slip.hits ? { hits: cloneHits(slip.hits) } : {}),
     ...(slip.resultValues ? { resultValues: cloneHits(slip.resultValues) } : {}),
@@ -165,6 +173,7 @@ export function compactOrderToSavedSlip(order: CompactOrder): SavedSlip {
     matches: compactSelectionsToMatches(order.selections),
     passes: [...order.passes],
     multiple: order.multiple,
+    paymentStatus: order.paymentStatus === "paid" ? "paid" : "unpaid",
     ...(order.oddsLocked !== undefined ? { oddsLocked: order.oddsLocked } : {}),
     ...(order.hits ? { hits: cloneHits(order.hits) } : {}),
     ...(order.resultValues ? { resultValues: cloneHits(order.resultValues) } : {}),
@@ -180,6 +189,7 @@ export function compactOrderToSavedSlip(order: CompactOrder): SavedSlip {
 export function normalizeCompactOrder(input: CompactOrder | SavedSlip): CompactOrder {
   if ("selections" in input && Array.isArray(input.selections)) return {
     ...input,
+    paymentStatus: input.paymentStatus === "paid" ? "paid" : "unpaid",
     passes: [...input.passes],
     selections: input.selections.map((selection) => ({ ...selection })),
     ...(input.hits ? { hits: cloneHits(input.hits) } : {}),
@@ -219,6 +229,7 @@ export function isCompactOrder(value: unknown): value is CompactOrder {
     && typeof value.multiple === "number"
     && Number.isFinite(value.multiple)
     && value.multiple >= 1
+    && (value.paymentStatus === undefined || value.paymentStatus === "unpaid" || value.paymentStatus === "paid")
     && Array.isArray(value.selections)
     && value.selections.every((selection) => {
       if (!isRecord(selection)) return false;

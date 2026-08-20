@@ -341,6 +341,7 @@ test("比分接口从 sectionNo 1 和 2 推导五类常规时间赛果", () => {
     halfFull: "WW",
   });
   assert.deepEqual(parseSportteryMatchScoreDetails(scorePayload, match).fullScore, { home: 3, away: 0 });
+  assert.deepEqual(parseSportteryMatchScoreDetails(scorePayload, match).halfScore, { home: 2, away: 0 });
 });
 
 test("按 matchId 返回的固定奖金数据提取最新让球数", () => {
@@ -496,6 +497,14 @@ test("比赛缓存同步不会用空倍率覆盖旧有效倍率", () => {
   const previousSpf = market(previous, "spf");
   previousSpf.options[0].selected = true;
   previousSpf.options[1].selected = true;
+  previous.result = {
+    matchId: previous.id,
+    updatedAt: "2026-07-25T10:00:00.000Z",
+    source: "api",
+    values: { spf: "win", score: "2:1", halfFull: "LW" },
+    fullScore: { home: 2, away: 1 },
+    halfScore: { home: 0, away: 1 },
+  };
 
   const [incoming] = cloneMatches(convertSportteryMatches(payload, beforeKickoff));
   incoming.saleStatus = "stopped";
@@ -522,6 +531,7 @@ test("比赛缓存同步不会用空倍率覆盖旧有效倍率", () => {
   assert.equal(cachedSpf.options.find((option) => option.id === "win")?.oddsTrend, 1);
   assert.equal(cachedSpf.options.find((option) => option.id === "draw")?.odds, 2.82);
   assert.deepEqual(cachedSpf.options.map((option) => option.selected), [true, true, false]);
+  assert.deepEqual(cached.result, previous.result);
 });
 
 test("常规模式以完整列表为主并用 calculator 覆盖同场详细赔率", async () => {

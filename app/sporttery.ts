@@ -355,6 +355,7 @@ export const hydrateSportteryMatchOdds = (match: MatchItem): MatchItem => ({
 export const mergeSportteryMatchOdds = (incoming: MatchItem, previous?: MatchItem): MatchItem => ({
   ...incoming,
   id: normalizeSportteryMatchId(incoming.id),
+  ...(incoming.result || previous?.result ? { result: incoming.result ?? previous?.result } : {}),
   markets: incoming.markets.map((market) => {
     const previousMarket = previous?.markets.find((item) => item.type === market.type);
     return {
@@ -982,6 +983,7 @@ export function isSportteryRegularTimeFinished(payload: unknown) {
 export type ParsedSportteryMatchScore = {
   values: Partial<Record<MarketType, string>>;
   fullScore?: { home: number; away: number };
+  halfScore?: { home: number; away: number };
 };
 
 /** 从比分接口提取竞彩足球所需的常规时间赛果；sectionNo 2 优先于可能包含加时的总比分。 */
@@ -1007,6 +1009,7 @@ export function parseSportteryMatchScoreDetails(payload: unknown, match: MatchIt
   return {
     values,
     fullScore: { home: fullScore[0], away: fullScore[1] },
+    ...(halfScore ? { halfScore: { home: halfScore[0], away: halfScore[1] } } : {}),
   };
 }
 

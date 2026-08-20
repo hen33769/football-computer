@@ -294,7 +294,7 @@ export function getOrderStatus(slip: SavedSlip): OrderStatus {
 }
 
 export function isOrderSettleable(slip: SavedSlip): boolean {
-  return !slip.settledAt && getOrderStatus(slip) !== "hopeful";
+  return slip.paymentStatus === "paid" && !slip.settledAt && getOrderStatus(slip) !== "hopeful";
 }
 
 function selectedHitOdds(match: MatchItem, hits: CurrentHits): number[] {

@@ -3,14 +3,15 @@ import {
   compactOrderSummary,
   compactOrderToSavedSlip,
   isCompactOrder,
+  isOrderPaid,
   normalizeCompactOrder,
   savedSlipToCompactOrder,
+  type BulkOrderOperation,
   type CompactOrder,
 } from "../order-model";
 import type { SavedSlip } from "../types";
 import { refreshSelectedOdds } from "../sporttery";
 import type { MatchItem } from "../types";
-import { parseJson } from "../cloud-server";
 import { httpError, orderConflict } from "./errors";
 import { fromCents, toCents } from "./money";
 
@@ -47,12 +48,21 @@ type CountRow = {
 
 const MAX_ORDER_BYTES = 1_500_000;
 const MAX_ORDER_LIMIT = 500;
+const MAX_BULK_ORDER_UPDATES = 500;
 const VALID_STATUSES = new Set(["success", "hopeful", "failed"]);
 
 const unique = <T,>(values: T[]) => [...new Set(values)];
 
+const parseStoredJson = <T,>(value: string, fallback: T): T => {
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+};
+
 export function parseOrderJson(value: string): CompactOrder | null {
-  const parsed = parseJson<unknown>(value, null);
+  const parsed = parseStoredJson<unknown>(value, null);
   if (isCompactOrder(parsed)) return normalizeCompactOrder(parsed);
   if (parsed && typeof parsed === "object" && "matches" in parsed) {
     return savedSlipToCompactOrder(parsed as SavedSlip);
@@ -75,6 +85,21 @@ function prepareStoredOrder(order: CompactOrder, now = new Date().toISOString())
   };
 }
 
+const wagerShapeFingerprint = (order: CompactOrder) => JSON.stringify({
+  passes: order.passes,
+  multiple: order.multiple,
+  selections: order.selections.map((selection) => ({
+    matchId: selection.matchId,
+    marketType: selection.marketType,
+    optionId: selection.optionId,
+  })),
+});
+
+const wagerFingerprint = (order: CompactOrder) => JSON.stringify({
+  shape: wagerShapeFingerprint(order),
+  odds: order.selections.map((selection) => selection.odds),
+});
+
 async function currentOrderVersion(d1: D1Database, userId: string, orderId: string) {
   return d1.prepare(`
     SELECT updated_at AS updatedAt
@@ -92,14 +117,15 @@ async function writePreparedOrder(
   await d1.prepare(`
     INSERT INTO user_orders (
       user_id, order_id, name, saved_at, settled_at, settled_prize_cents,
-      stake_cents, status, match_ids_json, data_json, updated_at
+      payment_status, stake_cents, status, match_ids_json, data_json, updated_at
     )
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
     ON CONFLICT(user_id, order_id) DO UPDATE SET
       name = excluded.name,
       saved_at = excluded.saved_at,
       settled_at = excluded.settled_at,
       settled_prize_cents = excluded.settled_prize_cents,
+      payment_status = excluded.payment_status,
       stake_cents = excluded.stake_cents,
       status = excluded.status,
       match_ids_json = excluded.match_ids_json,
@@ -112,6 +138,7 @@ async function writePreparedOrder(
     order.savedAt,
     order.settledAt ?? null,
     typeof order.settledPrize === "number" ? toCents(order.settledPrize) : null,
+    order.paymentStatus === "paid" ? "paid" : "unpaid",
     toCents(summary.stake),
     summary.status,
     matchIdsJson,
@@ -136,9 +163,13 @@ export async function updateOrder(
   expectedUpdatedAt?: string,
 ) {
   const order = normalizeCompactOrder({ ...rawOrder, id: orderId } as CompactOrder);
-  const existing = await currentOrderVersion(d1, userId, orderId);
-  if (!existing || !expectedUpdatedAt || existing.updatedAt !== expectedUpdatedAt) {
+  const version = await currentOrderVersion(d1, userId, orderId);
+  if (!version || !expectedUpdatedAt || version.updatedAt !== expectedUpdatedAt) {
     throw orderConflict([orderId]);
+  }
+  const existing = await getOrder(d1, userId, orderId);
+  if (isOrderPaid(existing) && wagerFingerprint(existing) !== wagerFingerprint(order)) {
+    throw httpError("已支付订单的投注项、串关、倍数和倍率均已冻结", 409);
   }
   return writePreparedOrder(d1, userId, prepareStoredOrder(order));
 }
@@ -175,11 +206,11 @@ function ordersWhereClause(query: OrdersQuery) {
   const conditions = ["user_id = ?"];
   const params: unknown[] = [];
   if (query.from) {
-    conditions.push("substr(saved_at, 1, 10) >= ?");
+    conditions.push("date(saved_at, '+8 hours') >= ?");
     params.push(query.from);
   }
   if (query.to) {
-    conditions.push("substr(saved_at, 1, 10) <= ?");
+    conditions.push("date(saved_at, '+8 hours') <= ?");
     params.push(query.to);
   }
   if (query.progress === "settled") conditions.push("settled_at IS NOT NULL");
@@ -254,12 +285,125 @@ async function getOrdersByRefs(d1: D1Database, userId: string, refs: OrderRef[])
   return ordered;
 }
 
+function finalizeBulkOrder(current: CompactOrder, incoming: CompactOrder, operation: BulkOrderOperation, now: string) {
+  const sameShape = wagerShapeFingerprint(current) === wagerShapeFingerprint(incoming);
+  const sameWager = wagerFingerprint(current) === wagerFingerprint(incoming);
+
+  if (operation === "pay") {
+    if (isOrderPaid(current) || current.settledAt) throw httpError(`订单“${current.name}”不属于未支付订单`, 409);
+    if (!sameShape) throw httpError(`订单“${current.name}”的投注内容与当前版本不一致`, 409);
+    return normalizeCompactOrder({
+      ...incoming,
+      paymentStatus: "paid",
+      oddsLocked: true,
+      settledAt: undefined,
+      settledPrize: undefined,
+    });
+  }
+  if (operation === "settle") {
+    if (!isOrderPaid(current) || current.settledAt) throw httpError(`订单“${current.name}”不符合结账条件`, 409);
+    if (!sameWager) throw httpError(`订单“${current.name}”的已支付倍率已冻结`, 409);
+    const slip = compactOrderToSavedSlip(current);
+    return normalizeCompactOrder({
+      ...current,
+      settledAt: now,
+      settledPrize: calculateCurrentPrize(slip.matches, slip.passes, slip.multiple, slip.hits ?? {}),
+      oddsLockedBeforeSettlement: Boolean(current.oddsLocked),
+      oddsLocked: true,
+    });
+  }
+  if (operation === "lock-odds") {
+    if (isOrderPaid(current) || current.settledAt) throw httpError(`订单“${current.name}”的倍率已经冻结`, 409);
+    if (!sameWager) throw httpError(`订单“${current.name}”不能在锁定时修改倍率`, 409);
+    return normalizeCompactOrder({ ...current, oddsLocked: true });
+  }
+  if (operation === "refresh-odds") {
+    if (isOrderPaid(current) || current.oddsLocked || current.settledAt) {
+      throw httpError(`订单“${current.name}”不属于可更新倍率订单`, 409);
+    }
+    if (!sameShape) throw httpError(`订单“${current.name}”的投注内容与当前版本不一致`, 409);
+    return normalizeCompactOrder({ ...incoming, paymentStatus: "unpaid", oddsLocked: false });
+  }
+  if (operation === "judge") {
+    if (!sameWager) throw httpError(`订单“${current.name}”不能在判断赛果时修改已选倍率`, 409);
+    return normalizeCompactOrder(incoming);
+  }
+  if (isOrderPaid(current) && !sameWager) {
+    throw httpError(`订单“${current.name}”的投注项、串关、倍数和倍率均已冻结`, 409);
+  }
+  return normalizeCompactOrder(incoming);
+}
+
+export async function bulkUpdateOrders(
+  d1: D1Database,
+  userId: string,
+  rawOrders: unknown,
+  operation: BulkOrderOperation,
+) {
+  if (!Array.isArray(rawOrders) || rawOrders.length === 0) throw httpError("请传入需要更新的订单数组", 400);
+  if (rawOrders.length > MAX_BULK_ORDER_UPDATES) {
+    throw httpError(`单次最多更新 ${MAX_BULK_ORDER_UPDATES} 个订单`, 400);
+  }
+  if (!rawOrders.every(isCompactOrder)) throw httpError("批量订单数据结构无效", 400);
+  const incoming = rawOrders.map((order) => normalizeCompactOrder(order));
+  if (new Set(incoming.map((order) => order.id)).size !== incoming.length) {
+    throw httpError("批量订单中包含重复 ID", 400);
+  }
+  const refs = incoming.map((order) => ({ id: order.id, updatedAt: order.updatedAt }));
+  const current = await getOrdersByRefs(d1, userId, refs);
+  const currentById = new Map(current.map((order) => [order.id, order]));
+  const now = new Date().toISOString();
+  const prepared = incoming.map((order) => prepareStoredOrder(
+    finalizeBulkOrder(currentById.get(order.id)!, order, operation, now),
+    now,
+  ));
+  const guards = refs.map((ref) => d1.prepare(`
+    SELECT CASE
+      WHEN EXISTS (
+        SELECT 1 FROM user_orders
+        WHERE user_id = ?1 AND order_id = ?2 AND updated_at = ?3
+      ) THEN json('null')
+      ELSE json('')
+    END
+  `).bind(userId, ref.id, ref.updatedAt ?? ""));
+  const updates = prepared.map(({ order, json, summary, matchIdsJson }, index) => d1.prepare(`
+    UPDATE user_orders
+    SET name = ?1,
+        saved_at = ?2,
+        settled_at = ?3,
+        settled_prize_cents = ?4,
+        payment_status = ?5,
+        stake_cents = ?6,
+        status = ?7,
+        match_ids_json = ?8,
+        data_json = ?9,
+        updated_at = ?10
+    WHERE user_id = ?11 AND order_id = ?12 AND updated_at = ?13
+  `).bind(
+    order.name,
+    order.savedAt,
+    order.settledAt ?? null,
+    typeof order.settledPrize === "number" ? toCents(order.settledPrize) : null,
+    order.paymentStatus === "paid" ? "paid" : "unpaid",
+    toCents(summary.stake),
+    summary.status,
+    matchIdsJson,
+    json,
+    order.updatedAt ?? now,
+    userId,
+    order.id,
+    refs[index].updatedAt ?? "",
+  ));
+  await d1.batch([...guards, ...updates]);
+  return prepared.map((item) => item.order);
+}
+
 export async function settleOrders(d1: D1Database, userId: string, refs: OrderRef[]) {
   const now = new Date().toISOString();
   const orders = await getOrdersByRefs(d1, userId, refs);
   const settled: CompactOrder[] = [];
   for (const order of orders) {
-    if (order.settledAt) continue;
+    if (!isOrderPaid(order) || order.settledAt) continue;
     const slip = compactOrderToSavedSlip(order);
     const settledPrize = calculateCurrentPrize(slip.matches, slip.passes, slip.multiple, slip.hits ?? {});
     const next: CompactOrder = {
@@ -315,7 +459,7 @@ export async function lockOrders(d1: D1Database, userId: string, refs: OrderRef[
   const orders = await getOrdersByRefs(d1, userId, refs);
   const updated: CompactOrder[] = [];
   for (const order of orders) {
-    if (order.oddsLocked || order.settledAt) continue;
+    if (isOrderPaid(order) || order.oddsLocked || order.settledAt) continue;
     updated.push(await writePreparedOrder(d1, userId, prepareStoredOrder({ ...order, oddsLocked: true })));
   }
   return updated;
@@ -333,7 +477,7 @@ export async function refreshOrderOdds(
   let unmatchedOptionCount = 0;
   const updated: CompactOrder[] = [];
   for (const order of orders) {
-    if (order.oddsLocked || order.settledAt) continue;
+    if (isOrderPaid(order) || order.oddsLocked || order.settledAt) continue;
     const slip = compactOrderToSavedSlip(order);
     const refreshed = refreshSelectedOdds(slip.matches, latestMatches);
     matchedOptionCount += refreshed.matchedOptionCount;
@@ -359,7 +503,7 @@ export function compactOrdersToSavedSlips(orders: CompactOrder[]) {
 export function financePreviewForOrders(orders: CompactOrder[]) {
   return orders.reduce((totals, order) => {
     const summary = compactOrderSummary(order);
-    totals.expense += summary.stake;
+    if (isOrderPaid(order)) totals.expense += summary.stake;
     if (order.settledAt) totals.income += fromCents(toCents(order.settledPrize ?? 0));
     return totals;
   }, { expense: 0, income: 0 });

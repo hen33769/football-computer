@@ -28,6 +28,7 @@ export const userOrders = sqliteTable("user_orders", {
   savedAt: text("saved_at").notNull(),
   settledAt: text("settled_at"),
   settledPrizeCents: integer("settled_prize_cents"),
+  paymentStatus: text("payment_status", { enum: ["unpaid", "paid"] }).notNull().default("unpaid"),
   stakeCents: integer("stake_cents").notNull().default(0),
   status: text("status", { enum: ["success", "hopeful", "failed"] }).notNull().default("hopeful"),
   matchIdsJson: text("match_ids_json").notNull().default("[]"),
