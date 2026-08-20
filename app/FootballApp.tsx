@@ -698,6 +698,12 @@ function EditableLeagueTag({
   );
 }
 
+function scoreResultTone(score: { home: number; away: number }) {
+  if (score.home > score.away) return "result-home";
+  if (score.home < score.away) return "result-away";
+  return "result-draw";
+}
+
 function MatchCard({
   match,
   now,
@@ -726,6 +732,8 @@ function MatchCard({
   const rqspf = match.markets.find((market) => market.type === "rqspf")!;
   const fullScore = match.result?.fullScore;
   const halfScore = match.result?.halfScore;
+  const fullScoreTone = fullScore ? scoreResultTone(fullScore) : "";
+  const halfScoreTone = halfScore ? scoreResultTone(halfScore) : "";
   return (
     <article className={`match-card ${picked ? "has-selection" : ""} ${saleState}`}>
       <div className="match-meta">
@@ -738,8 +746,22 @@ function MatchCard({
         <div className="match-time">{formatMatchCardTime(match)}</div>
       </div>
       <div className="teams-row">
-        <div className="teams"><b>{match.home}</b><span className={fullScore ? "match-final-score" : ""}>{fullScore ? `${fullScore.home} : ${fullScore.away}` : "VS"}</span><b>{match.away}</b></div>
-        {halfScore && <small className="match-half-score">{halfScore.home} : {halfScore.away}</small>}
+        <b className="match-team-name match-home-team">{match.home}</b>
+        {fullScore ? (
+          <>
+            <span className={`match-final-score match-home-score ${fullScoreTone}`}>{fullScore.home}</span>
+            <span className={`match-final-score match-score-separator ${fullScoreTone}`}>:</span>
+            <span className={`match-final-score match-away-score ${fullScoreTone}`}>{fullScore.away}</span>
+          </>
+        ) : <span className="match-versus">VS</span>}
+        <b className="match-team-name match-away-team">{match.away}</b>
+        {halfScore && (
+          <>
+            <small className={`match-half-score match-half-home ${halfScoreTone}`}>{halfScore.home}</small>
+            <small className={`match-half-score match-half-separator ${halfScoreTone}`}>:</small>
+            <small className={`match-half-score match-half-away ${halfScoreTone}`}>{halfScore.away}</small>
+          </>
+        )}
       </div>
       <MarketRow market={spf} matchId={match.id} onToggle={onToggle} disabled={!selectable} disableOddsTooltip={disableOddsTooltip} />
       <MarketRow market={rqspf} matchId={match.id} onToggle={onToggle} disabled={!selectable} disableOddsTooltip={disableOddsTooltip} />

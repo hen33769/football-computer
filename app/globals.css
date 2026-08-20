@@ -309,10 +309,10 @@ button, input, textarea { font: inherit; }
 .match-card.has-selection { border-color: rgba(240, 78, 85, .35); box-shadow: 0 13px 34px rgba(217, 59, 69, .09); }
 .match-card.has-selection::before { background: var(--accent); }
 .match-card.stopped { border-color: #d7dddc; background: #f5f7f6; }
-.match-card.stopped .teams, .match-card.stopped .match-time { color: #829095; }
+.match-card.stopped .match-team-name, .match-card.stopped .match-time { color: #829095; }
 .match-card.stopped .odds-option:disabled { color: #718086; background: #edf1f0; opacity: .85; }
 .match-card:hover { transform: translateY(-1px); box-shadow: 0 13px 36px rgba(22, 54, 58, .09); }
-.match-meta, .teams-row, .market-name-line { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.match-meta, .market-name-line { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .match-meta { font-size: 12px; color: var(--muted); }
 .match-code { font-weight: 800; color: #51656b; }
 .league-tag { margin-inline-start: 8px; color: #108a83; background: #ecf8f6; }
@@ -325,13 +325,29 @@ button, input, textarea { font: inherit; }
 .league-color-popover .ant-color-picker-trigger { width: 100%; justify-content: flex-start; }
 .league-color-popover-actions { display: flex; justify-content: flex-end; gap: 7px; padding-top: 3px; border-top: 1px solid var(--line); }
 .match-time { font-variant-numeric: tabular-nums; }
-.teams-row { flex-direction: column; justify-content: center; gap: 3px; margin: 12px 0 13px; }
-.teams { flex: 1; display: flex; align-items: center; justify-content: center; gap: 10px; min-width: 0; }
-.teams b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; }
-.teams span { color: #9caaad; font-size: 12px; font-weight: 500; }
-.teams .match-final-score { color: #243d43; font-size: 18px; font-weight: 800; font-variant-numeric: tabular-nums; }
-.match-card.stopped .teams .match-final-score { color: #66777c; }
-.match-half-score { color: #a0adb0; font-size: 11px; line-height: 1; font-variant-numeric: tabular-nums; }
+.teams-row {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 1fr) minmax(0, .5fr) minmax(0, 1fr) minmax(0, 5fr);
+  grid-auto-rows: auto;
+  align-items: center;
+  gap: 3px 0;
+  margin: 12px 0 13px;
+}
+.match-team-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; }
+.match-home-team { grid-column: 1; grid-row: 1; text-align: right; }
+.match-away-team { grid-column: 5; grid-row: 1; text-align: left; }
+.match-final-score { grid-row: 1; font-size: 18px; font-weight: 800; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.match-home-score { grid-column: 2; justify-self: end; text-align: right; }
+.match-score-separator { grid-column: 3; justify-self: center; text-align: center; }
+.match-away-score { grid-column: 4; justify-self: start; text-align: left; }
+.match-versus { grid-column: 3; grid-row: 1; justify-self: center; color: #9caaad; font-size: 12px; font-weight: 500; }
+.match-half-score { grid-row: 2; font-size: 11px; line-height: 1; font-variant-numeric: tabular-nums; opacity: .55; }
+.match-half-home { grid-column: 2; justify-self: end; text-align: right; }
+.match-half-separator { grid-column: 3; justify-self: center; text-align: center; }
+.match-half-away { grid-column: 4; justify-self: start; text-align: left; }
+.match-final-score.result-home, .match-half-score.result-home { color: #d8424c; }
+.match-final-score.result-draw, .match-half-score.result-draw { color: #1673bd; }
+.match-final-score.result-away, .match-half-score.result-away { color: #218a73; }
 .market-name-line { margin: 10px 2px 6px; font-size: 12px; color: #61747a; }
 .market-name-line span { font-weight: 700; }
 .market-name-line .ant-tag { margin: 0; font-size: 10px; line-height: 18px; }
@@ -949,7 +965,7 @@ button, input, textarea { font: inherit; }
   .match-refresh-button { width: 100%; justify-self: stretch; }
   .match-update-time { text-align: right; }
   .match-card { padding: 14px 12px; }
-  .teams b { font-size: 14px; }
+  .match-team-name { font-size: 14px; }
   .compact-options { gap: 5px; }
   .market-row { grid-template-columns: 36px minmax(0, 1fr); gap: 5px; }
   .odds-option { min-height: 50px; }
