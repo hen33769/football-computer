@@ -92,7 +92,7 @@ import {
 import { applyOrderSyncIntent, type CloudOrderMutationResult, type OrderSyncIntent } from "./personal-sync";
 import { localCache, sessionCache } from "./browser-storage";
 import { MatchPreviewModal, OfficialTrendModal } from "./FootballInsights";
-import { orderLedgerTotals, sortSavedOrders, unionSavedOrders } from "./imports";
+import { orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "./imports";
 import { isOrderPaid } from "./order-model";
 import { CLOUD_APP_URL } from "./links";
 import { formatManualMatchText, formatManualOrderText } from "./manual-order-format";
@@ -1501,10 +1501,11 @@ function InnerFootballApp({
     () => filteredSavedSlips.filter((slip) => !isOrderPaid(slip) && !isOrderOddsLocked(slip)).length,
     [filteredSavedSlips],
   );
+  const filteredOrderTotalStake = useMemo(() => orderStakeTotal(filteredSavedSlips), [filteredSavedSlips]);
   const filteredOrderLedger = useMemo(() => orderLedgerTotals(filteredSavedSlips), [filteredSavedSlips]);
-  const filteredOrderStake = filteredOrderLedger.expense;
+  const filteredOrderPaidStake = filteredOrderLedger.expense;
   const filteredOrderIncome = filteredOrderLedger.income;
-  const filteredOrderProfit = filteredOrderIncome - filteredOrderStake;
+  const filteredOrderProfit = filteredOrderIncome - filteredOrderPaidStake;
   const renderedSavedSlips = useMemo(
     () => filteredSavedSlips.slice(0, renderedOrderCount),
     [filteredSavedSlips, renderedOrderCount],
@@ -3356,8 +3357,9 @@ function InnerFootballApp({
                 </div>
                 <div className="order-filter-summary">
                   <div><span>筛选结果</span><b>{filteredSavedSlips.length}<small> 个订单</small></b></div>
-                  <div><span>筛选投入</span><b>¥{currency(filteredOrderStake)}</b></div>
-                  <Tooltip title={<><div>筛选投入：¥{currency(filteredOrderStake)}</div><div>筛选收入：¥{currency(filteredOrderIncome)}</div></>}>
+                  <div><span>筛选总额</span><b>¥{currency(filteredOrderTotalStake)}</b></div>
+                  <div><span>已支付</span><b>¥{currency(filteredOrderPaidStake)}</b></div>
+                  <Tooltip title={<><div>已支付：¥{currency(filteredOrderPaidStake)}</div><div>筛选收入：¥{currency(filteredOrderIncome)}</div></>}>
                     <div className={`order-filter-profit ${filteredOrderProfit >= 0 ? "positive" : "negative"}`}>
                       <span>筛选盈亏</span>
                       <b>{filteredOrderProfit > 0 ? "+" : filteredOrderProfit < 0 ? "−" : ""}¥{currency(Math.abs(filteredOrderProfit))}</b>

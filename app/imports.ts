@@ -6,6 +6,11 @@ const paidStake = (order: SavedSlip) => isOrderPaid(order)
   ? calculateStake(order.matches, order.passes, order.multiple)
   : 0;
 
+export const orderStakeTotal = (orders: SavedSlip[]) => orders.reduce(
+  (total, order) => total + calculateStake(order.matches, order.passes, order.multiple),
+  0,
+);
+
 export const sortSavedOrders = (orders: SavedSlip[]) => [...orders].sort((left, right) => {
   const leftTime = new Date(left.savedAt).getTime();
   const rightTime = new Date(right.savedAt).getTime();

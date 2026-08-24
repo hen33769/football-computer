@@ -17,7 +17,7 @@ import {
   MAX_SELECTED_MATCHES,
 } from "../app/calculator";
 import { cloneMatches, initialMatches } from "../app/data";
-import { sortSavedOrders, unionSavedOrders } from "../app/imports";
+import { orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "../app/imports";
 import { matchPassesLeagueFilter, orderContainsTeam, orderPassesLeagueFilter } from "../app/order-filters";
 import { appendOrderPassValue, inferOrderPasses, parseOrderPassValues } from "../app/order-passes";
 import { isOrderMatchJudged, judgeLoadedOrdersWithResults, judgeSlipWithResults, repairSlipHandicapResults } from "../app/results";
@@ -106,6 +106,27 @@ test("新增导入订单以新值更新同 ID 订单", () => {
   assert.equal(result.updated, 1);
   assert.equal(result.incomeDelta, 12);
   assert.deepEqual(result.nextOrders.map((order) => order.name), ["新订单", "导入同 ID 订单"]);
+});
+
+test("订单汇总区分筛选总额与已支付支出", () => {
+  const matches = select();
+  const unpaid: SavedSlip = {
+    name: "未支付订单",
+    savedAt: "2026-08-24T01:00:00.000Z",
+    matches,
+    passes: [2],
+    multiple: 2,
+    paymentStatus: "unpaid",
+  };
+  const paid: SavedSlip = {
+    ...unpaid,
+    name: "已支付订单",
+    paymentStatus: "paid",
+    settledPrize: 12,
+  };
+
+  assert.equal(orderStakeTotal([unpaid, paid]), 8);
+  assert.deepEqual(orderLedgerTotals([unpaid, paid]), { expense: 4, income: 12 });
 });
 
 function select(matches = cloneMatches(initialMatches.slice(0, 2))) {
