@@ -76,7 +76,7 @@ import {
   type PrizeRangeMetrics,
 } from "./calculator";
 import { appendOrderPassValue, formatOrderPassValue, inferOrderPasses } from "./order-passes";
-import { matchPassesLeagueFilter, orderContainsTeam, orderPassesLeagueFilter } from "./order-filters";
+import { matchPassesLeagueFilter, orderContainsTeam, orderPassesLeagueFilter, retainAvailableLeagueNames } from "./order-filters";
 import { prioritizeLeagueNames, sortMatchesForManualOrder } from "./sorting";
 import {
   cloneMatches,
@@ -1444,8 +1444,27 @@ function InnerFootballApp({
   const orderDetailRangeMetrics = calculatePrizeRangeMetrics(orderDetailRange, orderDetailStake, orderDetail?.multiple ?? 0);
   const orderDetailMatches = orderDetail ? sortMatchesForDisplay(selectedMatches(orderDetail.matches)) : [];
   const orderDetailPickedCount = orderDetailMatches.reduce((total, match) => total + selectedOptions(match).length, 0);
-  const selectedOrderLeagueSet = useMemo(() => new Set(selectedOrderLeagueNames), [selectedOrderLeagueNames]);
+  const availableOrderLeagueNames = useMemo(() => {
+    const namesInOrders = new Set(savedSlips.flatMap((slip) => selectedMatches(slip.matches)
+      .map((match) => match.league)
+      .filter(Boolean)));
+    const orderedNames = leagueOptions
+      .map((league) => league.leagueNameAbbr)
+      .filter((leagueName) => namesInOrders.delete(leagueName));
+    return prioritizeLeagueNames([...orderedNames, ...namesInOrders]);
+  }, [leagueOptions, savedSlips]);
+  const availableOrderLeagueNameSet = useMemo(() => new Set(availableOrderLeagueNames), [availableOrderLeagueNames]);
+  const effectiveSelectedOrderLeagueNames = useMemo(() => (
+    retainAvailableLeagueNames(selectedOrderLeagueNames, availableOrderLeagueNameSet)
+  ), [availableOrderLeagueNameSet, selectedOrderLeagueNames]);
+  const selectedOrderLeagueSet = useMemo(() => new Set(effectiveSelectedOrderLeagueNames), [effectiveSelectedOrderLeagueNames]);
   const cloudOrderQuery = useMemo(() => currentCloudOrderQuery(), [currentCloudOrderQuery]);
+
+  useEffect(() => {
+    // Options come from the latest order result set, so hidden selections must be removed after that external data changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSelectedOrderLeagueNames((current) => retainAvailableLeagueNames(current, availableOrderLeagueNameSet));
+  }, [availableOrderLeagueNameSet]);
 
   useEffect(() => {
     if (!isCloudMode || activeView !== "orders") return;
@@ -1551,7 +1570,6 @@ function InnerFootballApp({
     () => new Set(matches.map((match) => match.date).filter(Boolean)),
     [matches],
   );
-  const selectedLeagueSet = useMemo(() => new Set(selectedLeagueNames), [selectedLeagueNames]);
   const dateAndSaleFilteredMatches = useMemo(() => matches
     .filter((match) => !selectedMatchDate || match.date === selectedMatchDate)
     .filter((match) => matchesSaleFilter(match, matchSaleFilter, saleNow)),
@@ -1565,15 +1583,20 @@ function InnerFootballApp({
       .map((leagueName) => optionByName.get(leagueName))
       .filter((league): league is SportteryLeague => Boolean(league));
   }, [dateAndSaleFilteredMatches, leagueOptions]);
-  const availableOrderLeagueNames = useMemo(() => {
-    const namesInOrders = new Set(savedSlips.flatMap((slip) => selectedMatches(slip.matches)
-      .map((match) => match.league)
-      .filter(Boolean)));
-    const orderedNames = leagueOptions
-      .map((league) => league.leagueNameAbbr)
-      .filter((leagueName) => namesInOrders.delete(leagueName));
-    return prioritizeLeagueNames([...orderedNames, ...namesInOrders]);
-  }, [leagueOptions, savedSlips]);
+  const availableLeagueNameSet = useMemo(() => (
+    new Set(availableLeagueOptions.map((league) => league.leagueNameAbbr))
+  ), [availableLeagueOptions]);
+  const effectiveSelectedLeagueNames = useMemo(() => (
+    retainAvailableLeagueNames(selectedLeagueNames, availableLeagueNameSet)
+  ), [availableLeagueNameSet, selectedLeagueNames]);
+  const selectedLeagueSet = useMemo(() => new Set(effectiveSelectedLeagueNames), [effectiveSelectedLeagueNames]);
+
+  useEffect(() => {
+    // Date, sale status, and refreshed match data can all remove options that are no longer clickable in the toolbar.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSelectedLeagueNames((current) => retainAvailableLeagueNames(current, availableLeagueNameSet));
+  }, [availableLeagueNameSet]);
+
   const settingsLeagueNames = useMemo(() => [...new Set([
     ...Object.keys(DEFAULT_LEAGUE_TAG_COLORS),
     ...leagueOptions.map((item) => leagueColorSettingKey(item.leagueNameAbbr)),

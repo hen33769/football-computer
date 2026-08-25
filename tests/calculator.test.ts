@@ -18,7 +18,7 @@ import {
 } from "../app/calculator";
 import { cloneMatches, initialMatches } from "../app/data";
 import { orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "../app/imports";
-import { matchPassesLeagueFilter, orderContainsTeam, orderPassesLeagueFilter } from "../app/order-filters";
+import { matchPassesLeagueFilter, orderContainsTeam, orderPassesLeagueFilter, retainAvailableLeagueNames } from "../app/order-filters";
 import { appendOrderPassValue, inferOrderPasses, parseOrderPassValues } from "../app/order-passes";
 import { isOrderMatchJudged, judgeLoadedOrdersWithResults, judgeSlipWithResults, repairSlipHandicapResults } from "../app/results";
 import { prioritizeLeagueNames, sortMatchesForManualOrder } from "../app/sorting";
@@ -71,6 +71,14 @@ test("比赛类型优先显示世界杯和欧冠，其余维持原顺序", () =>
     prioritizeLeagueNames(["韩职", "英超", "西甲"]),
     ["韩职", "英超", "西甲"],
   );
+});
+
+test("比赛类型选项变化后只保留仍然可用的选择", () => {
+  const selected = ["英超", "欧冠", "西甲"];
+
+  assert.equal(retainAvailableLeagueNames(selected, new Set(selected)), selected);
+  assert.deepEqual(retainAvailableLeagueNames(selected, new Set(["欧冠", "德甲"])), ["欧冠"]);
+  assert.deepEqual(retainAvailableLeagueNames(selected, new Set()), []);
 });
 
 test("订单队伍和比赛类型仅匹配实际已投注比赛，空类型代表不过滤", () => {

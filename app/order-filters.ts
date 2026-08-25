@@ -11,6 +11,14 @@ export const matchPassesLeagueFilter = (
   selectedLeagues: ReadonlySet<string>,
 ) => selectedLeagues.size === 0 || selectedLeagues.has(match.league);
 
+export const retainAvailableLeagueNames = (
+  selectedLeagues: string[],
+  availableLeagues: ReadonlySet<string>,
+) => {
+  const retainedLeagues = selectedLeagues.filter((league) => availableLeagues.has(league));
+  return retainedLeagues.length === selectedLeagues.length ? selectedLeagues : retainedLeagues;
+};
+
 export const orderContainsTeam = (slip: SavedSlip, query: string) => {
   const normalizedQuery = normalizedTeamText(query);
   if (!normalizedQuery) return true;
