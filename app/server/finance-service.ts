@@ -1,4 +1,9 @@
 import { fromCents, toCents } from "./money";
+import {
+  normalizeFinanceTrendDateRange,
+  type FinanceTrendDateRange,
+  type FinanceTrendResponse,
+} from "../finance-trend";
 
 export type FinanceState = {
   expense: {
@@ -25,6 +30,12 @@ type FinanceCorrectionRow = {
 type OrderFinanceRow = {
   order_expense_cents: number | null;
   order_income_cents: number | null;
+};
+
+type FinanceTrendRow = {
+  date: string;
+  expense_cents: number | null;
+  income_cents: number | null;
 };
 
 export async function ensureFinanceCorrections(d1: D1Database, userId: string, now = new Date().toISOString()) {
@@ -76,6 +87,52 @@ export async function getFinanceState(d1: D1Database, userId: string): Promise<F
     },
     revision: correction?.revision ?? 0,
     updatedAt: correction?.updated_at ?? "",
+  };
+}
+
+export async function getFinanceTrend(
+  d1: D1Database,
+  userId: string,
+  rawRange: FinanceTrendDateRange = {},
+): Promise<FinanceTrendResponse> {
+  const range = normalizeFinanceTrendDateRange(rawRange);
+  const rows = await d1.prepare(`
+    SELECT
+      event_date AS date,
+      COALESCE(SUM(expense_cents), 0) AS expense_cents,
+      COALESCE(SUM(income_cents), 0) AS income_cents
+    FROM (
+      SELECT
+        date(saved_at, '+8 hours') AS event_date,
+        stake_cents AS expense_cents,
+        0 AS income_cents
+      FROM user_orders
+      WHERE user_id = ?1 AND payment_status = 'paid'
+      UNION ALL
+      SELECT
+        date(settled_at, '+8 hours') AS event_date,
+        0 AS expense_cents,
+        COALESCE(settled_prize_cents, 0) AS income_cents
+      FROM user_orders
+      WHERE user_id = ?1 AND settled_at IS NOT NULL
+    ) AS finance_events
+    WHERE (?2 IS NULL OR event_date >= ?2)
+      AND (?3 IS NULL OR event_date <= ?3)
+    GROUP BY event_date
+    ORDER BY event_date ASC
+  `).bind(userId, range.startDate ?? null, range.endDate ?? null).all<FinanceTrendRow>();
+
+  return {
+    points: (rows.results ?? []).map((row) => {
+      const expenseCents = Math.round(Number(row.expense_cents ?? 0));
+      const incomeCents = Math.round(Number(row.income_cents ?? 0));
+      return {
+        date: row.date,
+        expense: fromCents(expenseCents),
+        income: fromCents(incomeCents),
+        profit: fromCents(incomeCents - expenseCents),
+      };
+    }),
   };
 }
 

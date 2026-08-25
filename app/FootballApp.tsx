@@ -42,6 +42,7 @@ import {
   HomeOutlined,
   ImportOutlined,
   InfoCircleOutlined,
+  LineChartOutlined,
   LockOutlined,
   MinusOutlined,
   PlusOutlined,
@@ -92,6 +93,9 @@ import {
 import { applyOrderSyncIntent, type CloudOrderMutationResult, type OrderSyncIntent } from "./personal-sync";
 import { localCache, sessionCache } from "./browser-storage";
 import { MatchPreviewModal, OfficialTrendModal } from "./FootballInsights";
+import { FinanceTrendModal } from "./FinanceTrendModal";
+import { buildFinanceTrendFromOrders } from "./finance-trend";
+import { getFinanceTrend } from "./api-client/finance";
 import { orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "./imports";
 import { isOrderPaid } from "./order-model";
 import { CLOUD_APP_URL } from "./links";
@@ -862,6 +866,7 @@ function InnerFootballApp({
   const [previewMatchId, setPreviewMatchId] = useState<string | null>(null);
   const [moreMatchId, setMoreMatchId] = useState<string | null>(null);
   const [trendMatchId, setTrendMatchId] = useState<string | null>(null);
+  const [financeTrendOpen, setFinanceTrendOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const activeView = initialView;
   const [orderDetail, setOrderDetail] = useState<SavedSlip | null>(null);
@@ -1437,6 +1442,11 @@ function InnerFootballApp({
   const currentPrize = useMemo(() => calculateCurrentPrize(matches, activePasses, multiple, hits), [matches, activePasses, multiple, hits]);
   const currentProfit = currentPrize - stake;
   const netProfit = incomeTotal - expenseTotal;
+  const loadFinanceTrend = useCallback(() => (
+    isCloudMode
+      ? getFinanceTrend()
+      : Promise.resolve({ points: buildFinanceTrendFromOrders(savedSlips) })
+  ), [isCloudMode, savedSlips]);
   const orderDetailStake = orderDetail ? calculateStake(orderDetail.matches, orderDetail.passes, orderDetail.multiple) : 0;
   const orderDetailPrize = orderDetail ? calculateCurrentPrize(orderDetail.matches, orderDetail.passes, orderDetail.multiple, orderHits) : 0;
   const orderDetailProfit = orderDetailPrize - orderDetailStake;
@@ -3394,7 +3404,21 @@ function InnerFootballApp({
 
               <Card className="order-statistics-panel">
                 <div className="order-panel-heading">
-                  <div><span className="eyebrow">OVERVIEW</span><h3>数据统计</h3></div>
+                  <div>
+                    <span className="eyebrow">OVERVIEW</span>
+                    <div className="order-statistics-title">
+                      <h3>数据统计</h3>
+                      <Tooltip title="查看支出、收入与利润趋势">
+                        <Button
+                          type="text"
+                          className="order-trend-button"
+                          aria-label="查看支出、收入与利润趋势"
+                          icon={<LineChartOutlined />}
+                          onClick={() => setFinanceTrendOpen(true)}
+                        />
+                      </Tooltip>
+                    </div>
+                  </div>
                   <Tag color={netProfit >= 0 ? "green" : "red"}>{netProfit >= 0 ? "当前盈利" : "当前亏损"}</Tag>
                 </div>
                 <div className="order-statistics-grid">
@@ -3758,6 +3782,12 @@ function InnerFootballApp({
           </section>
         </main>
       )}
+
+      <FinanceTrendModal
+        open={financeTrendOpen}
+        onClose={() => setFinanceTrendOpen(false)}
+        loadTrend={loadFinanceTrend}
+      />
 
       <Modal
         open={Boolean(moreMatch)}

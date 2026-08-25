@@ -681,6 +681,9 @@ button, input, textarea { font: inherit; }
 .order-statistics-panel > .ant-card-body { display: flex; flex-direction: column; }
 .order-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 15px; }
 .order-panel-heading h3 { margin: 2px 0 0; color: #253f45; font-size: 17px; }
+.order-statistics-title { display: flex; align-items: center; gap: 4px; }
+.order-trend-button.ant-btn { width: 28px; height: 28px; min-width: 28px; padding: 0; color: #4d7f83; border-radius: 9px; }
+.order-trend-button.ant-btn:hover, .order-trend-button.ant-btn:focus-visible { color: #0e8882; background: #e9f5f3; }
 .order-filter-grid { display: grid; grid-template-columns: minmax(250px, 1.35fr) minmax(145px, .7fr) minmax(220px, 1fr); align-items: end; gap: 12px; }
 .order-filter-field { min-width: 0; display: flex; flex-direction: column; gap: 7px; }
 .order-filter-field > span { color: #61767b; font-size: 11px; font-weight: 700; }
@@ -715,6 +718,14 @@ button, input, textarea { font: inherit; }
 .order-profit-card strong { display: block; font-size: 20px; line-height: 32px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .order-profit-card.positive strong { color: #128767; }
 .order-profit-card.negative strong { color: var(--accent-dark); }
+.finance-trend-modal .ant-modal-body { overflow: hidden; }
+.finance-trend-note { margin: 0 0 12px; color: #70858a; font-size: 11px; line-height: 1.55; }
+.finance-trend-chart { width: 100%; height: min(520px, calc(100dvh - 230px)); min-height: 360px; }
+.finance-trend-loading { height: min(520px, calc(100dvh - 230px)); min-height: 360px; display: grid; place-items: center; }
+.finance-trend-tooltip { min-width: 132px; display: flex; flex-direction: column; gap: 5px; }
+.finance-trend-tooltip > strong { margin-bottom: 2px; color: #314e54; font-size: 12px; }
+.finance-trend-tooltip > span { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 5px; color: #586f75; font-size: 11px; }
+.finance-trend-tooltip b { margin-left: 14px; color: #263f45; font-size: 11px; font-variant-numeric: tabular-nums; }
 .match-results-card { margin-bottom: 18px; border: 1px solid var(--line); border-radius: 19px; box-shadow: 0 10px 32px rgba(22,54,58,.05); }
 .match-results-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
 .match-results-card.collapsed .match-results-head { padding-bottom: 0; border-bottom: 0; }
@@ -1007,6 +1018,7 @@ button, input, textarea { font: inherit; }
   .pass-grid { grid-template-columns: repeat(3, 1fr); }
   .orders-heading { align-items: flex-start; }
   .order-filter-grid, .order-statistics-grid { grid-template-columns: 1fr; }
+  .finance-trend-chart, .finance-trend-loading { height: min(440px, calc(100dvh - 210px)); min-height: 320px; }
   .order-league-filter-field { grid-column: auto; }
   .order-filter-summary { grid-template-columns: 1fr 1fr; }
   .order-filter-summary p { grid-column: 1 / -1; text-align: left; }

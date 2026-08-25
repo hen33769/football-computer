@@ -15,6 +15,11 @@ export const SPORTTERY_INJURY_SUSPENSION_URL =
 
 export type InsightRecord = Record<string, unknown>;
 
+export function filterNonFriendlyTournamentRows(rows: InsightRecord[], nonFriendlyOnly: boolean) {
+  if (!nonFriendlyOnly) return rows;
+  return rows.filter((row) => String(row.tournamentShortName ?? "").trim() !== "俱乐部赛");
+}
+
 export type SportteryTrendData = {
   isCancel?: number | string;
   sectionsNo999?: string;

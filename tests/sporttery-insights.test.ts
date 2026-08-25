@@ -3,8 +3,26 @@ import test from "node:test";
 import {
   buildSportteryHistoryUrl,
   buildSportteryRecentUrl,
+  filterNonFriendlyTournamentRows,
   getSportteryStandingsUrl,
 } from "../app/sporttery-insights";
+
+test("非友谊赛筛选只在前端排除俱乐部赛", () => {
+  const rows = [
+    { matchId: "1", tournamentShortName: "俱乐部赛" },
+    { matchId: "2", tournamentShortName: " 俱乐部赛 " },
+    { matchId: "3", tournamentShortName: "国际友谊" },
+    { matchId: "4", tournamentShortName: "英超" },
+    { matchId: "5" },
+  ];
+
+  assert.deepEqual(
+    filterNonFriendlyTournamentRows(rows, true).map((row) => row.matchId),
+    ["3", "4", "5"],
+  );
+  assert.equal(filterNonFriendlyTournamentRows(rows, false), rows);
+  assert.equal(rows.length, 5);
+});
 
 test("赛事前瞻筛选参数使用比赛 ID 和固定 20 场", () => {
   const historyUrl = buildSportteryHistoryUrl("sporttery-2040638", {

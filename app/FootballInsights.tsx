@@ -20,6 +20,7 @@ import {
   fetchSportteryPreviewStatic,
   fetchSportteryRecent,
   fetchSportteryTrend,
+  filterNonFriendlyTournamentRows,
   getSportteryStandingsUrl,
   type InsightRecord,
   type PreviewStaticData,
@@ -257,15 +258,19 @@ export function OfficialTrendModal({
 type FilterFlag = 0 | 1;
 
 function PreviewFilters({
+  nonFriendlyFlag,
   tournamentFlag,
   homeAwayFlag,
   loading,
+  onNonFriendlyChange,
   onTournamentChange,
   onHomeAwayChange,
 }: {
+  nonFriendlyFlag: FilterFlag;
   tournamentFlag: FilterFlag;
   homeAwayFlag: FilterFlag;
   loading: boolean;
+  onNonFriendlyChange: (value: FilterFlag) => void;
   onTournamentChange: (value: FilterFlag) => void;
   onHomeAwayChange: (value: FilterFlag) => void;
 }) {
@@ -280,6 +285,18 @@ function PreviewFilters({
   };
   return (
     <div className="preview-filters">
+      <Tag
+        className="preview-filter-tag"
+        color={nonFriendlyFlag === 1 ? "red" : undefined}
+        role="checkbox"
+        aria-checked={nonFriendlyFlag === 1}
+        aria-disabled={loading}
+        tabIndex={loading ? -1 : 0}
+        onClick={() => !loading && onNonFriendlyChange(nonFriendlyFlag === 1 ? 0 : 1)}
+        onKeyDown={(event) => toggleFilter(event, nonFriendlyFlag, onNonFriendlyChange)}
+      >
+        非友谊赛
+      </Tag>
       <Tag
         className="preview-filter-tag"
         color={tournamentFlag === 1 ? "red" : undefined}
@@ -480,13 +497,14 @@ function StandingsTable({ side }: { side: InsightRecord }) {
   );
 }
 
-function RecentTeam({ team }: { team: InsightRecord }) {
+function RecentTeam({ team, nonFriendlyOnly }: { team: InsightRecord; nonFriendlyOnly: boolean }) {
   if (!Object.keys(team).length) return <EmptyBlock />;
   const statistics = asRecord(team.statistics);
+  const matchRows = filterNonFriendlyTournamentRows(asRows(team.matchList), nonFriendlyOnly);
   return (
     <div className="preview-team-block">
       <SummaryLine statistics={statistics} />
-      <MatchRowsTable rows={asRows(team.matchList)} focusTeamName={text(statistics.teamShortName, "")} resultMode />
+      <MatchRowsTable rows={matchRows} focusTeamName={text(statistics.teamShortName, "")} resultMode />
     </div>
   );
 }
@@ -565,6 +583,7 @@ export function MatchPreviewModal({
     data: null,
     error: "",
   });
+  const [historyNonFriendlyFlag, setHistoryNonFriendlyFlag] = useState<FilterFlag>(1);
   const [historyTournamentFlag, setHistoryTournamentFlag] = useState<FilterFlag>(0);
   const [historyHomeAwayFlag, setHistoryHomeAwayFlag] = useState<FilterFlag>(0);
   const [recentRequest, setRecentRequest] = useState<{ key: string; data: InsightRecord | null; error: string }>({
@@ -572,6 +591,7 @@ export function MatchPreviewModal({
     data: null,
     error: "",
   });
+  const [recentNonFriendlyFlag, setRecentNonFriendlyFlag] = useState<FilterFlag>(1);
   const [recentTournamentFlag, setRecentTournamentFlag] = useState<FilterFlag>(1);
   const [recentHomeAwayFlag, setRecentHomeAwayFlag] = useState<FilterFlag>(0);
   const staticRequestKey = open && match ? `${match.id}:${staticReloadKey}` : "";
@@ -586,6 +606,10 @@ export function MatchPreviewModal({
   const historyError = historyRequest.key === historyRequestKey ? historyRequest.error : "";
   const recent = recentRequest.key === recentRequestKey ? recentRequest.data : null;
   const recentError = recentRequest.key === recentRequestKey ? recentRequest.error : "";
+  const historyMatchRows = useMemo(() => filterNonFriendlyTournamentRows(
+    asRows(history?.matchList),
+    historyNonFriendlyFlag === 1,
+  ), [history, historyNonFriendlyFlag]);
 
   useEffect(() => {
     if (!staticRequestKey || !match) return;
@@ -669,9 +693,11 @@ export function MatchPreviewModal({
           <div className="insight-section-title">
             <h3>历史交锋</h3>
             <PreviewFilters
+              nonFriendlyFlag={historyNonFriendlyFlag}
               tournamentFlag={historyTournamentFlag}
               homeAwayFlag={historyHomeAwayFlag}
               loading={historyLoading}
+              onNonFriendlyChange={setHistoryNonFriendlyFlag}
               onTournamentChange={setHistoryTournamentFlag}
               onHomeAwayChange={setHistoryHomeAwayFlag}
             />
@@ -679,7 +705,7 @@ export function MatchPreviewModal({
           {historyError ? <Alert type="error" showIcon message={historyError} /> : (
             <Spin spinning={historyLoading}>
               <SummaryLine statistics={asRecord(history?.statistics)} />
-              <MatchRowsTable rows={asRows(history?.matchList)} focusTeamName={text(history?.statistics && asRecord(history.statistics).teamShortName, "")} />
+              <MatchRowsTable rows={historyMatchRows} focusTeamName={text(history?.statistics && asRecord(history.statistics).teamShortName, "")} />
             </Spin>
           )}
         </section>
@@ -713,9 +739,11 @@ export function MatchPreviewModal({
           <div className="insight-section-title">
             <h3>比赛近况</h3>
             <PreviewFilters
+              nonFriendlyFlag={recentNonFriendlyFlag}
               tournamentFlag={recentTournamentFlag}
               homeAwayFlag={recentHomeAwayFlag}
               loading={recentLoading}
+              onNonFriendlyChange={setRecentNonFriendlyFlag}
               onTournamentChange={setRecentTournamentFlag}
               onHomeAwayChange={setRecentHomeAwayFlag}
             />
@@ -724,8 +752,8 @@ export function MatchPreviewModal({
             <Spin spinning={recentLoading}>
               {recent ? (
                 <div className="preview-two-columns">
-                  <RecentTeam team={asRecord(recent.home)} />
-                  <RecentTeam team={asRecord(recent.away)} />
+                  <RecentTeam team={asRecord(recent.home)} nonFriendlyOnly={recentNonFriendlyFlag === 1} />
+                  <RecentTeam team={asRecord(recent.away)} nonFriendlyOnly={recentNonFriendlyFlag === 1} />
                 </div>
               ) : <EmptyBlock />}
             </Spin>
