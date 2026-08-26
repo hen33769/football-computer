@@ -1,6 +1,8 @@
 import { fromCents, toCents } from "./money";
 import {
+  buildCumulativeFinanceTrend,
   normalizeFinanceTrendDateRange,
+  shanghaiDateKey,
   type FinanceTrendDateRange,
   type FinanceTrendResponse,
 } from "../finance-trend";
@@ -96,43 +98,52 @@ export async function getFinanceTrend(
   rawRange: FinanceTrendDateRange = {},
 ): Promise<FinanceTrendResponse> {
   const range = normalizeFinanceTrendDateRange(rawRange);
-  const rows = await d1.prepare(`
-    SELECT
-      event_date AS date,
-      COALESCE(SUM(expense_cents), 0) AS expense_cents,
-      COALESCE(SUM(income_cents), 0) AS income_cents
-    FROM (
+  const [rows, correction] = await Promise.all([
+    d1.prepare(`
       SELECT
-        date(saved_at, '+8 hours') AS event_date,
-        stake_cents AS expense_cents,
-        0 AS income_cents
-      FROM user_orders
-      WHERE user_id = ?1 AND payment_status = 'paid'
-      UNION ALL
-      SELECT
-        date(settled_at, '+8 hours') AS event_date,
-        0 AS expense_cents,
-        COALESCE(settled_prize_cents, 0) AS income_cents
-      FROM user_orders
-      WHERE user_id = ?1 AND settled_at IS NOT NULL
-    ) AS finance_events
-    WHERE (?2 IS NULL OR event_date >= ?2)
-      AND (?3 IS NULL OR event_date <= ?3)
-    GROUP BY event_date
-    ORDER BY event_date ASC
-  `).bind(userId, range.startDate ?? null, range.endDate ?? null).all<FinanceTrendRow>();
+        event_date AS date,
+        COALESCE(SUM(expense_cents), 0) AS expense_cents,
+        COALESCE(SUM(income_cents), 0) AS income_cents
+      FROM (
+        SELECT
+          date(saved_at, '+8 hours') AS event_date,
+          stake_cents AS expense_cents,
+          0 AS income_cents
+        FROM user_orders
+        WHERE user_id = ?1 AND payment_status = 'paid'
+        UNION ALL
+        SELECT
+          date(settled_at, '+8 hours') AS event_date,
+          0 AS expense_cents,
+          COALESCE(settled_prize_cents, 0) AS income_cents
+        FROM user_orders
+        WHERE user_id = ?1 AND settled_at IS NOT NULL
+      ) AS finance_events
+      WHERE (?2 IS NULL OR event_date <= ?2)
+      GROUP BY event_date
+      ORDER BY event_date ASC
+    `).bind(userId, range.endDate ?? null).all<FinanceTrendRow>(),
+    d1.prepare(`
+      SELECT expense_correction_cents, income_correction_cents, revision, updated_at
+      FROM user_finance_corrections
+      WHERE user_id = ?1
+    `).bind(userId).first<FinanceCorrectionRow>(),
+  ]);
 
   return {
-    points: (rows.results ?? []).map((row) => {
-      const expenseCents = Math.round(Number(row.expense_cents ?? 0));
-      const incomeCents = Math.round(Number(row.income_cents ?? 0));
-      return {
+    points: buildCumulativeFinanceTrend(
+      (rows.results ?? []).map((row) => ({
         date: row.date,
-        expense: fromCents(expenseCents),
-        income: fromCents(incomeCents),
-        profit: fromCents(incomeCents - expenseCents),
-      };
-    }),
+        expense: fromCents(Math.round(Number(row.expense_cents ?? 0))),
+        income: fromCents(Math.round(Number(row.income_cents ?? 0))),
+      })),
+      {
+        expenseCorrection: fromCents(Math.round(Number(correction?.expense_correction_cents ?? 0))),
+        incomeCorrection: fromCents(Math.round(Number(correction?.income_correction_cents ?? 0))),
+        date: correction?.updated_at ? shanghaiDateKey(correction.updated_at) : undefined,
+      },
+      range,
+    ),
   };
 }
 

@@ -44,6 +44,7 @@ import {
   InfoCircleOutlined,
   LineChartOutlined,
   LockOutlined,
+  LoadingOutlined,
   MinusOutlined,
   PlusOutlined,
   QuestionCircleOutlined,
@@ -94,7 +95,7 @@ import { applyOrderSyncIntent, type CloudOrderMutationResult, type OrderSyncInte
 import { localCache, sessionCache } from "./browser-storage";
 import { MatchPreviewModal, OfficialTrendModal } from "./FootballInsights";
 import { FinanceTrendModal } from "./FinanceTrendModal";
-import { buildFinanceTrendFromOrders } from "./finance-trend";
+import { buildFinanceTrendFromOrders, shanghaiDateKey } from "./finance-trend";
 import { getFinanceTrend } from "./api-client/finance";
 import { orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "./imports";
 import { isOrderPaid } from "./order-model";
@@ -105,6 +106,7 @@ import { parseRecognizedText } from "./ocr";
 import {
   convertSportteryMatches,
   fetchSportteryMatchCalculator,
+  fetchSportteryMatchById,
   fetchSportteryMatchHandicap,
   fetchSportteryMatchScore,
   fetchSportteryMatchSnapshot,
@@ -127,6 +129,11 @@ import {
   type SportteryMatchDate,
 } from "./sporttery";
 import { hasCompleteMatchResult, isMatchResult, isOrderMatchJudged, judgeLoadedOrdersWithResults, repairSlipHandicapResults, RESULT_MARKETS, resultSelectOptions } from "./results";
+import {
+  AUTO_RESULT_REQUEST_INTERVAL_MS,
+  scheduleAutoResultRetry,
+  type AutoResultRetryState,
+} from "./result-fetch-queue";
 import {
   createDefaultSettings,
   DEFAULT_LEAGUE_TAG_COLORS,
@@ -626,10 +633,18 @@ function MarketRow({
   disabled?: boolean;
   disableOddsTooltip?: boolean;
 }) {
+  const handicapValue = typeof market.handicap === "number" && Number.isFinite(market.handicap)
+    ? market.handicap
+    : undefined;
+  const hasHandicap = market.type === "rqspf" && handicapValue !== undefined && handicapValue !== 0;
+
   return (
     <div className="market-row">
-      <div className={`handicap-badge ${market.type === "spf" ? "neutral" : market.type === "rqspf" && (market.handicap ?? 0) > 0 ? "positive" : ""}`}>
-        {market.type === "spf" ? "-" : `${(market.handicap ?? 0) > 0 ? "+" : ""}${market.handicap ?? 0}`}
+      <div className="market-label">
+        <div className={`handicap-badge ${!hasHandicap ? "neutral" : handicapValue > 0 ? "positive" : ""}`}>
+          {hasHandicap ? `${handicapValue > 0 ? "+" : ""}${handicapValue}` : "-"}
+        </div>
+        <MarketSupportTags market={market} compact />
       </div>
       <div className="market-options compact-options">
         {market.options.map((item) => (
@@ -647,6 +662,24 @@ function MarketRow({
           </OddsHistoryTooltip>
         ))}
       </div>
+    </div>
+  );
+}
+
+function MarketSupportTags({ market, compact = false }: { market: Market; compact?: boolean }) {
+  return (
+    <div className={`market-support-tags${compact ? " compact" : ""}`} aria-label="投注方式支持">
+      {compact ? (
+        <>
+          <Tag color={market.singleAvailable ? "geekblue" : "info"}>{market.singleAvailable ? "单" : "-"}</Tag>
+          <Tag color={market.passAvailable ? "orange" : "info"}>{market.passAvailable ? "串" : "-"}</Tag>
+        </>
+      ) : (
+        <>
+          {market.singleAvailable && <Tag color="geekblue">单场</Tag>}
+          {market.passAvailable && <Tag color="orange">过关</Tag>}
+        </>
+      )}
     </div>
   );
 }
@@ -718,6 +751,7 @@ function MatchCard({
   leagueColor,
   onLeagueColorSave,
   disableOddsTooltip,
+  resultLoading,
 }: {
   match: MatchItem;
   now: Date;
@@ -728,6 +762,7 @@ function MatchCard({
   leagueColor: string;
   onLeagueColorSave: (league: string, color: string) => void;
   disableOddsTooltip: boolean;
+  resultLoading: boolean;
 }) {
   const picked = selectedOptions(match).length;
   const saleState = getMatchSaleState(match, now);
@@ -757,6 +792,8 @@ function MatchCard({
             <span className={`match-final-score match-score-separator ${fullScoreTone}`}>:</span>
             <span className={`match-final-score match-away-score ${fullScoreTone}`}>{fullScore.away}</span>
           </>
+        ) : resultLoading ? (
+          <span className="match-result-loading" title="正在获取赛果" aria-label="正在获取赛果"><LoadingOutlined spin /></span>
         ) : <span className="match-versus">VS</span>}
         <b className="match-team-name match-away-team">{match.away}</b>
         {halfScore && (
@@ -927,7 +964,7 @@ function InnerFootballApp({
   const repairedOrdersSentRef = useRef(false);
   const [matchResults, setMatchResults] = useState<MatchResults>({});
   const [bettingResultFetchingMatchIds, setBettingResultFetchingMatchIds] = useState<string[]>([]);
-  const autoResultAttemptedMatchIdsRef = useRef(new Set<string>());
+  const autoResultRetryAtRef = useRef(new Map<string, AutoResultRetryState>());
   const autoResultFetchingRef = useRef(false);
   const [resultFetchingMatchIds, setResultFetchingMatchIds] = useState<string[]>([]);
   const [allResultsFetching, setAllResultsFetching] = useState(false);
@@ -985,9 +1022,15 @@ function InnerFootballApp({
   const [manualOrderPassDropdownOpen, setManualOrderPassDropdownOpen] = useState(false);
   const manualOrderPassInputClickRef = useRef(false);
   const [manualOrderMultiple, setManualOrderMultiple] = useState(1);
+  const [manualOrderSavedAt, setManualOrderSavedAt] = useState("");
   const [manualOrderEntries, setManualOrderEntries] = useState<ManualOrderEntry[]>(() => [createManualOrderEntry()]);
+  const [manualTemporaryMatches, setManualTemporaryMatches] = useState<Record<string, MatchItem>>({});
+  const [manualMatchLookupIds, setManualMatchLookupIds] = useState<Record<string, string>>({});
   const manualOrderEntryListRef = useRef<HTMLDivElement>(null);
   const manualOrderMatchPickerRowRefs = useRef(new Map<string, HTMLDivElement>());
+  const manualMatchLookupTimersRef = useRef(new Map<string, number>());
+  const manualMatchLookupQueriesRef = useRef(new Map<string, string>());
+  const manualMatchLookupGenerationRef = useRef(0);
   const pendingManualOrderScrollEntryKeyRef = useRef<string | null>(null);
   const [manualPickerEntryKey, setManualPickerEntryKey] = useState<string | null>(null);
   const [manualPickerMatch, setManualPickerMatch] = useState<MatchItem | null>(null);
@@ -1014,17 +1057,22 @@ function InnerFootballApp({
   const manualSelectedMatchIds = useMemo(() => new Set(manualOrderEntries.flatMap((entry) => (
     entry.matchId ? [normalizeSportteryMatchId(entry.matchId)] : []
   ))), [manualOrderEntries]);
-  const manualMatchOptions = useMemo(() => sortMatchesForManualOrder(matches).map((match) => {
+  const manualMatchSources = useMemo(() => {
+    const temporary = Object.values(manualTemporaryMatches);
+    const temporaryIds = new Set(temporary.map((match) => normalizeSportteryMatchId(match.id)));
+    return [...temporary, ...matches.filter((match) => !temporaryIds.has(normalizeSportteryMatchId(match.id)))];
+  }, [manualTemporaryMatches, matches]);
+  const manualMatchOptions = useMemo(() => sortMatchesForManualOrder(manualMatchSources).map((match) => {
     const value = normalizeSportteryMatchId(match.id);
     const saleState = getMatchSaleState(match, saleNow);
     const statusText = saleState === "selling" ? "在售" : saleState === "pending" ? "待开售" : "已停售";
     const displayText = `${match.date} · ${match.weekday}${match.code} · ${match.home} VS ${match.away}`;
     return {
       value,
-      searchText: `${displayText} ${statusText}`,
+      searchText: `${value} ${displayText} ${statusText}`,
       label: <ManualMatchOptionLabel match={match} now={saleNow} />,
     };
-  }), [matches, saleNow]);
+  }), [manualMatchSources, saleNow]);
 
   const applyCloudFinance = useCallback((finance: CloudPersonalData["finance"]) => {
     setExpenseTotal(Math.max(0, finance.expenseTotal));
@@ -1442,11 +1490,17 @@ function InnerFootballApp({
   const currentPrize = useMemo(() => calculateCurrentPrize(matches, activePasses, multiple, hits), [matches, activePasses, multiple, hits]);
   const currentProfit = currentPrize - stake;
   const netProfit = incomeTotal - expenseTotal;
-  const loadFinanceTrend = useCallback(() => (
-    isCloudMode
-      ? getFinanceTrend()
-      : Promise.resolve({ points: buildFinanceTrendFromOrders(savedSlips) })
-  ), [isCloudMode, savedSlips]);
+  const loadFinanceTrend = useCallback(() => {
+    if (isCloudMode) return getFinanceTrend();
+    const orderTotals = orderLedgerTotals(savedSlips);
+    return Promise.resolve({
+      points: buildFinanceTrendFromOrders(savedSlips, {
+        expenseCorrection: expenseTotal - orderTotals.expense,
+        incomeCorrection: incomeTotal - orderTotals.income,
+        date: shanghaiDateKey(new Date().toISOString()),
+      }),
+    });
+  }, [expenseTotal, incomeTotal, isCloudMode, savedSlips]);
   const orderDetailStake = orderDetail ? calculateStake(orderDetail.matches, orderDetail.passes, orderDetail.multiple) : 0;
   const orderDetailPrize = orderDetail ? calculateCurrentPrize(orderDetail.matches, orderDetail.passes, orderDetail.multiple, orderHits) : 0;
   const orderDetailProfit = orderDetailPrize - orderDetailStake;
@@ -1666,11 +1720,21 @@ function InnerFootballApp({
     if (removedCount >= pickedCount) setDetailsOpen(false);
   };
 
-  const persistNewOrder = async (name: string, orderMatches: MatchItem[], orderPasses: number[], orderMultiple: number, source: string) => {
+  const persistNewOrder = async (
+    name: string,
+    orderMatches: MatchItem[],
+    orderPasses: number[],
+    orderMultiple: number,
+    source: string,
+    savedAt?: string,
+  ) => {
+    const createdAt = savedAt && dayjs(savedAt).isValid()
+      ? dayjs(savedAt).millisecond(0).toISOString()
+      : new Date().toISOString();
     const nextOrder: SavedSlip = {
       id: createSlipId(),
       name: name.trim() || `${source}订单 ${new Date().toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}`,
-      savedAt: new Date().toISOString(),
+      savedAt: createdAt,
       matches: cloneMatches(orderMatches),
       passes: [...orderPasses],
       multiple: orderMultiple,
@@ -1718,15 +1782,82 @@ function InnerFootballApp({
     setDetailsOpen(false);
   };
 
+  const clearManualMatchLookups = () => {
+    manualMatchLookupGenerationRef.current += 1;
+    manualMatchLookupTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    manualMatchLookupTimersRef.current.clear();
+    manualMatchLookupQueriesRef.current.clear();
+    setManualTemporaryMatches({});
+    setManualMatchLookupIds({});
+  };
+
+  const closeManualOrder = () => {
+    setManualOrderOpen(false);
+    setManualOrderPassDropdownOpen(false);
+    setManualPickerEntryKey(null);
+    setManualPickerMatch(null);
+    clearManualMatchLookups();
+  };
+
   const openManualOrder = () => {
+    clearManualMatchLookups();
     setManualOrderName("");
     setManualOrderPassText("");
     setManualOrderPassDropdownOpen(false);
     setManualOrderMultiple(1);
+    setManualOrderSavedAt("");
     setManualOrderEntries([createManualOrderEntry()]);
     setManualPickerEntryKey(null);
     setManualPickerMatch(null);
     setManualOrderOpen(true);
+  };
+
+  const searchManualOrderMatch = (entryKey: string, rawQuery: string) => {
+    const query = rawQuery.trim();
+    const previousTimer = manualMatchLookupTimersRef.current.get(entryKey);
+    if (previousTimer !== undefined) window.clearTimeout(previousTimer);
+    manualMatchLookupTimersRef.current.delete(entryKey);
+    manualMatchLookupQueriesRef.current.set(entryKey, query);
+    setManualMatchLookupIds((current) => {
+      if (!(entryKey in current)) return current;
+      const next = { ...current };
+      delete next[entryKey];
+      return next;
+    });
+    if (!/^\d{6,}$/.test(query) || manualTemporaryMatches[query]) return;
+
+    setManualMatchLookupIds((current) => ({ ...current, [entryKey]: query }));
+    const generation = manualMatchLookupGenerationRef.current;
+    const timer = window.setTimeout(() => {
+      manualMatchLookupTimersRef.current.delete(entryKey);
+      if (manualMatchLookupQueriesRef.current.get(entryKey) !== query) return;
+      void fetchSportteryMatchById(query, manualMatchSources, saleNow)
+        .then((match) => {
+          if (manualMatchLookupGenerationRef.current !== generation
+            || manualMatchLookupQueriesRef.current.get(entryKey) !== query) return;
+          if (!match) {
+            message.info(`比赛 ${query} 已取得赔率，但缺少日期、时间或场次号，请继续手动填写`);
+            return;
+          }
+          setManualTemporaryMatches((current) => ({ ...current, [normalizeSportteryMatchId(match.id)]: match }));
+        })
+        .catch((error: unknown) => {
+          if (manualMatchLookupGenerationRef.current !== generation
+            || manualMatchLookupQueriesRef.current.get(entryKey) !== query) return;
+          message.warning(error instanceof Error ? error.message : `比赛 ${query} 查询失败`);
+        })
+        .finally(() => {
+          if (manualMatchLookupGenerationRef.current !== generation
+            || manualMatchLookupQueriesRef.current.get(entryKey) !== query) return;
+          setManualMatchLookupIds((current) => {
+            if (current[entryKey] !== query) return current;
+            const next = { ...current };
+            delete next[entryKey];
+            return next;
+          });
+        });
+    }, 350);
+    manualMatchLookupTimersRef.current.set(entryKey, timer);
   };
 
   const updateManualOrderEntry = (key: string, patch: Partial<ManualOrderEntry>) => {
@@ -1758,7 +1889,10 @@ function InnerFootballApp({
       message.warning("该比赛已在当前订单中选择，请选择其他比赛");
       return;
     }
-    const source = normalizedMatchId ? matches.find((match) => normalizeSportteryMatchId(match.id) === normalizedMatchId) : null;
+    const source = normalizedMatchId
+      ? manualTemporaryMatches[normalizedMatchId]
+        ?? matches.find((match) => normalizeSportteryMatchId(match.id) === normalizedMatchId)
+      : null;
     if (!source) {
       updateManualOrderEntry(entryKey, { matchId: null, text: "" });
       return;
@@ -1768,7 +1902,11 @@ function InnerFootballApp({
   };
 
   const openManualMatchPicker = (entry: ManualOrderEntry) => {
-    const source = entry.matchId ? matches.find((match) => normalizeSportteryMatchId(match.id) === normalizeSportteryMatchId(entry.matchId!)) : null;
+    const normalizedMatchId = entry.matchId ? normalizeSportteryMatchId(entry.matchId) : "";
+    const source = normalizedMatchId
+      ? manualTemporaryMatches[normalizedMatchId]
+        ?? matches.find((match) => normalizeSportteryMatchId(match.id) === normalizedMatchId)
+      : null;
     if (!source) {
       message.info("请先从已保存比赛中选择一场；找不到时可直接手动填写文本");
       return;
@@ -1828,9 +1966,9 @@ function InnerFootballApp({
       return;
     }
     const parsed = parsedEntries.flat();
-    const invalidIdIndex = parsed.findIndex((match) => !/^\d{7}$/.test(normalizeSportteryMatchId(match.id)));
+    const invalidIdIndex = parsed.findIndex((match) => !/^\d{6,}$/.test(normalizeSportteryMatchId(match.id)));
     if (invalidIdIndex >= 0) {
-      message.warning(`第 ${invalidIdIndex + 1} 场需要填写 7 位比赛 ID`);
+      message.warning(`第 ${invalidIdIndex + 1} 场需要填写至少 6 位纯数字比赛 ID`);
       return;
     }
     const normalizedMatches = parsed.map((match) => ({ ...match, id: normalizeSportteryMatchId(match.id) }));
@@ -1848,11 +1986,23 @@ function InnerFootballApp({
     }
     const combinedText = manualOrderEntries.map((entry) => entry.text).join("\n\n");
     const orderPasses = inferOrderPasses(manualOrderPassText || combinedText, normalizedMatches);
+    const createdAt = manualOrderSavedAt ? dayjs(manualOrderSavedAt) : null;
+    if (createdAt && !createdAt.isValid()) {
+      message.warning("请选择有效的订单创建时间，或清空后使用当前时间");
+      return;
+    }
     setManualOrderSaving(true);
     try {
-      const saved = await persistNewOrder(manualOrderName, normalizedMatches, orderPasses, manualOrderMultiple, "手动");
+      const saved = await persistNewOrder(
+        manualOrderName,
+        normalizedMatches,
+        orderPasses,
+        manualOrderMultiple,
+        "手动",
+        createdAt?.toISOString(),
+      );
       if (!saved) return;
-      setManualOrderOpen(false);
+      closeManualOrder();
     } finally {
       setManualOrderSaving(false);
     }
@@ -2293,31 +2443,67 @@ function InnerFootballApp({
 
   useEffect(() => {
     if (activeView !== "betting") {
-      autoResultAttemptedMatchIdsRef.current.clear();
+      autoResultRetryAtRef.current.clear();
       return;
     }
     if (temporaryOrder || !sportteryLoaded || sportteryLoading || sportteryRefreshing || autoResultFetchingRef.current) return;
     const candidates = groupedMatches.flatMap(([date, items]) => (
       collapsedMatchDates.includes(date) || autoCollapsedMatchDatesRef.current.has(date) ? [] : items
-    )).filter((match) => (
-      getMatchSaleState(match, saleNow) === "stopped"
-      && !hasCompleteMatchResult(match)
-      && !autoResultAttemptedMatchIdsRef.current.has(normalizeSportteryMatchId(match.id))
-    ));
+    )).filter((match) => {
+      const matchId = normalizeSportteryMatchId(match.id);
+      const retryState = autoResultRetryAtRef.current.get(matchId);
+      return getMatchSaleState(match, saleNow) === "stopped"
+        && !hasCompleteMatchResult(match)
+        && (!retryState || retryState.nextAttemptAt <= saleNow.getTime());
+    });
     if (candidates.length === 0) return;
-    const candidateIds = candidates.map((match) => normalizeSportteryMatchId(match.id));
-    candidateIds.forEach((id) => autoResultAttemptedMatchIdsRef.current.add(id));
+    const queue = candidates.map((match) => {
+      const matchId = normalizeSportteryMatchId(match.id);
+      const retryState = autoResultRetryAtRef.current.get(matchId);
+      return {
+        match,
+        retryCount: retryState?.retryCount ?? 0,
+        retryAt: retryState?.nextAttemptAt ?? 0,
+      };
+    });
     autoResultFetchingRef.current = true;
-    setBettingResultFetchingMatchIds(candidateIds);
     void (async () => {
       const resultUpdates: MatchItem[] = [];
-      for (const match of candidates) {
+      let lastRequestAt = 0;
+      while (queue.length > 0) {
+        const readyIndex = queue.findIndex((item) => item.retryAt <= Date.now());
+        if (readyIndex < 0) break;
+        const [{ match, retryCount }] = queue.splice(readyIndex, 1);
+        const matchId = normalizeSportteryMatchId(match.id);
+        const waitMs = Math.max(0, AUTO_RESULT_REQUEST_INTERVAL_MS - (Date.now() - lastRequestAt));
+        if (waitMs > 0) await new Promise((resolve) => window.setTimeout(resolve, waitMs));
+        setBettingResultFetchingMatchIds([matchId]);
+        lastRequestAt = Date.now();
         try {
           const outcome = await requestMatchResult(match);
-          if (outcome.status === "success") resultUpdates.push({ ...match, result: outcome.result });
+          if (outcome.status === "success") {
+            autoResultRetryAtRef.current.delete(matchId);
+            resultUpdates.push({ ...match, result: outcome.result });
+          } else {
+            const retryState = scheduleAutoResultRetry(retryCount, "unfinished");
+            if (retryState) {
+              autoResultRetryAtRef.current.set(matchId, retryState);
+              queue.push({ match, retryCount: retryState.retryCount, retryAt: retryState.nextAttemptAt });
+            } else {
+              autoResultRetryAtRef.current.set(matchId, { retryCount, nextAttemptAt: Number.POSITIVE_INFINITY });
+            }
+          }
         } catch (error) {
+          const retryState = scheduleAutoResultRetry(retryCount, "error");
+          if (retryState) {
+            autoResultRetryAtRef.current.set(matchId, retryState);
+            queue.push({ match, retryCount: retryState.retryCount, retryAt: retryState.nextAttemptAt });
+          } else {
+            autoResultRetryAtRef.current.set(matchId, { retryCount, nextAttemptAt: Number.POSITIVE_INFINITY });
+          }
           console.error("[体彩接口] 自动获取投注页赛果失败", { matchId: match.id, error });
         }
+        setBettingResultFetchingMatchIds([]);
       }
       if (resultUpdates.length === 0) return;
       const resultById = new Map(resultUpdates.map((match) => [normalizeSportteryMatchId(match.id), match.result]));
@@ -2933,7 +3119,7 @@ function InnerFootballApp({
       const collapsed = current.includes(date);
       if (!collapsed) {
         filteredMatches.filter((match) => match.date === date).forEach((match) => {
-          autoResultAttemptedMatchIdsRef.current.delete(normalizeSportteryMatchId(match.id));
+          autoResultRetryAtRef.current.delete(normalizeSportteryMatchId(match.id));
         });
       }
       return collapsed ? current.filter((item) => item !== date) : [...current, date];
@@ -3192,6 +3378,7 @@ function InnerFootballApp({
                       leagueColor={getLeagueTagColor(appSettings, match.league)}
                       onLeagueColorSave={updateLeagueTagColor}
                       disableOddsTooltip={isMobileViewport}
+                      resultLoading={bettingResultFetchingMatchIds.includes(normalizeSportteryMatchId(match.id))}
                     />
                   ))}
                 </div>}
@@ -3800,7 +3987,7 @@ function InnerFootballApp({
       >
         {moreMatch?.markets.map((market) => (
           <section className={`modal-market ${market.type}-market`} key={market.type}>
-            <div className="modal-market-title"><span>{MARKET_LABELS[market.type]}{market.type === "rqspf" ? `（${(market.handicap ?? 0) > 0 ? "+" : ""}${market.handicap ?? 0}）` : ""}</span><Tag>{market.singleAvailable ? "单场 / 过关" : "过关"}</Tag></div>
+            <div className="modal-market-title"><span>{MARKET_LABELS[market.type]}{market.type === "rqspf" ? `（${(market.handicap ?? 0) > 0 ? "+" : ""}${market.handicap ?? 0}）` : ""}</span><MarketSupportTags market={market} /></div>
             <div className="more-options-groups">
               {marketEditorGroups(market).map((group) => (
                 <div className={`more-options-row ${group.key}-group`} key={group.key}>
@@ -4071,10 +4258,7 @@ function InnerFootballApp({
         open={manualOrderOpen}
         onCancel={() => {
           if (manualOrderSaving) return;
-          setManualOrderOpen(false);
-          setManualOrderPassDropdownOpen(false);
-          setManualPickerEntryKey(null);
-          setManualPickerMatch(null);
+          closeManualOrder();
         }}
         onOk={() => { void addManualOrder(); }}
         width={900}
@@ -4087,6 +4271,19 @@ function InnerFootballApp({
       >
         <div className="manual-order-fields">
           <label>订单名称<Input value={manualOrderName} disabled={manualOrderSaving} onChange={(event) => setManualOrderName(event.target.value)} placeholder="留空则自动命名" maxLength={30} /></label>
+          <label>订单创建时间
+            <DatePicker
+              classNames={RESPONSIVE_DATE_PICKER_CLASS_NAMES}
+              showTime={{ format: "HH:mm:ss" }}
+              showNow
+              format="YYYY-MM-DD HH:mm:ss"
+              inputReadOnly={isMobileViewport}
+              value={manualOrderSavedAt && dayjs(manualOrderSavedAt).isValid() ? dayjs(manualOrderSavedAt) : null}
+              disabled={manualOrderSaving}
+              placeholder="留空则使用当前时间"
+              onChange={(value) => setManualOrderSavedAt(value?.toISOString() ?? "")}
+            />
+          </label>
           <label>串关方式
             <Dropdown
               open={manualOrderPassDropdownOpen}
@@ -4152,10 +4349,15 @@ function InnerFootballApp({
                   placeholder="从本地保存的比赛数据中选择"
                   value={entry.matchId}
                   disabled={manualOrderSaving}
+                  loading={Boolean(manualMatchLookupIds[entry.key])}
                   options={manualMatchOptions.map((option) => ({
                     ...option,
-                    disabled: option.value !== normalizeSportteryMatchId(entry.matchId ?? "") && manualSelectedMatchIds.has(option.value),
+                    disabled: (
+                      option.value !== normalizeSportteryMatchId(entry.matchId ?? "")
+                      && manualSelectedMatchIds.has(option.value)
+                    ) || manualMatchLookupIds[entry.key] === option.value,
                   }))}
+                  onSearch={(value) => searchManualOrderMatch(entry.key, value)}
                   onChange={(value) => selectManualOrderMatch(entry.key, value ?? null)}
                 />
                 <Button icon={<EditOutlined />} disabled={!entry.matchId || manualOrderSaving} onClick={() => openManualMatchPicker(entry)}>选择投注项</Button>
@@ -4171,7 +4373,7 @@ function InnerFootballApp({
           ))}
         </div>
         <Button className="manual-add-match-button" type="dashed" block icon={<PlusOutlined />} disabled={manualOrderSaving} onClick={addManualOrderEntry}>添加一场比赛</Button>
-        <p className="modal-help">每个订单最多选择 {MAX_SELECTED_MATCHES} 场比赛。每场比赛对应一个文本框；优先选择本地比赛并通过“选择投注项”自动生成文本，找不到比赛时可手填，但必须包含 7 位比赛 ID、比赛信息、玩法、选项和倍率。</p>
+        <p className="modal-help">每个订单最多选择 {MAX_SELECTED_MATCHES} 场比赛。可在比赛选择框输入至少 6 位纯数字 matchId 查询官方数据；选中后通过“选择投注项”自动生成文本。仍找不到比赛时可手填，但必须包含比赛 ID、比赛信息、玩法、选项和倍率。创建时间留空则使用提交时的当前时间，并影响订单日期筛选与支出趋势归属。</p>
       </Modal>
 
       <Modal
@@ -4186,7 +4388,7 @@ function InnerFootballApp({
       >
         {manualPickerMatch?.markets.map((market) => (
           <section className={`modal-market ${market.type}-market`} key={market.type}>
-            <div className="modal-market-title"><span>{MARKET_LABELS[market.type]}{market.type === "rqspf" ? `（${(market.handicap ?? 0) > 0 ? "+" : ""}${market.handicap ?? 0}）` : ""}</span></div>
+            <div className="modal-market-title"><span>{MARKET_LABELS[market.type]}{market.type === "rqspf" ? `（${(market.handicap ?? 0) > 0 ? "+" : ""}${market.handicap ?? 0}）` : ""}</span><MarketSupportTags market={market} /></div>
             <div className="more-options-groups">
               {marketEditorGroups(market).map((group) => (
                 <div className={`more-options-row ${group.key}-group`} key={group.key}>

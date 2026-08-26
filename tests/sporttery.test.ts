@@ -2,9 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { cloneMatches, createEmptyMatch } from "../app/data";
 import {
+  AUTO_RESULT_ERROR_RETRY_DELAY_MS,
+  AUTO_RESULT_MAX_RETRIES,
+  AUTO_RESULT_UNFINISHED_RETRY_DELAY_MS,
+  scheduleAutoResultRetry,
+} from "../app/result-fetch-queue";
+import {
   convertSportteryMorningMatches,
   convertSportteryMatches,
   enrichSportteryMatchOddsHistory,
+  fetchSportteryMatchById,
   fetchSportteryMatchSnapshot,
   getNextSportteryAutoRefreshDelay,
   getMatchSaleState,
@@ -15,6 +22,7 @@ import {
   isMatchSelectable,
   isMatchSellable,
   mergeSportteryMatchCache,
+  mergeSportteryFixedBonusMatch,
   parseSportteryOptionOddsHistory,
   parseSportteryMatchScore,
   parseSportteryMatchScoreDetails,
@@ -29,6 +37,18 @@ import {
 } from "../app/sporttery";
 
 const beforeKickoff = new Date("2026-07-23T00:30:00");
+
+test("自动赛果失败重试最多 3 次并按状态退避", () => {
+  assert.deepEqual(scheduleAutoResultRetry(0, "error", 1_000), {
+    retryCount: 1,
+    nextAttemptAt: 1_000 + AUTO_RESULT_ERROR_RETRY_DELAY_MS,
+  });
+  assert.deepEqual(scheduleAutoResultRetry(2, "unfinished", 1_000), {
+    retryCount: 3,
+    nextAttemptAt: 1_000 + AUTO_RESULT_UNFINISHED_RETRY_DELAY_MS,
+  });
+  assert.equal(scheduleAutoResultRetry(AUTO_RESULT_MAX_RETRIES, "error", 1_000), null);
+});
 
 const payload: SportteryMatchCalculatorResponse = {
   success: true,
@@ -95,6 +115,18 @@ test("体彩接口五类玩法完整转换为投注页比赛结构", () => {
   assert.equal(market(match, "halfFull").options.find((item) => item.id === "WW")?.odds, 5.1);
   assert.equal(market(match, "halfFull").options.find((item) => item.id === "DL")?.odds, 5.4);
   assert.equal(market(match, "halfFull").options.find((item) => item.id === "LL")?.odds, 4);
+});
+
+test("让球数据缺失时不显示默认的零让球数", () => {
+  const missingHandicapPayload = structuredClone(payload);
+  delete missingHandicapPayload.value!.matchInfoList![0].subMatchList[0].hhad!.goalLine;
+  const [match] = convertSportteryMatches(missingHandicapPayload, beforeKickoff);
+  assert.equal(market(match, "rqspf").handicap, undefined);
+
+  const zeroHandicapPayload = structuredClone(payload);
+  zeroHandicapPayload.value!.matchInfoList![0].subMatchList[0].hhad!.goalLine = "0";
+  const [zeroHandicapMatch] = convertSportteryMatches(zeroHandicapPayload, beforeKickoff);
+  assert.equal(market(zeroHandicapMatch, "rqspf").handicap, 0);
 });
 
 test("开赛时间是停售边界，开赛前非可售比赛均为待开售", () => {
@@ -344,6 +376,28 @@ test("比分接口从 sectionNo 1 和 2 推导五类常规时间赛果", () => {
   assert.deepEqual(parseSportteryMatchScoreDetails(scorePayload, match).halfScore, { home: 2, away: 0 });
 });
 
+test("比分接口保留全场和半场均为 0:0 的零值赛果", () => {
+  const [match] = convertSportteryMatches(payload, beforeKickoff);
+  const details = parseSportteryMatchScoreDetails({
+    success: true,
+    value: {
+      matchPhaseTc: "14",
+      sectionsNo999: "0:0",
+      sectionsNos: [
+        { score: "0:0", sectionNo: 1 },
+        { score: "0:0", sectionNo: 2 },
+      ],
+    },
+  }, match);
+
+  assert.equal(details.values.spf, "draw");
+  assert.equal(details.values.score, "0:0");
+  assert.equal(details.values.goals, "0");
+  assert.equal(details.values.halfFull, "DD");
+  assert.deepEqual(details.fullScore, { home: 0, away: 0 });
+  assert.deepEqual(details.halfScore, { home: 0, away: 0 });
+});
+
 test("按 matchId 返回的固定奖金数据提取最新让球数", () => {
   assert.equal(parseSportteryMatchHandicap({
     value: {
@@ -443,6 +497,104 @@ test("早间比赛使用 oddsHistory 各玩法最后一条记录", () => {
   assert.equal(market(match, "score").options.find((option) => option.id === "3:1")?.odds, 10.5);
   assert.equal(market(match, "goals").options.find((option) => option.id === "2")?.oddsTrend, -1);
   assert.equal(market(match, "halfFull").options.find((option) => option.id === "WD")?.odds, 19);
+});
+
+test("早间比赛保留 pool 的单关与过关支持字段", () => {
+  const morningPayload = structuredClone(payload) as SportteryMatchListResponse;
+  const morningMatch = morningPayload.value!.matchInfoList![0].subMatchList[0];
+  morningMatch.poolList = morningMatch.poolList!.map((pool) => ({
+    poolCode: pool.poolCode,
+    poolStatus: "Selling",
+    single: 1,
+    allUp: 1,
+  }));
+
+  const [match] = convertSportteryMorningMatches(morningPayload, new Map(), beforeKickoff);
+  assert.equal(market(match, "spf").singleAvailable, true);
+  assert.equal(market(match, "spf").passAvailable, true);
+  assert.equal(market(match, "rqspf").singleAvailable, true);
+  assert.equal(market(match, "rqspf").passAvailable, true);
+});
+
+test("按 matchId 查询的 fixed bonus 覆盖队伍联赛、最新赔率和让球数", () => {
+  const [baseMatch] = convertSportteryMatches(payload, beforeKickoff);
+  const merged = mergeSportteryFixedBonusMatch(baseMatch, {
+    value: {
+      oddsHistory: {
+        matchId: 2040585,
+        homeTeamAbbName: "富川",
+        awayTeamAbbName: "安养",
+        leagueAbbName: "韩国职业联赛",
+        hadList: [{ h: "2.25", d: "3.12", a: "2.46" }],
+        hhadList: [{ h: "2.28", d: "3.20", a: "2.88", goalLine: "-1" }],
+        crsList: [{ s03s01: "10.50" }],
+        ttgList: [{ s2: "3.12" }],
+        hafuList: [{ hd: "19.00" }],
+        singleList: [{ poolCode: "HAD", single: 1 }],
+      },
+    },
+  });
+
+  assert.ok(merged);
+  assert.equal(merged.home, "富川");
+  assert.equal(merged.away, "安养");
+  assert.equal(merged.league, "韩国职业联赛");
+  assert.equal(market(merged, "spf").options.find((option) => option.id === "win")?.odds, 2.25);
+  assert.equal(market(merged, "spf").singleAvailable, true);
+  assert.equal(market(merged, "rqspf").handicap, -1);
+  assert.equal(market(merged, "score").options.find((option) => option.id === "3:1")?.odds, 10.5);
+});
+
+test("matchId 本地缺少元数据时使用当前比赛列表补齐后再合并 fixed bonus", async () => {
+  const matchId = "2040888";
+  const listPayload = structuredClone(payload) as SportteryMatchListResponse;
+  const listedMatch = listPayload.value!.matchInfoList![0].subMatchList[0];
+  listedMatch.matchId = Number(matchId);
+  listedMatch.matchNum = 3208;
+  listedMatch.matchNumStr = "周三208";
+  const fixedPayload = {
+    success: true,
+    value: {
+      oddsHistory: {
+        matchId: Number(matchId),
+        homeTeamAbbName: "临时主队",
+        awayTeamAbbName: "临时客队",
+        leagueAbbName: "临时联赛",
+        hadList: [{ h: "1.88", d: "3.20", a: "4.10" }],
+        hhadList: [{ h: "2.20", d: "3.30", a: "2.90", goalLine: "+1" }],
+        crsList: [],
+        ttgList: [],
+        hafuList: [],
+        singleList: [{ poolCode: "HAD", single: 0 }],
+      },
+    },
+  };
+  const originalFetch = globalThis.fetch;
+  const paths: string[] = [];
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    paths.push(url.pathname);
+    if (url.pathname.endsWith("/getFixedBonusV1.qry")) return Response.json(fixedPayload);
+    if (url.pathname.endsWith("/getMatchListV1.qry")) return Response.json(listPayload);
+    throw new Error(`未处理的测试请求：${url}`);
+  };
+
+  try {
+    const match = await fetchSportteryMatchById(matchId, [], beforeKickoff);
+    assert.ok(match);
+    assert.equal(match.id, matchId);
+    assert.equal(match.weekday, "周三");
+    assert.equal(match.code, "208");
+    assert.equal(match.time, "2026-07-23 01:30");
+    assert.equal(match.home, "临时主队");
+    assert.equal(market(match, "spf").options.find((option) => option.id === "win")?.odds, 1.88);
+    assert.deepEqual(paths, [
+      "/gateway/uniform/football/getFixedBonusV1.qry",
+      "/gateway/uniform/football/getMatchListV1.qry",
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("固定奖金历史仅保留实际倍率变化并计算最后一次方向", () => {

@@ -46,7 +46,7 @@ export function parseRecognizedText(rawText: string, options: { selectOptions?: 
   let pendingMeta: { id?: string; date?: string; league?: string; time?: string } = {};
 
   lines.forEach((line) => {
-    const standaloneId = line.match(/^比赛\s*ID\s*[:：]?\s*(\d{7})$/i);
+    const standaloneId = line.match(/^比赛\s*ID\s*[:：]?\s*(\d{6,})$/i);
     if (standaloneId) {
       pendingMeta = { id: standaloneId[1] };
       current = null;
@@ -74,7 +74,7 @@ export function parseRecognizedText(rawText: string, options: { selectOptions?: 
     const header = line.match(/(?:周([一二三四五六日天]))?\s*(\d{3})\s+([^\s]{2,18})\s*(?:VS|Vs|vs|V5|∨S)\s*([^\s]{2,18})/i);
     if (header) {
       const fresh = createEmptyMatch(matches.length, options.emptyOdds ?? false);
-      const inlineId = line.match(/(?:比赛\s*)?ID\s*[:：]?\s*(\d{7})/i)?.[1];
+      const inlineId = line.match(/(?:比赛\s*)?ID\s*[:：]?\s*(\d{6,})/i)?.[1];
       fresh.id = inlineId ?? pendingMeta.id ?? `ocr-${Date.now()}-${matches.length}`;
       if (pendingMeta.date) fresh.date = pendingMeta.date;
       if (pendingMeta.league) fresh.league = pendingMeta.league;

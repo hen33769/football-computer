@@ -56,12 +56,14 @@ export function createMarkets(seed = 0, handicap = -1): Market[] {
     {
       type: "spf",
       singleAvailable: true,
+      passAvailable: true,
       options: [option("win", "主胜", bump(1.82, 0.04)), option("draw", "平", bump(3.42, 0.03)), option("lose", "主负", bump(3.58, -0.04))],
     },
     {
       type: "rqspf",
       handicap,
       singleAvailable: true,
+      passAvailable: true,
       options: [option("win", "主胜", bump(3.26, 0.05)), option("draw", "平", bump(3.62, 0.02)), option("lose", "主负", bump(1.84, -0.03))],
     },
     {

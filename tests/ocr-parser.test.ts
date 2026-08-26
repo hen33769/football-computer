@@ -69,6 +69,21 @@ test("解析带官方比赛 ID、元数据和多选倍率的手动订单文本",
   assert.deepEqual(goals.options.filter((item) => item.selected).map((item) => [item.label, item.odds]), [["2", 3.12], ["3", 4]]);
 });
 
+test("手动订单支持至少 6 位的历史官方比赛 ID", () => {
+  const parsed = parseRecognizedText(`
+    比赛 ID：123456
+    比赛日期：2019-12-01
+    联赛：挪超
+    开赛时间：2019-12-02 02:00
+    周日003 罗森博格 VS 兰赫姆
+    胜平负 主胜 @1.29
+  `);
+
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0].id, "123456");
+  assert.equal(parsed[0].markets.find((market) => market.type === "spf")?.options.find((option) => option.id === "win")?.odds, 1.29);
+});
+
 test("解析完整五玩法手动订单格式", () => {
   const parsed = parseRecognizedText(`
     比赛 ID：2040594

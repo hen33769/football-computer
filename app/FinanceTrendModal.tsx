@@ -13,6 +13,7 @@ type FinanceTrendModalProps = {
 };
 
 type TooltipParam = {
+  axisValue?: unknown;
   marker?: string;
   seriesName?: string;
   data?: unknown;
@@ -22,21 +23,18 @@ type TooltipParam = {
 const EXPENSE_COLOR = "#c9494f";
 const INCOME_COLOR = "#128767";
 const PROFIT_COLOR = "#e58a2b";
+const DAILY_EXPENSE_COLOR = "#e7a1a5";
+const DAILY_INCOME_COLOR = "#7fc6b2";
+const DAILY_PROFIT_COLOR = "#f1bd7d";
 
 const currency = (value: number) => value.toLocaleString("zh-CN", {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
 });
 
-const dateTimestamp = (date: string) => {
-  const [year, month, day] = date.split("-").map(Number);
-  return Date.UTC(year, month - 1, day);
-};
-
-const monthDay = (value: number) => {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return `${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
+const monthDay = (value: unknown) => {
+  const date = String(value ?? "");
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date.slice(5) : date;
 };
 
 const tooltipValue = (param: TooltipParam) => {
@@ -48,37 +46,50 @@ const tooltipValue = (param: TooltipParam) => {
 function chartOption(points: FinanceTrendPoint[]): EChartsOption {
   const showSymbol = points.length <= 31;
   const series = [
-    { name: "支出", color: EXPENSE_COLOR, values: points.map((point) => point.expense) },
-    { name: "收入", color: INCOME_COLOR, values: points.map((point) => point.income) },
-    { name: "利润", color: PROFIT_COLOR, values: points.map((point) => point.profit) },
+    { name: "累计支出", color: EXPENSE_COLOR, values: points.map((point) => point.cumulativeExpense), daily: false },
+    { name: "累计收入", color: INCOME_COLOR, values: points.map((point) => point.cumulativeIncome), daily: false },
+    { name: "累计利润", color: PROFIT_COLOR, values: points.map((point) => point.cumulativeProfit), daily: false },
+    { name: "当日支出", color: DAILY_EXPENSE_COLOR, values: points.map((point) => point.expense), daily: true },
+    { name: "当日收入", color: DAILY_INCOME_COLOR, values: points.map((point) => point.income), daily: true },
+    { name: "当日利润", color: DAILY_PROFIT_COLOR, values: points.map((point) => point.profit), daily: true },
   ];
   return {
     animationDuration: 260,
     aria: { enabled: true, decal: { show: false } },
-    color: [EXPENSE_COLOR, INCOME_COLOR, PROFIT_COLOR],
+    color: series.map((item) => item.color),
     legend: {
       top: 0,
       data: series.map((item) => item.name),
+      selected: {
+        累计支出: true,
+        累计收入: true,
+        累计利润: true,
+        当日支出: false,
+        当日收入: false,
+        当日利润: false,
+      },
       textStyle: { color: "#526c72" },
     },
     tooltip: {
       trigger: "axis",
+      triggerOn: "mousemove|click",
+      axisPointer: { type: "line", snap: true, label: { show: true } },
       formatter: (rawParams: unknown) => {
         const params = (Array.isArray(rawParams) ? rawParams : [rawParams]) as TooltipParam[];
-        const firstData = params[0]?.data;
-        const timestamp = Array.isArray(firstData) ? Number(firstData[0]) : 0;
         const lines = params.map((param) => (
           `${param.marker ?? ""}${param.seriesName ?? ""}<b>¥${currency(tooltipValue(param))}</b>`
         ));
-        return `<div class="finance-trend-tooltip"><strong>${monthDay(timestamp)}</strong>${lines.map((line) => `<span>${line}</span>`).join("")}</div>`;
+        return `<div class="finance-trend-tooltip"><strong>${monthDay(params[0]?.axisValue)}</strong>${lines.map((line) => `<span>${line}</span>`).join("")}</div>`;
       },
     },
     grid: { top: 48, right: 28, bottom: 72, left: 74 },
     xAxis: {
-      type: "time",
+      type: "category",
       boundaryGap: false,
-      axisLabel: { formatter: (value: number) => monthDay(value), color: "#758a90", hideOverlap: true },
+      data: points.map((point) => point.date),
+      axisLabel: { formatter: (value: string) => monthDay(value), color: "#758a90", hideOverlap: true },
       axisLine: { lineStyle: { color: "#dbe5e6" } },
+      axisPointer: { show: true, snap: true, label: { show: true, formatter: ({ value }) => monthDay(value) } },
       splitLine: { show: false },
     },
     yAxis: {
@@ -113,7 +124,7 @@ function chartOption(points: FinanceTrendPoint[]): EChartsOption {
         handleStyle: { color: "#128767", borderColor: "#128767" },
         moveHandleStyle: { color: "#93aaa9" },
         textStyle: { color: "#758a90" },
-        labelFormatter: (value: number) => monthDay(value),
+        labelFormatter: (_value: number, value: string) => monthDay(value),
       },
     ],
     series: series.map((item) => ({
@@ -122,11 +133,11 @@ function chartOption(points: FinanceTrendPoint[]): EChartsOption {
       smooth: false,
       showSymbol,
       symbol: "circle",
-      symbolSize: 6,
-      lineStyle: { width: 2, color: item.color },
+      symbolSize: item.daily ? 4 : 6,
+      lineStyle: { width: item.daily ? 1.5 : 2.2, color: item.color },
       itemStyle: { color: item.color },
       emphasis: { focus: "series" },
-      data: points.map((point, index) => [dateTimestamp(point.date), item.values[index]]),
+      data: item.values,
     })),
   };
 }
@@ -206,7 +217,7 @@ export function FinanceTrendModal({ open, onClose, loadTrend }: FinanceTrendModa
       className="finance-trend-modal"
       destroyOnHidden
     >
-      <p className="finance-trend-note">按每日发生额统计：支出归入订单保存日，收入归入结账日，利润为当日收入减支出；历史纠错值不计入趋势。</p>
+      <p className="finance-trend-note">累计支出与累计收入分别以对应纠错值为初始值，并按日累加订单支出与结账收入；三条浅色当日线可在图例中开启。</p>
       {loading ? (
         <div className="finance-trend-loading"><Spin size="large" description="正在加载趋势数据…" /></div>
       ) : error ? (
@@ -218,9 +229,9 @@ export function FinanceTrendModal({ open, onClose, loadTrend }: FinanceTrendModa
           action={<Button size="small" icon={<ReloadOutlined />} onClick={() => { void refresh(); }}>重试</Button>}
         />
       ) : points.length === 0 ? (
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无已支付或已结账订单的趋势数据" />
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无收支趋势数据" />
       ) : (
-        <div ref={chartElementRef} className="finance-trend-chart" role="img" aria-label="支出、收入与利润每日趋势折线图" />
+        <div ref={chartElementRef} className="finance-trend-chart" role="img" aria-label="支出、收入与利润的每日及累计六条趋势折线图" />
       )}
     </Modal>
   );

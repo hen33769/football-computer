@@ -276,8 +276,8 @@ export function convertSportteryMatches(payload: SportteryMatchCalculatorRespons
       const pool = match.poolList?.find((item) => item.poolCode === POOL_BY_MARKET[market.type]);
       const poolSelling = matchSelling && pool?.poolStatus === "Selling";
       const source = (match[SOURCE_BY_MARKET[market.type]] ?? {}) as SportteryOdds;
-      market.singleAvailable = Boolean(poolSelling && (pool?.bettingSingle ?? pool?.single ?? pool?.cbtSingle) === 1);
-      market.passAvailable = Boolean(poolSelling && (pool?.bettingAllup ?? pool?.allUp ?? pool?.cbtAllUp) === 1);
+      market.singleAvailable = Boolean(poolSelling && Number(pool?.bettingSingle ?? pool?.single ?? pool?.cbtSingle ?? 0) === 1);
+      market.passAvailable = Boolean(poolSelling && Number(pool?.bettingAllup ?? pool?.allUp ?? pool?.cbtAllUp ?? 0) === 1);
       market.options = market.options.map((option) => {
         const apiKey = optionApiKey(market.type, option.id);
         return {
@@ -798,6 +798,68 @@ export function enrichSportteryMatchOddsHistory(
   };
 }
 
+const fixedBonusPayloadMatchId = (payload: Record<string, unknown>) => {
+  const history = fixedBonusOddsHistory(payload);
+  const matchId = history?.matchId;
+  return typeof matchId === "string" || typeof matchId === "number" ? normalizeSportteryMatchId(String(matchId)) : "";
+};
+
+const completeManualMatchMetadata = (match: MatchItem) => (
+  /^\d{4}-\d{2}-\d{2}$/.test(match.date)
+  && /^周[一二三四五六日天]$/.test(match.weekday)
+  && /^\d{3}$/.test(match.code)
+  && match.time.trim().length > 0
+  && match.home.trim().length > 0
+  && match.away.trim().length > 0
+);
+
+/** 用按 matchId 返回的官方 fixed bonus 数据覆盖比赛队伍、联赛和最新玩法赔率。 */
+export function mergeSportteryFixedBonusMatch(
+  match: MatchItem,
+  payload: Record<string, unknown>,
+): MatchItem | null {
+  const history = fixedBonusOddsHistory(payload);
+  const payloadMatchId = fixedBonusPayloadMatchId(payload);
+  const normalizedMatchId = normalizeSportteryMatchId(match.id);
+  if (!history || !payloadMatchId || payloadMatchId !== normalizedMatchId) return null;
+  const hasFixedOdds = match.markets.some((market) => {
+    const latest = latestHistoryRecord(history[HISTORY_LIST_BY_MARKET[market.type]]);
+    return market.options.some((option) => toOdds(latest[optionApiKey(market.type, option.id)]) > 0);
+  });
+  if (!hasFixedOdds) return null;
+
+  const singles = Array.isArray(history.singleList) ? history.singleList as Array<Record<string, unknown>> : [];
+  const handicap = parseSportteryMatchHandicap(payload);
+  const merged: MatchItem = {
+    ...match,
+    id: payloadMatchId,
+    league: String(history.leagueAbbName ?? match.league),
+    home: String(history.homeTeamAbbName ?? match.home),
+    away: String(history.awayTeamAbbName ?? match.away),
+    markets: match.markets.map((market) => {
+      const latest = latestHistoryRecord(history[HISTORY_LIST_BY_MARKET[market.type]]);
+      const single = singles.find((item) => String(item.poolCode ?? "").toUpperCase() === POOL_BY_MARKET[market.type]);
+      return {
+        ...market,
+        ...(market.type === "rqspf" && typeof handicap === "number" ? { handicap } : {}),
+        ...(single ? { singleAvailable: Number(single.single ?? 0) === 1 } : {}),
+        options: market.options.map((option) => {
+          const apiKey = optionApiKey(market.type, option.id);
+          const currentOdds = toOdds(latest[apiKey]);
+          const oddsHistory = parseSportteryOptionOddsHistory(payload, market.type, option.id);
+          return resolveSportteryOptionOdds({
+            ...option,
+            ...(currentOdds > 0 ? { odds: currentOdds } : {}),
+            oddsTrend: currentOdds > 0 ? toOddsTrend(latest[`${apiKey}f`]) : option.oddsTrend,
+            ...(oddsHistory.length ? { oddsHistory } : {}),
+          });
+        }),
+      };
+    }),
+  };
+  return hasPositiveOdds(merged) ? merged : null;
+}
+
 /** 从按 matchId 查询的官方固定奖金数据中读取该场比赛的固定让球数。 */
 export function parseSportteryMatchHandicap(payload: unknown): number | undefined {
   if (!payload || typeof payload !== "object") return undefined;
@@ -852,8 +914,12 @@ export function convertSportteryMorningMatches(
         hafu: latestHistoryRecord(history?.hafuList),
         poolList: (match.poolList ?? []).map((pool) => ({
           ...pool,
-          bettingSingle: Number(singles.find((item) => item.poolCode === pool.poolCode)?.single ?? pool.cbtSingle ?? 0),
-          bettingAllup: Number(pool.cbtAllUp ?? 0),
+          bettingSingle: Number(singles.find((item) => item.poolCode === pool.poolCode)?.single
+            ?? pool.bettingSingle
+            ?? pool.single
+            ?? pool.cbtSingle
+            ?? 0),
+          bettingAllup: Number(pool.bettingAllup ?? pool.allUp ?? pool.cbtAllUp ?? 0),
         })),
       };
     }),
@@ -866,6 +932,51 @@ export function convertSportteryMorningMatches(
     const enriched = fixedPayload ? enrichSportteryMatchOddsHistory(match, fixedPayload) : match;
     return enriched.saleStatus === "selling" ? { ...enriched, saleStatus: "pending" as const } : enriched;
   });
+}
+
+/**
+ * 按官方 matchId 查询手动订单所需的完整比赛。
+ * fixed bonus 不含日期、开赛时间和场次号，因此优先复用本地元数据，缺失时再查当前比赛列表。
+ */
+export async function fetchSportteryMatchById(
+  matchId: string,
+  currentMatches: MatchItem[],
+  now = new Date(),
+): Promise<MatchItem | null> {
+  const normalizedMatchId = normalizeSportteryMatchId(matchId.trim());
+  if (!/^\d{6,}$/.test(normalizedMatchId)) throw new Error("比赛 ID 必须是至少 6 位纯数字");
+
+  const fixedBonusPayload = await fetchSportteryFixedBonusPayload(normalizedMatchId);
+  if (fixedBonusPayloadMatchId(fixedBonusPayload) !== normalizedMatchId) {
+    throw new Error(`比赛 ${normalizedMatchId} 的官方响应 ID 不一致`);
+  }
+
+  let metadata = currentMatches.find((match) => normalizeSportteryMatchId(match.id) === normalizedMatchId) ?? null;
+  if (!metadata || !completeManualMatchMetadata(metadata)) {
+    const listPayload = await fetchSportteryMatchList();
+    const groups = (listPayload.value?.matchInfoList ?? [])
+      .map((group) => ({
+        ...group,
+        subMatchList: (group.subMatchList ?? []).filter((match) => String(match.matchId) === normalizedMatchId),
+      }))
+      .filter((group) => group.subMatchList.length > 0);
+    if (groups.length > 0) {
+      const targetPayload: SportteryMatchListResponse = {
+        ...listPayload,
+        value: { ...listPayload.value, matchInfoList: groups },
+      };
+      metadata = convertSportteryMorningMatches(
+        targetPayload,
+        new Map([[normalizedMatchId, fixedBonusPayload]]),
+        now,
+      ).find((match) => normalizeSportteryMatchId(match.id) === normalizedMatchId) ?? null;
+    }
+  }
+
+  if (!metadata || !completeManualMatchMetadata(metadata)) return null;
+  const merged = mergeSportteryFixedBonusMatch(metadata, fixedBonusPayload);
+  if (!merged) throw new Error(`比赛 ${normalizedMatchId} 未返回有效投注项`);
+  return merged;
 }
 
 export async function fetchSportteryMatchSnapshot(
