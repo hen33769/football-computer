@@ -78,7 +78,7 @@ import {
   type PrizeRangeMetrics,
 } from "./calculator";
 import { appendOrderPassValue, formatOrderPassValue, inferOrderPasses } from "./order-passes";
-import { matchPassesLeagueFilter, orderContainsTeam, orderPassesLeagueFilter, retainAvailableLeagueNames } from "./order-filters";
+import { matchPassesLeagueFilter, orderContainsTeam, orderPassesLeagueFilter, retainAvailableLeagueNames, splitTeamNameByQuery } from "./order-filters";
 import { prioritizeLeagueNames, sortMatchesForManualOrder } from "./sorting";
 import {
   cloneMatches,
@@ -221,6 +221,16 @@ type ManualOrderEntry = {
   matchId: string | null;
   text: string;
 };
+
+const HighlightedOrderTeamName = ({ name, query }: { name: string; query: string }) => (
+  <>
+    {splitTeamNameByQuery(name, query).map((segment, index) => (
+      segment.highlighted
+        ? <mark className="order-team-query-highlight" key={`${index}-${segment.text}`}>{segment.text}</mark>
+        : <Fragment key={`${index}-${segment.text}`}>{segment.text}</Fragment>
+    ))}
+  </>
+);
 
 const currency = (value: number) => value.toLocaleString("zh-CN", {
   minimumFractionDigits: 2,
@@ -3805,7 +3815,11 @@ function InnerFootballApp({
                           <section className={`order-match-entry ${matchFailed ? "failed" : ""}`} key={match.id}>
                             <div className="order-match-entry-head">
                               <span>{match.weekday}{match.code}</span>
-                              <b>{match.home} VS {match.away}</b>
+                              <b>
+                                <HighlightedOrderTeamName name={match.home} query={orderTeamQuery} />
+                                {" VS "}
+                                <HighlightedOrderTeamName name={match.away} query={orderTeamQuery} />
+                              </b>
                               <div className="order-match-result-tags">
                                 {scoreResult && <Tag color="blue">比分 {scoreResult}</Tag>}
                                 {halfFullResult && <Tag color="volcano">半全场 {halfFullResult}</Tag>}

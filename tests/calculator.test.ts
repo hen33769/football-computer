@@ -18,7 +18,7 @@ import {
 } from "../app/calculator";
 import { cloneMatches, initialMatches } from "../app/data";
 import { orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "../app/imports";
-import { matchPassesLeagueFilter, orderContainsTeam, orderPassesLeagueFilter, retainAvailableLeagueNames } from "../app/order-filters";
+import { matchPassesLeagueFilter, orderContainsTeam, orderPassesLeagueFilter, retainAvailableLeagueNames, splitTeamNameByQuery } from "../app/order-filters";
 import { appendOrderPassValue, inferOrderPasses, parseOrderPassValues } from "../app/order-passes";
 import { isOrderMatchJudged, judgeLoadedOrdersWithResults, judgeSlipWithResults, repairSlipHandicapResults } from "../app/results";
 import { prioritizeLeagueNames, sortMatchesForManualOrder } from "../app/sorting";
@@ -101,6 +101,26 @@ test("订单队伍和比赛类型仅匹配实际已投注比赛，空类型代�
   assert.equal(orderPassesLeagueFilter(slip, new Set([matches[1].league])), false);
   assert.equal(matchPassesLeagueFilter(matches[0], new Set()), true);
   assert.equal(matchPassesLeagueFilter(matches[0], new Set([matches[0].league])), true);
+});
+
+test("订单队伍名称按筛选文字拆分高亮片段", () => {
+  assert.deepEqual(splitTeamNameByQuery("上海海港", " 海 "), [
+    { text: "上", highlighted: false },
+    { text: "海", highlighted: true },
+    { text: "海", highlighted: true },
+    { text: "港", highlighted: false },
+  ]);
+  assert.deepEqual(splitTeamNameByQuery("Manchester United", "CHESTER UNI"), [
+    { text: "Man", highlighted: false },
+    { text: "chester Uni", highlighted: true },
+    { text: "ted", highlighted: false },
+  ]);
+  assert.deepEqual(splitTeamNameByQuery("阿森纳", "切尔西"), [
+    { text: "阿森纳", highlighted: false },
+  ]);
+  assert.deepEqual(splitTeamNameByQuery("阿森纳", "  "), [
+    { text: "阿森纳", highlighted: false },
+  ]);
 });
 
 test("新增导入订单以新值更新同 ID 订单", () => {
