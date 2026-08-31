@@ -35,23 +35,23 @@ test("订单按创建时间降序排列，非法时间排在末尾", () => {
   assert.deepEqual(orders.map((order) => order.name), ["最新", "较早", "时间无效"]);
 });
 
-test("手动订单比赛先按比赛日期降序，同日按开赛时间升序", () => {
-  const match = (id: string, date: string, time: string, code: string): MatchItem => ({
+test("手动订单比赛先按比赛日期降序，同日按周次和场次号升序", () => {
+  const match = (id: string, date: string, time: string, weekday: string, code: string): MatchItem => ({
     id,
     date,
     time,
     code,
-    weekday: "",
+    weekday,
     league: "",
     home: "",
     away: "",
     markets: [],
   });
   const matches = sortMatchesForManualOrder([
-    match("late-day", "2026-07-30", "2026-07-31 03:00", "005"),
-    match("previous-day", "2026-07-29", "2026-07-29 18:00", "001"),
-    match("early-day", "2026-07-30", "2026-07-31 01:00", "002"),
-    match("same-time-first-code", "2026-07-30", "2026-07-31 01:00", "001"),
+    match("late-day", "2026-07-30", "2026-07-31 01:00", "周四", "005"),
+    match("previous-day", "2026-07-29", "2026-07-29 18:00", "周三", "001"),
+    match("early-day", "2026-07-30", "2026-07-31 03:00", "周四", "002"),
+    match("same-time-first-code", "2026-07-30", "2026-07-31 02:00", "周四", "001"),
   ]);
 
   assert.deepEqual(matches.map((item) => item.id), [

@@ -86,6 +86,62 @@ test("批量支付任一订单不符合条件时整批不写入", async () => {
   assert.equal(d1.batchCalls, 0);
 });
 
+test("批量支付和判断赛果忽略手动补单往返产生的投注项顺序变化", async () => {
+  const base = order("manual-order");
+  const current: CompactOrder = {
+    ...base,
+    passes: [1, 2],
+    selections: [
+      base.selections[0],
+      {
+        ...base.selections[0],
+        matchId: "2040002",
+        code: "002",
+        home: "乙队",
+        away: "丙队",
+        optionId: "draw",
+        optionLabel: "平",
+        odds: 3,
+      },
+    ],
+  };
+  const incoming: CompactOrder = {
+    ...current,
+    passes: [...current.passes].reverse(),
+    selections: [...current.selections].reverse(),
+  };
+
+  const paid = await bulkUpdateOrders(
+    new FakeD1([current]) as unknown as D1Database,
+    "user",
+    [incoming],
+    "pay",
+  );
+  assert.equal(paid[0].paymentStatus, "paid");
+
+  const judged = await bulkUpdateOrders(
+    new FakeD1([current]) as unknown as D1Database,
+    "user",
+    [incoming],
+    "judge",
+  );
+  assert.deepEqual(judged[0].selections.map((selection) => selection.matchId), ["2040002", "2040001"]);
+
+  const changedOdds = {
+    ...incoming,
+    selections: incoming.selections.map((selection, index) => index === 0 ? { ...selection, odds: selection.odds + 1 } : selection),
+  };
+  await assert.rejects(
+    bulkUpdateOrders(
+      new FakeD1([current]) as unknown as D1Database,
+      "user",
+      [changedOdds],
+      "judge",
+    ),
+    /不能在判断赛果时修改已选倍率/,
+  );
+});
+
 test("普通批量编辑允许修改未支付订单的投注结构", async () => {
   const current = order("a");
   const d1 = new FakeD1([current]);

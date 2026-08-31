@@ -85,19 +85,58 @@ function prepareStoredOrder(order: CompactOrder, now = new Date().toISOString())
   };
 }
 
-const wagerShapeFingerprint = (order: CompactOrder) => JSON.stringify({
-  passes: order.passes,
-  multiple: order.multiple,
-  selections: order.selections.map((selection) => ({
+type FingerprintSelection = {
+  matchId: string;
+  marketType: CompactOrder["selections"][number]["marketType"];
+  optionId: string;
+  odds?: number;
+};
+
+const compareFingerprintText = (left: string, right: string) => (
+  left < right ? -1 : left > right ? 1 : 0
+);
+
+const FINGERPRINT_MARKET_ORDER: CompactOrder["selections"][number]["marketType"][] = [
+  "spf",
+  "rqspf",
+  "score",
+  "goals",
+  "halfFull",
+];
+
+const fingerprintMarketRank = (type: CompactOrder["selections"][number]["marketType"]) => {
+  const index = FINGERPRINT_MARKET_ORDER.indexOf(type);
+  return index >= 0 ? index : FINGERPRINT_MARKET_ORDER.length;
+};
+
+const compareFingerprintSelections = (left: FingerprintSelection, right: FingerprintSelection) => (
+  compareFingerprintText(left.matchId, right.matchId)
+  || fingerprintMarketRank(left.marketType) - fingerprintMarketRank(right.marketType)
+  || compareFingerprintText(left.optionId, right.optionId)
+  || (typeof left.odds === "number" && typeof right.odds === "number" ? left.odds - right.odds : 0)
+);
+
+/** 订单比赛在手动录入、云端压缩和前端展示之间可能改变数组顺序，比较时只看投注集合。 */
+const fingerprintSelections = (order: CompactOrder, includeOdds = false): FingerprintSelection[] => order.selections
+  .map((selection) => ({
     matchId: selection.matchId,
     marketType: selection.marketType,
     optionId: selection.optionId,
-  })),
+    ...(includeOdds ? { odds: selection.odds } : {}),
+  }))
+  .sort(compareFingerprintSelections);
+
+const wagerShape = (order: CompactOrder) => ({
+  passes: [...order.passes].sort((left, right) => left - right),
+  multiple: order.multiple,
+  selections: fingerprintSelections(order),
 });
 
+const wagerShapeFingerprint = (order: CompactOrder) => JSON.stringify(wagerShape(order));
+
 const wagerFingerprint = (order: CompactOrder) => JSON.stringify({
-  shape: wagerShapeFingerprint(order),
-  odds: order.selections.map((selection) => selection.odds),
+  shape: wagerShape(order),
+  selections: fingerprintSelections(order, true),
 });
 
 async function currentOrderVersion(d1: D1Database, userId: string, orderId: string) {
