@@ -690,11 +690,16 @@ button, input, textarea { font: inherit; }
 .order-statistics-title { display: flex; align-items: center; gap: 4px; }
 .order-trend-button.ant-btn { width: 28px; height: 28px; min-width: 28px; padding: 0; color: #4d7f83; border-radius: 9px; }
 .order-trend-button.ant-btn:hover, .order-trend-button.ant-btn:focus-visible { color: #0e8882; background: #e9f5f3; }
-.order-filter-grid { display: grid; grid-template-columns: minmax(250px, 1.35fr) minmax(145px, .7fr) minmax(220px, 1fr); gap: 12px; }
+.order-filter-grid { display: grid; grid-template-columns: minmax(210px, 1.45fr) repeat(3, minmax(118px, .8fr)); gap: 12px; }
 .order-filter-field { min-width: 0; display: flex; flex-direction: column; gap: 7px; }
 .order-filter-field > span { color: #61767b; font-size: 11px; font-weight: 700; }
 .order-filter-field > span small { margin-left: 5px; color: #93a1a4; font-size: 9px; font-weight: 500; }
-.order-filter-field .ant-input, .order-filter-field .ant-picker, .order-filter-field .ant-select { width: 100%; }
+.order-filter-field .ant-input, .order-filter-field .ant-picker, .order-filter-field .ant-select, .order-filter-field .ant-dropdown-trigger { width: 100%; }
+.order-short-pass-filter-control { position: relative; width: 100%; }
+.order-short-pass-filter-control .ant-input { padding-right: 34px; }
+.order-short-pass-clear { position: absolute; top: 50%; right: 9px; z-index: 1; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; color: #9ba9ab; border: 0; border-radius: 50%; background: transparent; cursor: pointer; transform: translateY(-50%); }
+.order-short-pass-clear:hover, .order-short-pass-clear:focus-visible { color: #48676b; background: #edf3f2; outline: none; }
+.order-short-pass-clear:disabled { cursor: not-allowed; opacity: .45; }
 .order-league-filter-field { grid-column: 2 / -1; align-self: stretch; }
 .order-league-filter-field .league-filter-tags { min-height: 40px; align-items: center; }
 .order-filter-summary { display: grid; grid-template-columns: auto auto auto auto minmax(180px, 1fr); align-items: center; gap: 18px; margin-top: 16px; padding: 12px 14px; border-radius: 13px; background: linear-gradient(100deg, #f1f8f7, #f8fbfa); }
@@ -959,7 +964,7 @@ button, input, textarea { font: inherit; }
   .more-options-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .editor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .odds-editor-grid, .score-editor { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .order-filter-grid { grid-template-columns: minmax(240px, 1.25fr) minmax(140px, .7fr) minmax(200px, 1fr); }
+  .order-filter-grid { grid-template-columns: minmax(190px, 1.25fr) repeat(3, minmax(110px, .8fr)); }
   .match-result-row { grid-template-columns: 1fr auto; align-items: start; overflow: visible; }
   .match-result-fields { grid-column: 1 / -1; grid-row: 2; grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .league-settings-grid { grid-template-columns: 1fr; }

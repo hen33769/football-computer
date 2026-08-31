@@ -15,7 +15,7 @@ import type { MatchItem } from "../types";
 import { httpError, orderConflict } from "./errors";
 import { fromCents, toCents } from "./money";
 
-export type OrderProgressQuery = "settled" | "unsettled" | null;
+export type OrderProgressQuery = "settled" | "unsettled" | "unpaid" | null;
 export type OrdersQuery = {
   from?: string | null;
   to?: string | null;
@@ -254,6 +254,7 @@ function ordersWhereClause(query: OrdersQuery) {
   }
   if (query.progress === "settled") conditions.push("settled_at IS NOT NULL");
   if (query.progress === "unsettled") conditions.push("settled_at IS NULL");
+  if (query.progress === "unpaid") conditions.push("payment_status = 'unpaid'");
   const statuses = unique((query.statuses ?? []).filter((status) => VALID_STATUSES.has(status)));
   if (statuses.length > 0) {
     conditions.push("status IN (SELECT value FROM json_each(?))");

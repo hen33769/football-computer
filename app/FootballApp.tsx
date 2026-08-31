@@ -65,6 +65,7 @@ import {
   calculatePrizeRangeMetrics,
   calculateStake,
   countBets,
+  getOrderShortPasses,
   getOrderStatus,
   getPassOptions,
   isOrderFailed,
@@ -163,7 +164,7 @@ const RESPONSIVE_DATE_PICKER_CLASS_NAMES = { popup: { root: "responsive-date-pic
 export type AppView = "betting" | "orders" | "settings";
 type DataTransferMode = "orders" | "settings" | "matches" | "full";
 type ImportStrategy = "merge" | "replace";
-type OrderProgressFilter = "settled" | "unsettled" | null;
+type OrderProgressFilter = "settled" | "unsettled" | "unpaid" | null;
 type OrderStatusFilter = "success" | "hopeful" | "failed";
 type CloudOrderQuery = {
   from?: string | null;
@@ -987,6 +988,9 @@ function InnerFootballApp({
   const [bulkSettlePopoverOpen, setBulkSettlePopoverOpen] = useState(false);
   const [orderProgressFilter, setOrderProgressFilter] = useState<OrderProgressFilter>("unsettled");
   const [orderStatusFilters, setOrderStatusFilters] = useState<OrderStatusFilter[]>([]);
+  const [orderShortPassFilters, setOrderShortPassFilters] = useState<number[]>([]);
+  const [orderShortPassDropdownOpen, setOrderShortPassDropdownOpen] = useState(false);
+  const orderShortPassInputClickRef = useRef(false);
   const [orderTeamQuery, setOrderTeamQuery] = useState("");
   const [selectedOrderLeagueNames, setSelectedOrderLeagueNames] = useState<string[]>([]);
   const [renderedOrderCount, setRenderedOrderCount] = useState(ORDER_LIST_BATCH_SIZE);
@@ -1571,7 +1575,9 @@ function InnerFootballApp({
     .filter((slip) => {
       if (orderProgressFilter === "settled" && !slip.settledAt) return false;
       if (orderProgressFilter === "unsettled" && slip.settledAt) return false;
+      if (orderProgressFilter === "unpaid" && isOrderPaid(slip)) return false;
       if (orderStatusFilters.length > 0 && !orderStatusFilters.includes(getOrderStatus(slip))) return false;
+      if (orderShortPassFilters.length > 0 && !orderShortPassFilters.some((pass) => getOrderShortPasses(slip).includes(pass))) return false;
       if (orderDateRange) {
         const savedDate = savedSlipDateKey(slip.savedAt);
         if (savedDate < orderDateRange[0] || savedDate > orderDateRange[1]) return false;
@@ -1581,6 +1587,7 @@ function InnerFootballApp({
     })), [
       savedSlips,
       orderDateRange,
+      orderShortPassFilters,
       orderProgressFilter,
       orderStatusFilters,
       orderTeamQuery,
@@ -2171,8 +2178,16 @@ function InnerFootballApp({
     setOrderDateRange(null);
     setOrderProgressFilter(null);
     setOrderStatusFilters([]);
+    setOrderShortPassFilters([]);
+    setOrderShortPassDropdownOpen(false);
     setOrderTeamQuery("");
     setSelectedOrderLeagueNames([]);
+  };
+
+  const clearOrderShortPassFilter = () => {
+    setRenderedOrderCount(ORDER_LIST_BATCH_SIZE);
+    setOrderShortPassFilters([]);
+    setOrderShortPassDropdownOpen(false);
   };
 
   const toggleOrderLeagueFilter = (leagueName: string) => {
@@ -3505,11 +3520,12 @@ function InnerFootballApp({
                         { value: "all", label: "不限" },
                         { value: "settled", label: "已结账" },
                         { value: "unsettled", label: "未结账" },
+                        { value: "unpaid", label: "未支付" },
                       ]}
                       onChange={(value) => {
                         setRenderedOrderCount(ORDER_LIST_BATCH_SIZE);
                         const nextValue = String(value);
-                        setOrderProgressFilter(nextValue === "settled" || nextValue === "unsettled" ? nextValue : null);
+                        setOrderProgressFilter(nextValue === "settled" || nextValue === "unsettled" || nextValue === "unpaid" ? nextValue : null);
                       }}
                     />
                   </label>
@@ -3535,6 +3551,76 @@ function InnerFootballApp({
                         setOrderStatusFilters(next.includes("all") ? [] : next as OrderStatusFilter[]);
                       }}
                     />
+                  </label>
+                  <label className="order-filter-field order-short-pass-filter-field">
+                    <span>错失</span>
+                    <Dropdown
+                      open={orderShortPassDropdownOpen}
+                      trigger={["click"]}
+                      placement="bottomLeft"
+                      rootClassName="manual-pass-shortcut-dropdown order-short-pass-dropdown"
+                      onOpenChange={(open, info) => {
+                        if (info.source !== "trigger") return;
+                        if (!open && orderShortPassInputClickRef.current) return;
+                        setOrderShortPassDropdownOpen(open);
+                      }}
+                      menu={{
+                        items: MANUAL_ORDER_PASS_SHORTCUTS.map((value) => ({
+                          key: String(value),
+                          label: `差${value}关`,
+                        })),
+                        selectedKeys: orderShortPassFilters.map(String),
+                        onClick: ({ key }) => {
+                          const value = Number(key);
+                          setRenderedOrderCount(ORDER_LIST_BATCH_SIZE);
+                          setOrderShortPassFilters((current) => current.includes(value)
+                            ? current.filter((item) => item !== value)
+                            : [...current, value].sort((left, right) => left - right));
+                          setOrderShortPassDropdownOpen(true);
+                        },
+                      }}
+                    >
+                      <div className="order-short-pass-filter-control">
+                        <Input
+                          aria-label="错失"
+                          readOnly
+                          value={orderShortPassFilters.map((value) => `差${value}关`).join("、")}
+                          disabled={cloudOrdersLoading}
+                          onClickCapture={() => {
+                            orderShortPassInputClickRef.current = true;
+                            window.setTimeout(() => {
+                              orderShortPassInputClickRef.current = false;
+                            });
+                          }}
+                          onFocus={(event) => {
+                            const input = event.currentTarget;
+                            window.requestAnimationFrame(() => {
+                              if (document.activeElement === input) setOrderShortPassDropdownOpen(true);
+                            });
+                          }}
+                          placeholder="请选择差关"
+                        />
+                        {orderShortPassFilters.length > 0 && (
+                          <button
+                            type="button"
+                            className="order-short-pass-clear"
+                            aria-label="清除错失筛选"
+                            disabled={cloudOrdersLoading}
+                            onMouseDown={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                            }}
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              clearOrderShortPassFilter();
+                            }}
+                          >
+                            <CloseOutlined />
+                          </button>
+                        )}
+                      </div>
+                    </Dropdown>
                   </label>
                   <label className="order-filter-field order-team-filter-field">
                     <span>比赛队伍</span>

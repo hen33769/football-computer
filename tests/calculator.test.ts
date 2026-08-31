@@ -8,6 +8,7 @@ import {
   calculatePrizeRangeMetrics,
   calculateStake,
   countBets,
+  getOrderShortPasses,
   getOrderStatus,
   getPassLimit,
   getPassOptions,
@@ -445,6 +446,71 @@ test("失败比赛不足以组成任一串关时订单才失败", () => {
   assert.equal(isOrderFailed({ matches, passes: [2], failedMatches: [matches[0].id] }), false);
   assert.equal(isOrderFailed({ matches, passes: [3], failedMatches: [matches[0].id] }), true);
   assert.equal(isOrderFailed({ matches, passes: [2, 3], failedMatches: [matches[0].id] }), false);
+});
+
+test("差关筛选返回距离全部确认命中还差的关次数", () => {
+  const matches = cloneMatches(initialMatches.slice(0, 4));
+  matches.forEach((match) => { match.markets[0].options[0].selected = true; });
+  const slip: SavedSlip = {
+    name: "差关筛选",
+    savedAt: new Date(0).toISOString(),
+    matches,
+    passes: [2, 3],
+    multiple: 1,
+    hits: { [matches[0].id]: { spf: "win" } },
+  };
+
+  assert.deepEqual(getOrderShortPasses(slip), [1, 2]);
+  assert.deepEqual(
+    getOrderShortPasses({ ...slip, hits: { [matches[0].id]: { spf: "win" }, [matches[1].id]: { spf: "win" } } }),
+    [1],
+  );
+  assert.deepEqual(
+    getOrderShortPasses({ ...slip, failedMatches: [matches[1].id, matches[2].id] }),
+    [1, 2],
+  );
+  assert.equal(isOrderFailed(slip), false);
+  assert.deepEqual(
+    getOrderShortPasses({ ...slip, failedMatches: [matches[1].id, matches[2].id, matches[3].id] }),
+    [1, 2],
+  );
+});
+
+test("差关包含未确认和明确未命中的比赛", () => {
+  const matches = cloneMatches([...initialMatches, ...initialMatches.slice(0, 2)]);
+  matches.forEach((match, index) => { match.id = `eight-${index}`; });
+  matches.forEach((match) => { match.markets[0].options[0].selected = true; });
+  const base: SavedSlip = {
+    name: "八串一差关",
+    savedAt: new Date(0).toISOString(),
+    matches,
+    passes: [8],
+    multiple: 1,
+  };
+
+  assert.deepEqual(
+    getOrderShortPasses({
+      ...base,
+      hits: Object.fromEntries(matches.slice(0, 7).map((match) => [match.id, { spf: "win" }])),
+    }),
+    [1],
+  );
+  assert.deepEqual(
+    getOrderShortPasses({
+      ...base,
+      hits: Object.fromEntries(matches.slice(0, 7).map((match) => [match.id, { spf: "win" }])),
+      failedMatches: [matches[7].id],
+    }),
+    [1],
+  );
+  assert.deepEqual(
+    getOrderShortPasses({
+      ...base,
+      hits: Object.fromEntries(matches.slice(0, 6).map((match) => [match.id, { spf: "win" }])),
+      failedMatches: [matches[6].id, matches[7].id],
+    }),
+    [2],
+  );
 });
 
 test("赛果判断写入命中；全部已选玩法均未中才标记比赛失败", () => {

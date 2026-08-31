@@ -9,7 +9,7 @@ import {
 import type { CurrentHits, SavedSlip } from "../types";
 import { requestJson } from "./http";
 
-export type OrderProgressFilter = "settled" | "unsettled" | null;
+export type OrderProgressFilter = "settled" | "unsettled" | "unpaid" | null;
 export type OrderStatusFilter = "success" | "hopeful" | "failed";
 
 export type OrderQuery = {

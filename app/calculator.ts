@@ -273,13 +273,39 @@ export function matchHasSelectedHit(match: MatchItem, hits: CurrentHits): boolea
   });
 }
 
-export function isOrderFailed(slip: Pick<SavedSlip, "matches" | "passes" | "failedMatches">): boolean {
+function isOrderPassImpossible(
+  slip: Pick<SavedSlip, "matches" | "failedMatches">,
+  pass: number,
+): boolean {
   const chosen = selectedMatches(slip.matches);
   const failures = new Set(slip.failedMatches ?? []);
   const failedCount = chosen.filter((match) => failures.has(match.id)).length;
-  if (failedCount === 0 || slip.passes.length === 0) return false;
-  const remainingMatchCount = chosen.length - failedCount;
-  return slip.passes.every((pass) => remainingMatchCount < pass);
+  if (failedCount === 0) return false;
+  return chosen.length - failedCount < pass;
+}
+
+/**
+ * 返回订单距离每个已选串关“全部确认命中”还差的场次数。
+ * 未确认和明确未命中的比赛都不计入 confirmed hit，因此都会被计入差关数。
+ */
+export function getOrderShortPasses(
+  slip: Pick<SavedSlip, "matches" | "passes" | "hits">,
+): number[] {
+  const chosen = selectedMatches(slip.matches);
+  const hits = slip.hits ?? {};
+  const hitCount = chosen.filter((match) => matchHasSelectedHit(match, hits)).length;
+  const shortPasses = new Set<number>();
+
+  slip.passes.forEach((pass) => {
+    const neededCount = pass - hitCount;
+    if (neededCount >= 1) shortPasses.add(neededCount);
+  });
+  return [...shortPasses].sort((left, right) => left - right);
+}
+
+export function isOrderFailed(slip: Pick<SavedSlip, "matches" | "passes" | "failedMatches">): boolean {
+  if (slip.passes.length === 0) return false;
+  return slip.passes.every((pass) => isOrderPassImpossible(slip, pass));
 }
 
 export type OrderStatus = "success" | "hopeful" | "failed";
