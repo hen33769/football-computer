@@ -98,11 +98,12 @@ import { MatchPreviewModal, OfficialTrendModal } from "./FootballInsights";
 import { FinanceTrendModal } from "./FinanceTrendModal";
 import { buildFinanceTrendFromOrders, shanghaiDateKey } from "./finance-trend";
 import { getFinanceTrend } from "./api-client/finance";
-import { orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "./imports";
+import { orderFilterIncomeTotal, orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "./imports";
 import { isOrderPaid } from "./order-model";
 import { CLOUD_APP_URL } from "./links";
 import { formatManualMatchText, formatManualOrderText } from "./manual-order-format";
 import { AppShellHeader } from "./components/AppShellHeader";
+import { TeamNameWithAlias } from "./components/TeamNameWithAlias";
 import { parseRecognizedText } from "./ocr";
 import {
   convertSportteryMatches,
@@ -148,6 +149,7 @@ import {
   withLeagueTagColor,
   type AppSettings,
 } from "./settings";
+import { buildTeamNameIndex, normalizeTeamName, type TeamNameActiveSlot, type TeamNameGroup, type TeamNameGroupDraft } from "./team-aliases";
 import type { CurrentHits, Market, MarketType, MatchItem, MatchResults, OddsOption, PrizeRange, SavedSlip } from "./types";
 
 const SAVED_KEY = CLOUD_STORAGE_KEYS.orders;
@@ -165,7 +167,7 @@ export type AppView = "betting" | "orders" | "settings";
 type DataTransferMode = "orders" | "settings" | "matches" | "full";
 type ImportStrategy = "merge" | "replace";
 type OrderProgressFilter = "settled" | "unsettled" | "unpaid" | null;
-type OrderStatusFilter = "success" | "hopeful" | "failed";
+type OrderStatusFilter = "success" | "hopeful" | "failed" | "paid";
 type CloudOrderQuery = {
   from?: string | null;
   to?: string | null;
@@ -752,9 +754,14 @@ function scoreResultTone(score: { home: number; away: number }) {
   return "result-draw";
 }
 
+function MatchTeamsLabel({ match, teamNameIndex }: { match: MatchItem; teamNameIndex: ReturnType<typeof buildTeamNameIndex> }) {
+  return <><TeamNameWithAlias name={match.home} index={teamNameIndex} /> VS <TeamNameWithAlias name={match.away} index={teamNameIndex} /></>;
+}
+
 function MatchCard({
   match,
   now,
+  teamNameIndex,
   onToggle,
   onPreview,
   onMore,
@@ -766,6 +773,7 @@ function MatchCard({
 }: {
   match: MatchItem;
   now: Date;
+  teamNameIndex: ReturnType<typeof buildTeamNameIndex>;
   onToggle: (matchId: string, type: MarketType, optionId: string) => void;
   onPreview: (matchId: string) => void;
   onMore: (matchId: string) => void;
@@ -796,7 +804,7 @@ function MatchCard({
         <div className="match-time">{formatMatchCardTime(match)}</div>
       </div>
       <div className="teams-row">
-        <b className="match-team-name match-home-team">{match.home}</b>
+        <b className="match-team-name match-home-team"><TeamNameWithAlias name={match.home} index={teamNameIndex} /></b>
         {fullScore ? (
           <>
             <span className={`match-final-score match-home-score ${fullScoreTone}`}>{fullScore.home}</span>
@@ -806,7 +814,7 @@ function MatchCard({
         ) : resultLoading ? (
           <span className="match-result-loading" title="正在获取赛果" aria-label="正在获取赛果"><LoadingOutlined spin /></span>
         ) : <span className="match-versus">VS</span>}
-        <b className="match-team-name match-away-team">{match.away}</b>
+        <b className="match-team-name match-away-team"><TeamNameWithAlias name={match.away} index={teamNameIndex} /></b>
         {halfScore && (
           <>
             <small className={`match-half-score match-half-home ${halfScoreTone}`}>{halfScore.home}</small>
@@ -828,13 +836,139 @@ function MatchCard({
   );
 }
 
+const TEAM_NAME_ACTIVE_OPTIONS = [
+  { value: null, label: "不激活" },
+  { value: 1, label: "激活名称 1" },
+  { value: 2, label: "激活名称 2" },
+] as const;
+
+function TeamNameGroupEditor({
+  draft,
+  onChange,
+  onAddName,
+  onRemoveName,
+  onCancel,
+  onSave,
+  saving,
+}: {
+  draft: TeamNameGroupDraft;
+  onChange: (draft: TeamNameGroupDraft) => void;
+  onAddName: () => void;
+  onRemoveName: (index: number) => void;
+  onCancel: () => void;
+  onSave: () => void;
+  saving: boolean;
+}) {
+  const activeCount = draft.names.filter((entry) => entry.activeSlot !== null).length;
+  const updateName = (index: number, name: string) => {
+    onChange({
+      ...draft,
+      names: draft.names.map((entry, entryIndex) => entryIndex === index ? { ...entry, name } : entry),
+    });
+  };
+  const updateActiveSlot = (index: number, activeSlot: TeamNameActiveSlot) => {
+    onChange({
+      ...draft,
+      names: draft.names.map((entry, entryIndex) => entryIndex === index
+        ? { ...entry, activeSlot }
+        : activeSlot !== null && entry.activeSlot === activeSlot
+          ? { ...entry, activeSlot: null }
+          : entry),
+    });
+  };
+
+  return (
+    <div className="team-name-group-editor">
+      <div className="team-name-group-editor-title">
+        <div><b>{draft.id ? "编辑队伍名称组" : "新增队伍名称组"}</b><span>所有名称都会参与识别，激活名称用于投注页展示。</span></div>
+        <Tag color={activeCount === 2 ? "success" : "warning"}>已激活 {activeCount} / 2</Tag>
+      </div>
+      <div className="team-name-editor-rows">
+        {draft.names.map((entry, index) => (
+          <div className="team-name-editor-row" key={entry.id ?? `new-${index}`}>
+            <Input
+              value={entry.name}
+              maxLength={80}
+              placeholder="输入队伍名称"
+              aria-label={`队伍名称 ${index + 1}`}
+              onChange={(event) => updateName(index, event.target.value)}
+            />
+            <Select
+              value={entry.activeSlot}
+              options={TEAM_NAME_ACTIVE_OPTIONS.map((option) => ({ ...option }))}
+              aria-label={`队伍名称 ${index + 1} 的激活状态`}
+              onChange={(value) => updateActiveSlot(index, value as TeamNameActiveSlot)}
+            />
+            <Button
+              type="text"
+              danger
+              icon={<DeleteOutlined />}
+              disabled={draft.names.length <= 2}
+              aria-label={`删除队伍名称 ${index + 1}`}
+              onClick={() => onRemoveName(index)}
+            />
+          </div>
+        ))}
+      </div>
+      <div className="team-name-group-editor-actions">
+        <Button type="dashed" icon={<PlusOutlined />} onClick={onAddName}>增加名称</Button>
+        <Space>
+          <Button onClick={onCancel}>取消</Button>
+          <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={onSave}>保存</Button>
+        </Space>
+      </div>
+      <p className="team-name-editor-help">必须恰好激活两个名称；未激活名称仍可用于识别接口返回的历史翻译。</p>
+    </div>
+  );
+}
+
+function TeamNameGroupSummary({
+  group,
+  canManage,
+  deleting,
+  onEdit,
+  onDelete,
+}: {
+  group: TeamNameGroup;
+  canManage: boolean;
+  deleting: boolean;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <section className="team-name-group-summary">
+      <div className="team-name-group-summary-head">
+        <div><b>队伍名称组</b><span>{group.names.length} 个名称 · 已激活 {group.names.filter((entry) => entry.activeSlot !== null).length} 个</span></div>
+        {canManage && (
+          <Space size="small">
+            <Button size="small" icon={<EditOutlined />} onClick={onEdit}>编辑</Button>
+            <Popconfirm title="删除这组队伍名称？" description="删除后投注页将不再显示这组名称的辅助名称。" okText="删除" cancelText="取消" okButtonProps={{ danger: true, loading: deleting }} onConfirm={onDelete}>
+              <Button size="small" danger icon={<DeleteOutlined />} loading={deleting}>删除</Button>
+            </Popconfirm>
+          </Space>
+        )}
+      </div>
+      <div className="team-name-group-names">
+        {group.names.map((entry) => (
+          <Tag color={entry.activeSlot ? "cyan" : "default"} key={entry.id}>
+            {entry.name}{entry.activeSlot ? ` · 激活 ${entry.activeSlot}` : " · 未激活"}
+          </Tag>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function InnerFootballApp({
   initialView,
   onNavigate,
   cloudAccount,
   cloudPersonal,
+  teamNameGroups,
   cloudSyncStatus,
   onCloudSettingsChange,
+  onTeamNameGroupSave,
+  onTeamNameGroupDelete,
   onCloudFinanceCorrectionChange,
   onCloudOrderMutation,
   onCloudOrdersQueryChange,
@@ -848,8 +982,11 @@ function InnerFootballApp({
   onNavigate?: (view: AppView) => void;
   cloudAccount: CloudAccount | null;
   cloudPersonal: CloudPersonalData | null;
+  teamNameGroups: TeamNameGroup[];
   cloudSyncStatus: CloudSyncStatus;
   onCloudSettingsChange: (settings: AppSettings) => void;
+  onTeamNameGroupSave: (group: TeamNameGroupDraft) => Promise<TeamNameGroup>;
+  onTeamNameGroupDelete: (group: Pick<TeamNameGroup, "id" | "revision">) => Promise<void>;
   onCloudFinanceCorrectionChange: (correction: { expenseCorrection: number; incomeCorrection: number }) => Promise<CloudPersonalData["finance"]>;
   onCloudOrderMutation: (intent: OrderSyncIntent) => Promise<CloudOrderMutationResult>;
   onCloudOrdersQueryChange: (query: CloudOrderQuery) => Promise<CloudOrderQueryResult>;
@@ -862,6 +999,8 @@ function InnerFootballApp({
   const { message, modal, notification } = App.useApp();
   const isGuestMode = cloudAccount?.id === "local";
   const isCloudMode = Boolean(cloudAccount && !isGuestMode);
+  const canManageTeamNames = cloudAccount?.role === "admin" && !isGuestMode;
+  const teamNameIndex = useMemo(() => buildTeamNameIndex(teamNameGroups), [teamNameGroups]);
   const headerRef = useRef<HTMLElement | null>(null);
   const orderListLoadMoreRef = useRef<HTMLDivElement | null>(null);
   const [isMobileViewport, setIsMobileViewport] = useState(false);
@@ -1066,6 +1205,9 @@ function InnerFootballApp({
     !cloudAccount ? createDefaultSettings() :
     isCloudMode && cloudPersonal ? normalizeAppSettings(cloudPersonal.settings) : loadAppSettings()
   ));
+  const [teamNameEditor, setTeamNameEditor] = useState<TeamNameGroupDraft | null>(null);
+  const [teamNameSaving, setTeamNameSaving] = useState(false);
+  const [teamNameDeletingId, setTeamNameDeletingId] = useState<string | null>(null);
   const [importStrategy, setImportStrategy] = useState<ImportStrategy>("merge");
   const saleNow = useMemo(() => new Date(saleClock), [saleClock]);
   const manualSelectedMatchIds = useMemo(() => new Set(manualOrderEntries.flatMap((entry) => (
@@ -1576,7 +1718,9 @@ function InnerFootballApp({
       if (orderProgressFilter === "settled" && !slip.settledAt) return false;
       if (orderProgressFilter === "unsettled" && slip.settledAt) return false;
       if (orderProgressFilter === "unpaid" && isOrderPaid(slip)) return false;
-      if (orderStatusFilters.length > 0 && !orderStatusFilters.includes(getOrderStatus(slip))) return false;
+      if (orderStatusFilters.length > 0 && !orderStatusFilters.some((status) => (
+        status === "paid" ? isOrderPaid(slip) : getOrderStatus(slip) === status
+      ))) return false;
       if (orderShortPassFilters.length > 0 && !orderShortPassFilters.some((pass) => getOrderShortPasses(slip).includes(pass))) return false;
       if (orderDateRange) {
         const savedDate = savedSlipDateKey(slip.savedAt);
@@ -1602,9 +1746,8 @@ function InnerFootballApp({
     [filteredSavedSlips],
   );
   const filteredOrderTotalStake = useMemo(() => orderStakeTotal(filteredSavedSlips), [filteredSavedSlips]);
-  const filteredOrderLedger = useMemo(() => orderLedgerTotals(filteredSavedSlips), [filteredSavedSlips]);
-  const filteredOrderPaidStake = filteredOrderLedger.expense;
-  const filteredOrderIncome = filteredOrderLedger.income;
+  const filteredOrderPaidStake = useMemo(() => orderLedgerTotals(filteredSavedSlips).expense, [filteredSavedSlips]);
+  const filteredOrderIncome = useMemo(() => orderFilterIncomeTotal(filteredSavedSlips), [filteredSavedSlips]);
   const filteredOrderProfit = filteredOrderIncome - filteredOrderPaidStake;
   const renderedSavedSlips = useMemo(
     () => filteredSavedSlips.slice(0, renderedOrderCount),
@@ -3175,6 +3318,67 @@ function InnerFootballApp({
     notification.success({ message: "联赛颜色已恢复默认", placement: "bottomRight" });
   };
 
+  const startNewTeamNameGroup = () => {
+    if (teamNameEditor) return;
+    setTeamNameEditor({
+      names: [
+        { name: "", activeSlot: 1 },
+        { name: "", activeSlot: 2 },
+      ],
+    });
+  };
+
+  const editTeamNameGroup = (group: TeamNameGroup) => {
+    setTeamNameEditor({
+      id: group.id,
+      expectedRevision: group.revision,
+      names: group.names.map(({ id, name, activeSlot }) => ({ id, name, activeSlot })),
+    });
+  };
+
+  const teamNameDraftError = (draft: TeamNameGroupDraft) => {
+    if (draft.names.length < 2) return "每个队伍至少需要两个名称";
+    const keys = draft.names.map((entry) => normalizeTeamName(entry.name));
+    if (keys.some((key) => !key)) return "队伍名称不能为空";
+    if (new Set(keys).size !== keys.length) return "同一队伍中不能填写重复名称";
+    const activeSlots = draft.names.flatMap((entry) => entry.activeSlot === null ? [] : [entry.activeSlot]);
+    if (activeSlots.length !== 2 || new Set(activeSlots).size !== 2) return "请恰好激活两个名称";
+    return null;
+  };
+
+  const saveTeamNameEditor = async () => {
+    if (!teamNameEditor || teamNameSaving) return;
+    const validationError = teamNameDraftError(teamNameEditor);
+    if (validationError) {
+      message.error(validationError);
+      return;
+    }
+    setTeamNameSaving(true);
+    try {
+      await onTeamNameGroupSave(teamNameEditor);
+      setTeamNameEditor(null);
+      notification.success({ message: "队伍名称已保存", placement: "bottomRight" });
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "队伍名称保存失败");
+    } finally {
+      setTeamNameSaving(false);
+    }
+  };
+
+  const removeTeamNameGroup = async (group: TeamNameGroup) => {
+    if (teamNameDeletingId) return;
+    setTeamNameDeletingId(group.id);
+    try {
+      await onTeamNameGroupDelete(group);
+      if (teamNameEditor?.id === group.id) setTeamNameEditor(null);
+      notification.success({ message: "队伍名称组已删除", placement: "bottomRight" });
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "队伍名称删除失败");
+    } finally {
+      setTeamNameDeletingId(null);
+    }
+  };
+
   const importMenu = (
     <div className="data-popover-menu">
       <div className="data-popover-heading"><b>导入数据</b><span>先选择导入方式，再选择 JSON 文件内容</span></div>
@@ -3396,6 +3600,7 @@ function InnerFootballApp({
                       key={match.id}
                       match={match}
                       now={saleNow}
+                      teamNameIndex={teamNameIndex}
                       onToggle={toggleOption}
                       onPreview={setPreviewMatchId}
                       onMore={setMoreMatchId}
@@ -3544,6 +3749,7 @@ function InnerFootballApp({
                         { value: "success", label: "成功" },
                         { value: "hopeful", label: "有希望" },
                         { value: "failed", label: "失败" },
+                        { value: "paid", label: "已支付" },
                       ]}
                       onChange={(values) => {
                         setRenderedOrderCount(ORDER_LIST_BATCH_SIZE);
@@ -4041,6 +4247,50 @@ function InnerFootballApp({
                 })}
               </div>
             </Card>
+            <Card className="settings-card team-name-card">
+              <div className="settings-card-head">
+                <div><h3>队伍名称别名</h3><p>公共配置，所有用户共用；接口返回的历史名称也会参与识别，只有管理员可以修改。</p></div>
+                {canManageTeamNames && <Button type="primary" icon={<PlusOutlined />} disabled={Boolean(teamNameEditor)} onClick={startNewTeamNameGroup}>添加队伍</Button>}
+              </div>
+              {teamNameEditor && !teamNameEditor.id && (
+                <TeamNameGroupEditor
+                  draft={teamNameEditor}
+                  onChange={setTeamNameEditor}
+                  onAddName={() => setTeamNameEditor((current) => current ? { ...current, names: [...current.names, { name: "", activeSlot: null }] } : current)}
+                  onRemoveName={(index) => setTeamNameEditor((current) => current ? { ...current, names: current.names.filter((_, entryIndex) => entryIndex !== index) } : current)}
+                  onCancel={() => setTeamNameEditor(null)}
+                  onSave={() => { void saveTeamNameEditor(); }}
+                  saving={teamNameSaving}
+                />
+              )}
+              {teamNameGroups.length === 0 && !teamNameEditor ? (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={canManageTeamNames ? "还没有队伍名称配置，点击右上角添加" : "暂无公共队伍名称配置"} />
+              ) : (
+                <div className="team-name-group-list">
+                  {teamNameGroups.map((group) => teamNameEditor?.id === group.id ? (
+                    <TeamNameGroupEditor
+                      key={group.id}
+                      draft={teamNameEditor}
+                      onChange={setTeamNameEditor}
+                      onAddName={() => setTeamNameEditor((current) => current ? { ...current, names: [...current.names, { name: "", activeSlot: null }] } : current)}
+                      onRemoveName={(index) => setTeamNameEditor((current) => current ? { ...current, names: current.names.filter((_, entryIndex) => entryIndex !== index) } : current)}
+                      onCancel={() => setTeamNameEditor(null)}
+                      onSave={() => { void saveTeamNameEditor(); }}
+                      saving={teamNameSaving}
+                    />
+                  ) : (
+                    <TeamNameGroupSummary
+                      key={group.id}
+                      group={group}
+                      canManage={canManageTeamNames}
+                      deleting={teamNameDeletingId === group.id}
+                      onEdit={() => editTeamNameGroup(group)}
+                      onDelete={() => { void removeTeamNameGroup(group); }}
+                    />
+                  ))}
+                </div>
+              )}
+            </Card>
             <Card className="settings-card settings-data-card">
               <div className="settings-card-head">
                 <div><h3>数据管理</h3><p>通过 JSON 文件备份或恢复订单、比赛、应用设置与收支账本。</p></div>
@@ -4082,7 +4332,7 @@ function InnerFootballApp({
         onCancel={() => setMoreMatchId(null)}
         footer={<Button type="primary" onClick={() => setMoreMatchId(null)}>完成选择</Button>}
         width={980}
-        title={moreMatch ? <Space>{`${moreMatch.weekday}${moreMatch.code} · ${moreMatch.home} VS ${moreMatch.away}`}{getMatchSaleState(moreMatch, saleNow) === "pending" && <Tag color="warning">待开售</Tag>}{getMatchSaleState(moreMatch, saleNow) === "stopped" && <Tag color="default">已停售 · 仅供查看</Tag>}</Space> : "更多玩法"}
+        title={moreMatch ? <Space><span>{moreMatch.weekday}{moreMatch.code} · </span><MatchTeamsLabel match={moreMatch} teamNameIndex={teamNameIndex} />{getMatchSaleState(moreMatch, saleNow) === "pending" && <Tag color="warning">待开售</Tag>}{getMatchSaleState(moreMatch, saleNow) === "stopped" && <Tag color="default">已停售 · 仅供查看</Tag>}</Space> : "更多玩法"}
         className="more-modal"
       >
         {moreMatch?.markets.map((market) => (
@@ -4109,12 +4359,14 @@ function InnerFootballApp({
         match={previewMatch}
         open={Boolean(previewMatch)}
         onClose={() => setPreviewMatchId(null)}
+        teamNameIndex={teamNameIndex}
       />
 
       <OfficialTrendModal
         match={trendMatch}
         open={Boolean(trendMatch)}
         onClose={() => setTrendMatchId(null)}
+        teamNameIndex={teamNameIndex}
       />
 
       <Modal
@@ -4236,7 +4488,7 @@ function InnerFootballApp({
           <section className="detail-match" key={match.id}>
             <div className="detail-match-title">
               <span>{match.weekday}{match.code}</span>
-              <b>{match.home} VS {match.away}</b>
+              <b><MatchTeamsLabel match={match} teamNameIndex={teamNameIndex} /></b>
               <Tooltip title="编辑本场投注">
                 <Button
                   className="edit-match-bets"
@@ -4510,6 +4762,19 @@ function InnerFootballApp({
 
 const LOCAL_CLOUD_ACCOUNT: CloudAccount = { id: "local", account: "游客", role: "user" };
 const ignoreCloudSettingsChange = () => undefined;
+const ignoreTeamNameGroupSave = async (group: TeamNameGroupDraft) => ({
+  id: group.id ?? "local",
+  names: group.names.map((entry, index) => ({
+    id: entry.id ?? `local-name-${index}`,
+    groupId: group.id ?? "local",
+    name: entry.name,
+    nameKey: normalizeTeamName(entry.name),
+    activeSlot: entry.activeSlot,
+  })),
+  revision: group.expectedRevision ?? 0,
+  updatedAt: "",
+});
+const ignoreTeamNameGroupDelete = async () => undefined;
 const ignoreCloudFinanceCorrectionChange = async (correction: { expenseCorrection: number; incomeCorrection: number }) => ({
   expenseTotal: Math.max(0, correction.expenseCorrection),
   incomeTotal: Math.max(0, correction.incomeCorrection),
@@ -4536,8 +4801,11 @@ export default function FootballApp({
   onNavigate,
   cloudAccount = LOCAL_CLOUD_ACCOUNT,
   cloudPersonal = null,
+  teamNameGroups = [],
   cloudSyncStatus = "saved",
   onCloudSettingsChange = ignoreCloudSettingsChange,
+  onTeamNameGroupSave = ignoreTeamNameGroupSave,
+  onTeamNameGroupDelete = ignoreTeamNameGroupDelete,
   onCloudFinanceCorrectionChange = ignoreCloudFinanceCorrectionChange,
   onCloudOrderMutation = ignoreCloudOrderMutation,
   onCloudOrdersQueryChange = ignoreCloudOrdersQueryChange,
@@ -4551,8 +4819,11 @@ export default function FootballApp({
   onNavigate?: (view: AppView) => void;
   cloudAccount?: CloudAccount | null;
   cloudPersonal?: CloudPersonalData | null;
+  teamNameGroups?: TeamNameGroup[];
   cloudSyncStatus?: CloudSyncStatus;
   onCloudSettingsChange?: (settings: AppSettings) => void;
+  onTeamNameGroupSave?: (group: TeamNameGroupDraft) => Promise<TeamNameGroup>;
+  onTeamNameGroupDelete?: (group: Pick<TeamNameGroup, "id" | "revision">) => Promise<void>;
   onCloudFinanceCorrectionChange?: (correction: { expenseCorrection: number; incomeCorrection: number }) => Promise<CloudPersonalData["finance"]>;
   onCloudOrderMutation?: (intent: OrderSyncIntent) => Promise<CloudOrderMutationResult>;
   onCloudOrdersQueryChange?: (query: CloudOrderQuery) => Promise<CloudOrderQueryResult>;
@@ -4588,8 +4859,11 @@ export default function FootballApp({
           onNavigate={onNavigate}
           cloudAccount={cloudAccount}
           cloudPersonal={cloudPersonal}
+          teamNameGroups={teamNameGroups}
           cloudSyncStatus={cloudSyncStatus}
           onCloudSettingsChange={onCloudSettingsChange}
+          onTeamNameGroupSave={onTeamNameGroupSave}
+          onTeamNameGroupDelete={onTeamNameGroupDelete}
           onCloudFinanceCorrectionChange={onCloudFinanceCorrectionChange}
           onCloudOrderMutation={onCloudOrderMutation}
           onCloudOrdersQueryChange={onCloudOrdersQueryChange}

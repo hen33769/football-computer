@@ -1,4 +1,4 @@
-import { calculateStake } from "./calculator";
+import { calculateCurrentPrize, calculateStake, getOrderStatus } from "./calculator";
 import type { SavedSlip } from "./types";
 import { isOrderPaid } from "./order-model";
 
@@ -25,6 +25,17 @@ export const orderLedgerTotals = (orders: SavedSlip[]) => ({
   expense: orders.reduce((total, order) => total + paidStake(order), 0),
   income: orders.reduce((total, order) => total + (order.settledPrize ?? 0), 0),
 });
+
+const orderFilterIncome = (order: SavedSlip) => Math.max(
+  order.settledPrize ?? 0,
+  calculateCurrentPrize(order.matches, order.passes, order.multiple, order.hits ?? {}),
+);
+
+/** 订单页筛选摘要的收入：只把筛选结果中的已支付成功订单计入，包括未结账订单。 */
+export const orderFilterIncomeTotal = (orders: SavedSlip[]) => orders.reduce(
+  (total, order) => total + (isOrderPaid(order) && getOrderStatus(order) === "success" ? orderFilterIncome(order) : 0),
+  0,
+);
 
 /** 以导入订单更新同 ID 订单，并保留导入对象未提供的现有可选字段。 */
 export function unionSavedOrders(current: SavedSlip[], incoming: SavedSlip[]) {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { CompactOrder } from "../app/order-model";
-import { bulkUpdateOrders, financePreviewForOrders } from "../app/server/orders-service";
+import { bulkUpdateOrders, financePreviewForOrders, listOrders } from "../app/server/orders-service";
 
 const order = (id: string, paymentStatus: "unpaid" | "paid" = "unpaid"): CompactOrder => ({
   id,
@@ -166,4 +166,31 @@ test("普通批量编辑允许修改未支付订单的投注结构", async () =>
 test("账本预览只把已支付订单计入支出", () => {
   const preview = financePreviewForOrders([order("unpaid"), order("paid", "paid")]);
   assert.deepEqual(preview, { expense: 2, income: 0 });
+});
+
+test("订单列表的已支付状态可单独筛选并与订单状态按 OR 组合", async () => {
+  const preparedSql: string[] = [];
+  const boundArgs: unknown[][] = [];
+  const d1 = {
+    prepare: (sql: string) => {
+      preparedSql.push(sql);
+      const statement = {
+        bind: (...args: unknown[]) => {
+          boundArgs.push(args);
+          return statement;
+        },
+        all: async () => ({ results: [] }),
+        first: async () => ({ total: 0 }),
+      };
+      return statement;
+    },
+  };
+
+  await listOrders(d1 as unknown as D1Database, "user", {
+    statuses: ["paid", "success"],
+    limit: 10,
+  });
+
+  assert.match(preparedSql[0], /\(payment_status = 'paid' OR status IN \(SELECT value FROM json_each\(\?\)\)\)/);
+  assert.deepEqual(boundArgs[0], ["user", JSON.stringify(["success"]), 10, 0]);
 });

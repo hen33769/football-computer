@@ -18,7 +18,7 @@ import {
   MAX_SELECTED_MATCHES,
 } from "../app/calculator";
 import { cloneMatches, initialMatches } from "../app/data";
-import { orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "../app/imports";
+import { orderFilterIncomeTotal, orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "../app/imports";
 import { matchPassesLeagueFilter, orderContainsTeam, orderPassesLeagueFilter, retainAvailableLeagueNames, splitTeamNameByQuery } from "../app/order-filters";
 import { appendOrderPassValue, inferOrderPasses, parseOrderPassValues } from "../app/order-passes";
 import { isOrderMatchJudged, judgeLoadedOrdersWithResults, judgeSlipWithResults, repairSlipHandicapResults } from "../app/results";
@@ -156,6 +156,34 @@ test("订单汇总区分筛选总额与已支付支出", () => {
 
   assert.equal(orderStakeTotal([unpaid, paid]), 8);
   assert.deepEqual(orderLedgerTotals([unpaid, paid]), { expense: 4, income: 12 });
+});
+
+test("订单筛选收入只计入已支付成功订单，包括未结账订单", () => {
+  const matches = select();
+  const unsettledSuccess: SavedSlip = {
+    name: "未结账成功订单",
+    savedAt: "2026-08-24T01:00:00.000Z",
+    matches,
+    passes: [2],
+    multiple: 2,
+    paymentStatus: "paid",
+    hits: {
+      [matches[0].id]: { spf: "win" },
+      [matches[1].id]: { spf: "win" },
+    },
+  };
+  const hopeful: SavedSlip = {
+    ...unsettledSuccess,
+    name: "有希望订单",
+    hits: undefined,
+  };
+  const unpaidSuccess: SavedSlip = {
+    ...unsettledSuccess,
+    name: "未支付成功订单",
+    paymentStatus: "unpaid",
+  };
+
+  assert.equal(orderFilterIncomeTotal([unsettledSuccess, hopeful, unpaidSuccess]), 24);
 });
 
 function select(matches = cloneMatches(initialMatches.slice(0, 2))) {

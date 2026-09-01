@@ -25,6 +25,7 @@ import type { MatchItem, SavedSlip } from "./types";
 import { requestJson } from "./api-client/http";
 import { getCurrentUser, loginAccount, logoutAccount } from "./api-client/users";
 import { getUserSettings, updateUserSettings } from "./api-client/settings";
+import { deleteTeamNameGroup, getTeamNameGroups, saveTeamNameGroup } from "./api-client/team-aliases";
 import { getFinance, updateFinanceCorrections, type FinanceResponse } from "./api-client/finance";
 import { bulkUpdateOrders, createOrder, deleteOrder, fetchOrders, type OrderQuery, type OrdersResponse } from "./api-client/orders";
 import {
@@ -35,6 +36,7 @@ import {
 } from "./api-client/matches";
 import type { AppSettings } from "./settings";
 import type { SportteryMatchSnapshot } from "./sporttery";
+import type { TeamNameGroup, TeamNameGroupDraft } from "./team-aliases";
 
 type RouteStatus = "loading" | "ready" | "error";
 type VersionResponse = { appVersion?: string };
@@ -96,6 +98,7 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
   const [routeErrorMessage, setRouteErrorMessage] = useState("");
   const [syncStatus, setSyncStatus] = useState<CloudSyncStatus>("saved");
   const [cloudPersonal, setCloudPersonal] = useState<CloudPersonalData | null>(null);
+  const [teamNameGroups, setTeamNameGroups] = useState<TeamNameGroup[]>([]);
   const [latestVersion, setLatestVersion] = useState("");
   const syncQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const pendingWritesRef = useRef(0);
@@ -112,10 +115,15 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
     if (showLoading) setRouteStatus("loading");
     setRouteErrorMessage("");
     try {
-      const [userResult, matchSnapshot] = await Promise.all([
+      const [userResult, matchSnapshot, teamNameSnapshot] = await Promise.all([
         getCurrentUser(),
         getCloudCurrentMatches(),
+        getTeamNameGroups().catch((error) => {
+          console.warn("[队伍名称] 公共别名读取失败，保留原始队名", error);
+          return { groups: [], updatedAt: "" };
+        }),
       ]);
+      setTeamNameGroups(teamNameSnapshot.groups);
       const cloudMatches = matchSnapshot.matches;
       const localMatches = readJson<MatchItem[]>(CLOUD_STORAGE_KEYS.matches, []);
       if (cloudMatches.length > 0) {
@@ -321,6 +329,22 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
     }).catch(() => undefined);
   }, [enqueueWrite]);
 
+  const saveSharedTeamNameGroup = useCallback(async (draft: TeamNameGroupDraft) => {
+    if (!accountIdRef.current) throw new Error("请先输入账号登录");
+    const saved = await saveTeamNameGroup(draft);
+    setTeamNameGroups((current) => {
+      const next = current.filter((group) => group.id !== saved.id);
+      return draft.id ? [...next, saved] : [saved, ...next];
+    });
+    return saved;
+  }, []);
+
+  const deleteSharedTeamNameGroup = useCallback(async (group: Pick<TeamNameGroup, "id" | "revision">) => {
+    if (!accountIdRef.current) throw new Error("请先输入账号登录");
+    await deleteTeamNameGroup(group);
+    setTeamNameGroups((current) => current.filter((item) => item.id !== group.id));
+  }, []);
+
   const syncFinanceCorrections = useCallback(async (correction: { expenseCorrection: number; incomeCorrection: number }) => {
     const accountId = accountIdRef.current;
     const previous = clientPersonalRef.current;
@@ -509,8 +533,11 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
         onNavigate={navigate}
         cloudAccount={account}
         cloudPersonal={cloudPersonal}
+        teamNameGroups={teamNameGroups}
         cloudSyncStatus={syncStatus}
         onCloudSettingsChange={syncSettings}
+        onTeamNameGroupSave={saveSharedTeamNameGroup}
+        onTeamNameGroupDelete={deleteSharedTeamNameGroup}
         onCloudFinanceCorrectionChange={syncFinanceCorrections}
         onCloudOrderMutation={syncOrders}
         onCloudOrdersQueryChange={queryCloudOrders}

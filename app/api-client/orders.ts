@@ -10,7 +10,7 @@ import type { CurrentHits, SavedSlip } from "../types";
 import { requestJson } from "./http";
 
 export type OrderProgressFilter = "settled" | "unsettled" | "unpaid" | null;
-export type OrderStatusFilter = "success" | "hopeful" | "failed";
+export type OrderStatusFilter = "success" | "hopeful" | "failed" | "paid";
 
 export type OrderQuery = {
   from?: string | null;

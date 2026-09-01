@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const users = sqliteTable("users", {
   id: text("id").primaryKey(),
@@ -78,3 +78,23 @@ export const matchRefreshStates = sqliteTable("match_refresh_states", {
   error: text("error"),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const sharedTeamNameGroups = sqliteTable("shared_team_name_groups", {
+  id: text("id").primaryKey(),
+  updatedBy: text("updated_by").references(() => users.id, { onDelete: "set null" }),
+  revision: integer("revision").notNull().default(0),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const sharedTeamNames = sqliteTable("shared_team_names", {
+  id: text("id").primaryKey(),
+  groupId: text("group_id").notNull().references(() => sharedTeamNameGroups.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  nameKey: text("name_key").notNull(),
+  activeSlot: integer("active_slot"),
+  updatedBy: text("updated_by").references(() => users.id, { onDelete: "set null" }),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("shared_team_names_group_idx").on(table.groupId),
+  uniqueIndex("shared_team_names_group_slot_unique").on(table.groupId, table.activeSlot),
+]);

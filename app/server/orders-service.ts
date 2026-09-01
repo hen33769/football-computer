@@ -50,6 +50,7 @@ const MAX_ORDER_BYTES = 1_500_000;
 const MAX_ORDER_LIMIT = 500;
 const MAX_BULK_ORDER_UPDATES = 500;
 const VALID_STATUSES = new Set(["success", "hopeful", "failed"]);
+const PAID_STATUS = "paid";
 
 const unique = <T,>(values: T[]) => [...new Set(values)];
 
@@ -255,8 +256,15 @@ function ordersWhereClause(query: OrdersQuery) {
   if (query.progress === "settled") conditions.push("settled_at IS NOT NULL");
   if (query.progress === "unsettled") conditions.push("settled_at IS NULL");
   if (query.progress === "unpaid") conditions.push("payment_status = 'unpaid'");
-  const statuses = unique((query.statuses ?? []).filter((status) => VALID_STATUSES.has(status)));
-  if (statuses.length > 0) {
+  const requestedStatuses = unique(query.statuses ?? []);
+  const paidSelected = requestedStatuses.includes(PAID_STATUS);
+  const statuses = requestedStatuses.filter((status) => VALID_STATUSES.has(status));
+  if (paidSelected && statuses.length > 0) {
+    conditions.push("(payment_status = 'paid' OR status IN (SELECT value FROM json_each(?)))");
+    params.push(JSON.stringify(statuses));
+  } else if (paidSelected) {
+    conditions.push("payment_status = 'paid'");
+  } else if (statuses.length > 0) {
     conditions.push("status IN (SELECT value FROM json_each(?))");
     params.push(JSON.stringify(statuses));
   }
