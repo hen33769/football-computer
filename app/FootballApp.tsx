@@ -4247,10 +4247,10 @@ function InnerFootballApp({
                 })}
               </div>
             </Card>
-            <Card className="settings-card team-name-card">
+            {canManageTeamNames && <Card className="settings-card team-name-card">
               <div className="settings-card-head">
                 <div><h3>队伍名称别名</h3><p>公共配置，所有用户共用；接口返回的历史名称也会参与识别，只有管理员可以修改。</p></div>
-                {canManageTeamNames && <Button type="primary" icon={<PlusOutlined />} disabled={Boolean(teamNameEditor)} onClick={startNewTeamNameGroup}>添加队伍</Button>}
+                <Button type="primary" icon={<PlusOutlined />} disabled={Boolean(teamNameEditor)} onClick={startNewTeamNameGroup}>添加队伍</Button>
               </div>
               {teamNameEditor && !teamNameEditor.id && (
                 <TeamNameGroupEditor
@@ -4264,7 +4264,7 @@ function InnerFootballApp({
                 />
               )}
               {teamNameGroups.length === 0 && !teamNameEditor ? (
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={canManageTeamNames ? "还没有队伍名称配置，点击右上角添加" : "暂无公共队伍名称配置"} />
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有队伍名称配置，点击右上角添加" />
               ) : (
                 <div className="team-name-group-list">
                   {teamNameGroups.map((group) => teamNameEditor?.id === group.id ? (
@@ -4290,7 +4290,7 @@ function InnerFootballApp({
                   ))}
                 </div>
               )}
-            </Card>
+            </Card>}
             <Card className="settings-card settings-data-card">
               <div className="settings-card-head">
                 <div><h3>数据管理</h3><p>通过 JSON 文件备份或恢复订单、比赛、应用设置与收支账本。</p></div>
