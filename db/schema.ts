@@ -81,6 +81,7 @@ export const matchRefreshStates = sqliteTable("match_refresh_states", {
 
 export const sharedTeamNameGroups = sqliteTable("shared_team_name_groups", {
   id: text("id").primaryKey(),
+  iconDataUrl: text("icon_data_url"),
   updatedBy: text("updated_by").references(() => users.id, { onDelete: "set null" }),
   revision: integer("revision").notNull().default(0),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),

@@ -27,7 +27,7 @@ import {
   type SportteryTrendData,
 } from "./sporttery-insights";
 import type { MatchItem } from "./types";
-import { TeamNameWithAlias } from "./components/TeamNameWithAlias";
+import { TeamNameWithIcon } from "./components/TeamNameWithAlias";
 import type { TeamNameIndex } from "./team-aliases";
 
 const asRecord = (value: unknown): InsightRecord => (
@@ -194,7 +194,7 @@ export function OfficialTrendModal({
       onCancel={onClose}
       width={1120}
       className="insight-modal"
-      title={match ? <><span>{match.weekday}{match.code} · </span><TeamNameWithAlias name={match.home} index={teamNameIndex} /> <span>VS </span><TeamNameWithAlias name={match.away} index={teamNameIndex} /><span> · 官方趋势</span></> : "官方趋势"}
+      title={match ? <><span>{match.weekday}{match.code} · </span><TeamNameWithIcon name={match.home} index={teamNameIndex} /> <span>VS </span><TeamNameWithIcon name={match.away} index={teamNameIndex} iconPosition="before" /><span> · 官方趋势</span></> : "官方趋势"}
       footer={<Button type="primary" onClick={onClose}>关闭</Button>}
     >
       <Spin spinning={loading}>
@@ -678,7 +678,7 @@ export function MatchPreviewModal({
       onCancel={onClose}
       width={1400}
       className="insight-modal"
-      title={match ? <><span>{match.weekday}{match.code} · </span><TeamNameWithAlias name={match.home} index={teamNameIndex} /> <span>VS </span><TeamNameWithAlias name={match.away} index={teamNameIndex} /><span> · 赛事前瞻</span></> : "赛事前瞻"}
+      title={match ? <><span>{match.weekday}{match.code} · </span><TeamNameWithIcon name={match.home} index={teamNameIndex} /> <span>VS </span><TeamNameWithIcon name={match.away} index={teamNameIndex} iconPosition="before" /><span> · 赛事前瞻</span></> : "赛事前瞻"}
       footer={<Button type="primary" onClick={onClose}>关闭</Button>}
     >
       <div className="insight-content">

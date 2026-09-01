@@ -103,7 +103,7 @@ import { isOrderPaid } from "./order-model";
 import { CLOUD_APP_URL } from "./links";
 import { formatManualMatchText, formatManualOrderText } from "./manual-order-format";
 import { AppShellHeader } from "./components/AppShellHeader";
-import { TeamNameWithAlias } from "./components/TeamNameWithAlias";
+import { TeamNameWithIcon } from "./components/TeamNameWithAlias";
 import { parseRecognizedText } from "./ocr";
 import {
   convertSportteryMatches,
@@ -755,7 +755,7 @@ function scoreResultTone(score: { home: number; away: number }) {
 }
 
 function MatchTeamsLabel({ match, teamNameIndex }: { match: MatchItem; teamNameIndex: ReturnType<typeof buildTeamNameIndex> }) {
-  return <><TeamNameWithAlias name={match.home} index={teamNameIndex} /> VS <TeamNameWithAlias name={match.away} index={teamNameIndex} /></>;
+  return <><TeamNameWithIcon name={match.home} index={teamNameIndex} /> VS <TeamNameWithIcon name={match.away} index={teamNameIndex} iconPosition="before" /></>;
 }
 
 function MatchCard({
@@ -804,7 +804,9 @@ function MatchCard({
         <div className="match-time">{formatMatchCardTime(match)}</div>
       </div>
       <div className="teams-row">
-        <b className="match-team-name match-home-team"><TeamNameWithAlias name={match.home} index={teamNameIndex} /></b>
+        <div className="match-team-side match-home-side">
+          <b className="match-team-name match-home-team"><TeamNameWithIcon name={match.home} index={teamNameIndex} /></b>
+        </div>
         {fullScore ? (
           <>
             <span className={`match-final-score match-home-score ${fullScoreTone}`}>{fullScore.home}</span>
@@ -814,7 +816,9 @@ function MatchCard({
         ) : resultLoading ? (
           <span className="match-result-loading" title="正在获取赛果" aria-label="正在获取赛果"><LoadingOutlined spin /></span>
         ) : <span className="match-versus">VS</span>}
-        <b className="match-team-name match-away-team"><TeamNameWithAlias name={match.away} index={teamNameIndex} /></b>
+        <div className="match-team-side match-away-side">
+          <b className="match-team-name match-away-team"><TeamNameWithIcon name={match.away} index={teamNameIndex} iconPosition="before" /></b>
+        </div>
         {halfScore && (
           <>
             <small className={`match-half-score match-half-home ${halfScoreTone}`}>{halfScore.home}</small>
@@ -842,11 +846,33 @@ const TEAM_NAME_ACTIVE_OPTIONS = [
   { value: 2, label: "激活名称 2" },
 ] as const;
 
+const TEAM_ICON_FILE_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+const MAX_TEAM_ICON_FILE_SIZE = 256 * 1024;
+
+function readTeamIconFile(file: File): Promise<string> {
+  if (!TEAM_ICON_FILE_TYPES.has(file.type)) {
+    return Promise.reject(new Error("队伍图标仅支持 PNG、JPG 或 WebP 图片"));
+  }
+  if (file.size > MAX_TEAM_ICON_FILE_SIZE) {
+    return Promise.reject(new Error("队伍图标不能超过 256KB"));
+  }
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") resolve(reader.result);
+      else reject(new Error("队伍图标读取失败"));
+    };
+    reader.onerror = () => reject(new Error("队伍图标读取失败"));
+    reader.readAsDataURL(file);
+  });
+}
+
 function TeamNameGroupEditor({
   draft,
   onChange,
   onAddName,
   onRemoveName,
+  onIconUpload,
   onCancel,
   onSave,
   saving,
@@ -855,10 +881,12 @@ function TeamNameGroupEditor({
   onChange: (draft: TeamNameGroupDraft) => void;
   onAddName: () => void;
   onRemoveName: (index: number) => void;
+  onIconUpload: (file: File) => Promise<void>;
   onCancel: () => void;
   onSave: () => void;
   saving: boolean;
 }) {
+  const [iconUploading, setIconUploading] = useState(false);
   const activeCount = draft.names.filter((entry) => entry.activeSlot !== null).length;
   const updateName = (index: number, name: string) => {
     onChange({
@@ -876,12 +904,39 @@ function TeamNameGroupEditor({
           : entry),
     });
   };
+  const uploadIcon = async (file: File) => {
+    setIconUploading(true);
+    try {
+      await onIconUpload(file);
+    } finally {
+      setIconUploading(false);
+    }
+  };
 
   return (
     <div className="team-name-group-editor">
       <div className="team-name-group-editor-title">
         <div><b>{draft.id ? "编辑队伍名称组" : "新增队伍名称组"}</b><span>所有名称都会参与识别，激活名称用于投注页展示。</span></div>
         <Tag color={activeCount === 2 ? "success" : "warning"}>已激活 {activeCount} / 2</Tag>
+      </div>
+      <div className="team-name-icon-editor">
+        <div className="team-name-icon-preview">
+          {draft.iconDataUrl ? <img src={draft.iconDataUrl} alt="队伍图标预览" /> : <span>无图标</span>}
+        </div>
+        <div className="team-name-icon-actions">
+          <Space wrap>
+            <Upload
+              accept="image/png,image/jpeg,image/webp"
+              showUploadList={false}
+              disabled={saving || iconUploading}
+              beforeUpload={(file) => { void uploadIcon(file); return Upload.LIST_IGNORE; }}
+            >
+              <Button icon={<UploadOutlined />} loading={iconUploading}>上传队伍图标</Button>
+            </Upload>
+            {draft.iconDataUrl && <Button type="link" danger disabled={saving || iconUploading} onClick={() => onChange({ ...draft, iconDataUrl: null })}>移除图标</Button>}
+          </Space>
+          <small>支持 PNG、JPG、WebP，建议使用方形图标，大小不超过 256KB。</small>
+        </div>
       </div>
       <div className="team-name-editor-rows">
         {draft.names.map((entry, index) => (
@@ -914,7 +969,7 @@ function TeamNameGroupEditor({
         <Button type="dashed" icon={<PlusOutlined />} onClick={onAddName}>增加名称</Button>
         <Space>
           <Button onClick={onCancel}>取消</Button>
-          <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={onSave}>保存</Button>
+          <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={iconUploading} onClick={onSave}>保存</Button>
         </Space>
       </div>
       <p className="team-name-editor-help">必须恰好激活两个名称；未激活名称仍可用于识别接口返回的历史翻译。</p>
@@ -938,7 +993,10 @@ function TeamNameGroupSummary({
   return (
     <section className="team-name-group-summary">
       <div className="team-name-group-summary-head">
-        <div><b>队伍名称组</b><span>{group.names.length} 个名称 · 已激活 {group.names.filter((entry) => entry.activeSlot !== null).length} 个</span></div>
+        <div className="team-name-group-summary-main">
+          {group.iconDataUrl && <img className="team-name-group-icon" src={group.iconDataUrl} alt="队伍图标" />}
+          <div><b>队伍名称组</b><span>{group.names.length} 个名称 · 已激活 {group.names.filter((entry) => entry.activeSlot !== null).length} 个</span></div>
+        </div>
         {canManage && (
           <Space size="small">
             <Button size="small" icon={<EditOutlined />} onClick={onEdit}>编辑</Button>
@@ -3321,6 +3379,7 @@ function InnerFootballApp({
   const startNewTeamNameGroup = () => {
     if (teamNameEditor) return;
     setTeamNameEditor({
+      iconDataUrl: null,
       names: [
         { name: "", activeSlot: 1 },
         { name: "", activeSlot: 2 },
@@ -3332,8 +3391,18 @@ function InnerFootballApp({
     setTeamNameEditor({
       id: group.id,
       expectedRevision: group.revision,
+      iconDataUrl: group.iconDataUrl,
       names: group.names.map(({ id, name, activeSlot }) => ({ id, name, activeSlot })),
     });
+  };
+
+  const uploadTeamNameIcon = async (file: File) => {
+    try {
+      const iconDataUrl = await readTeamIconFile(file);
+      setTeamNameEditor((current) => current ? { ...current, iconDataUrl } : current);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "队伍图标读取失败");
+    }
   };
 
   const teamNameDraftError = (draft: TeamNameGroupDraft) => {
@@ -3357,7 +3426,7 @@ function InnerFootballApp({
     try {
       await onTeamNameGroupSave(teamNameEditor);
       setTeamNameEditor(null);
-      notification.success({ message: "队伍名称已保存", placement: "bottomRight" });
+      notification.success({ message: "队伍信息已保存", placement: "bottomRight" });
     } catch (error) {
       message.error(error instanceof Error ? error.message : "队伍名称保存失败");
     } finally {
@@ -3371,7 +3440,7 @@ function InnerFootballApp({
     try {
       await onTeamNameGroupDelete(group);
       if (teamNameEditor?.id === group.id) setTeamNameEditor(null);
-      notification.success({ message: "队伍名称组已删除", placement: "bottomRight" });
+      notification.success({ message: "队伍信息配置已删除", placement: "bottomRight" });
     } catch (error) {
       message.error(error instanceof Error ? error.message : "队伍名称删除失败");
     } finally {
@@ -4249,7 +4318,7 @@ function InnerFootballApp({
             </Card>
             {canManageTeamNames && <Card className="settings-card team-name-card">
               <div className="settings-card-head">
-                <div><h3>队伍名称别名</h3><p>公共配置，所有用户共用；接口返回的历史名称也会参与识别，只有管理员可以修改。</p></div>
+                <div><h3>队伍信息配置</h3><p>公共配置，所有用户共用；可维护队伍名称别名和图标，只有管理员可以修改。</p></div>
                 <Button type="primary" icon={<PlusOutlined />} disabled={Boolean(teamNameEditor)} onClick={startNewTeamNameGroup}>添加队伍</Button>
               </div>
               {teamNameEditor && !teamNameEditor.id && (
@@ -4258,6 +4327,7 @@ function InnerFootballApp({
                   onChange={setTeamNameEditor}
                   onAddName={() => setTeamNameEditor((current) => current ? { ...current, names: [...current.names, { name: "", activeSlot: null }] } : current)}
                   onRemoveName={(index) => setTeamNameEditor((current) => current ? { ...current, names: current.names.filter((_, entryIndex) => entryIndex !== index) } : current)}
+                  onIconUpload={uploadTeamNameIcon}
                   onCancel={() => setTeamNameEditor(null)}
                   onSave={() => { void saveTeamNameEditor(); }}
                   saving={teamNameSaving}
@@ -4274,6 +4344,7 @@ function InnerFootballApp({
                       onChange={setTeamNameEditor}
                       onAddName={() => setTeamNameEditor((current) => current ? { ...current, names: [...current.names, { name: "", activeSlot: null }] } : current)}
                       onRemoveName={(index) => setTeamNameEditor((current) => current ? { ...current, names: current.names.filter((_, entryIndex) => entryIndex !== index) } : current)}
+                      onIconUpload={uploadTeamNameIcon}
                       onCancel={() => setTeamNameEditor(null)}
                       onSave={() => { void saveTeamNameEditor(); }}
                       saving={teamNameSaving}
@@ -4764,6 +4835,7 @@ const LOCAL_CLOUD_ACCOUNT: CloudAccount = { id: "local", account: "游客", role
 const ignoreCloudSettingsChange = () => undefined;
 const ignoreTeamNameGroupSave = async (group: TeamNameGroupDraft) => ({
   id: group.id ?? "local",
+  iconDataUrl: group.iconDataUrl ?? null,
   names: group.names.map((entry, index) => ({
     id: entry.id ?? `local-name-${index}`,
     groupId: group.id ?? "local",

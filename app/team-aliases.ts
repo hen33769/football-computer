@@ -10,6 +10,7 @@ export type TeamNameEntry = {
 
 export type TeamNameGroup = {
   id: string;
+  iconDataUrl: string | null;
   names: TeamNameEntry[];
   revision: number;
   updatedAt: string;
@@ -23,6 +24,7 @@ export type TeamNameEntryDraft = {
 
 export type TeamNameGroupDraft = {
   id?: string;
+  iconDataUrl?: string | null;
   names: TeamNameEntryDraft[];
   expectedRevision?: number;
 };
@@ -35,6 +37,7 @@ export type TeamNameAliasesResponse = {
 export type TeamNameResolution = {
   groupId: string;
   activeNames: [TeamNameEntry, TeamNameEntry];
+  iconDataUrl: string | null;
 };
 
 export type TeamNameIndex = Map<string, TeamNameResolution>;
@@ -59,6 +62,7 @@ export function buildTeamNameIndex(groups: TeamNameGroup[]): TeamNameIndex {
     const resolution: TeamNameResolution = {
       groupId: group.id,
       activeNames: [activeNames[0], activeNames[1]],
+      iconDataUrl: group.iconDataUrl ?? null,
     };
     group.names.forEach((entry) => {
       const key = normalizeTeamName(entry.name);
@@ -66,6 +70,10 @@ export function buildTeamNameIndex(groups: TeamNameGroup[]): TeamNameIndex {
     });
   });
   return index;
+}
+
+export function resolveTeamIcon(name: string, index: TeamNameIndex) {
+  return index.get(normalizeTeamName(name))?.iconDataUrl ?? null;
 }
 
 export function resolveTeamNameDisplay(name: string, index: TeamNameIndex) {

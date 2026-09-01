@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildTeamNameIndex, normalizeTeamName, resolveTeamNameDisplay, type TeamNameGroup } from "../app/team-aliases";
+import { buildTeamNameIndex, normalizeTeamName, resolveTeamIcon, resolveTeamNameDisplay, type TeamNameGroup } from "../app/team-aliases";
 import { validateTeamNameGroupPayload } from "../app/server/team-aliases-service";
 
 const group: TeamNameGroup = {
   id: "djurgardens",
+  iconDataUrl: "data:image/png;base64,AAAA",
   revision: 0,
   updatedAt: "2026-09-01T00:00:00.000Z",
   names: [
@@ -44,6 +45,12 @@ test("没有匹配队伍配置时不显示别名，未完整激活时也不生�
   assert.equal(resolveTeamNameDisplay("尤加尔登", buildTeamNameIndex([incomplete])).aliasName, null);
 });
 
+test("队伍名称的历史名称会解析到名称组图标", () => {
+  const index = buildTeamNameIndex([group]);
+  assert.equal(resolveTeamIcon("Djurgardens", index), "data:image/png;base64,AAAA");
+  assert.equal(resolveTeamIcon("未知队伍", index), null);
+});
+
 test("保存校验拒绝重复名称和非两个激活位", () => {
   assert.throws(
     () => validateTeamNameGroupPayload({ names: [{ name: "队伍", activeSlot: 1 }, { name: " 队伍 ", activeSlot: 2 }] }),
@@ -52,5 +59,19 @@ test("保存校验拒绝重复名称和非两个激活位", () => {
   assert.throws(
     () => validateTeamNameGroupPayload({ names: [{ name: "队伍 A", activeSlot: 1 }, { name: "队伍 B", activeSlot: null }] }),
     (error: unknown) => error instanceof Error && error.message.includes("恰好激活两个名称"),
+  );
+});
+
+test("保存校验只接受安全的队伍图标 data URL", () => {
+  assert.equal(validateTeamNameGroupPayload({
+    iconDataUrl: "data:image/webp;base64,AAAA",
+    names: [{ name: "队伍 A", activeSlot: 1 }, { name: "队伍 B", activeSlot: 2 }],
+  }).iconDataUrl, "data:image/webp;base64,AAAA");
+  assert.throws(
+    () => validateTeamNameGroupPayload({
+      iconDataUrl: "data:image/svg+xml;base64,AAAA",
+      names: [{ name: "队伍 A", activeSlot: 1 }, { name: "队伍 B", activeSlot: 2 }],
+    }),
+    (error: unknown) => error instanceof Error && error.message.includes("PNG、JPG 或 WebP"),
   );
 });

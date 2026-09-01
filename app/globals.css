@@ -344,10 +344,16 @@ button, input, textarea { font: inherit; }
   gap: 3px 0;
   margin: 12px 0 13px;
 }
+.match-team-side { min-width: 0; display: flex; grid-row: 1; align-items: center; gap: 6px; }
+.match-home-side { grid-column: 1; justify-content: flex-end; }
+.match-away-side { grid-column: 5; justify-content: flex-start; }
 .match-team-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; }
+.team-name-with-icon { min-width: 0; max-width: 100%; display: inline-flex; align-items: center; gap: 6px; vertical-align: middle; }
+.team-name-with-icon-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.team-name-icon { width: 22px; height: 22px; flex: 0 0 22px; object-fit: contain; border-radius: 5px; background: #f1f5f4; }
 .team-name-alias { display: inline-block; margin: 0 3px; color: #8a999d; font-size: 11px; font-weight: 500; }
-.match-home-team { grid-column: 1; grid-row: 1; text-align: right; }
-.match-away-team { grid-column: 5; grid-row: 1; text-align: left; }
+.match-home-team { text-align: right; }
+.match-away-team { text-align: left; }
 .match-final-score { grid-row: 1; font-size: 18px; font-weight: 800; line-height: 1.2; font-variant-numeric: tabular-nums; }
 .match-home-score { grid-column: 2; justify-self: end; text-align: right; }
 .match-score-separator { grid-column: 3; justify-self: center; text-align: center; }
@@ -911,11 +917,18 @@ button, input, textarea { font: inherit; }
 .team-name-group-summary { padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: #f8fbfa; }
 .team-name-group-summary-head, .team-name-group-editor-title, .team-name-group-editor-actions { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .team-name-group-summary-head > div, .team-name-group-editor-title > div { min-width: 0; display: flex; align-items: baseline; gap: 10px; }
+.team-name-group-summary-head > .team-name-group-summary-main { align-items: center; }
+.team-name-group-icon { width: 32px; height: 32px; flex: 0 0 32px; object-fit: contain; border-radius: 7px; background: #eef5f4; }
 .team-name-group-summary-head b, .team-name-group-editor-title b { color: #29464c; font-size: 14px; }
 .team-name-group-summary-head span, .team-name-group-editor-title span { color: var(--muted); font-size: 11px; }
 .team-name-group-names { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 11px; }
 .team-name-group-names .ant-tag { margin: 0; }
 .team-name-group-editor { display: grid; gap: 12px; margin-top: 16px; padding: 14px; border: 1px solid #cfe5e2; border-radius: 14px; background: #f4fbfa; }
+.team-name-icon-editor { display: flex; align-items: center; gap: 12px; padding: 10px; border: 1px dashed #c5deda; border-radius: 12px; background: rgba(255,255,255,.6); }
+.team-name-icon-preview { width: 56px; height: 56px; display: grid; place-items: center; flex: 0 0 56px; overflow: hidden; border: 1px solid #dce9e7; border-radius: 10px; color: #8a9a9d; font-size: 11px; background: #fff; }
+.team-name-icon-preview img { width: 100%; height: 100%; object-fit: contain; }
+.team-name-icon-actions { min-width: 0; display: grid; gap: 5px; }
+.team-name-icon-actions small { color: #7a8e92; font-size: 11px; line-height: 1.5; }
 .team-name-editor-rows { display: grid; gap: 8px; }
 .team-name-editor-row { display: grid; grid-template-columns: minmax(0, 1fr) 132px 32px; gap: 8px; align-items: center; }
 .team-name-editor-row .ant-select { width: 100%; }
@@ -1016,7 +1029,10 @@ button, input, textarea { font: inherit; }
   .match-update-time { text-align: right; }
   .match-card { padding: 14px 12px; }
   .match-team-name { font-size: 14px; }
+  .team-name-icon { width: 20px; height: 20px; flex-basis: 20px; }
   .team-name-alias { font-size: 10px; }
+  .team-name-group-summary-main { align-items: center !important; flex-direction: row !important; }
+  .team-name-icon-editor { align-items: flex-start; }
   .team-name-group-summary-head, .team-name-group-editor-title, .team-name-group-editor-actions { align-items: stretch; flex-direction: column; }
   .team-name-group-summary-head > div, .team-name-group-editor-title > div { align-items: flex-start; flex-direction: column; gap: 3px; }
   .team-name-editor-row { grid-template-columns: minmax(0, 1fr) 116px 32px; }

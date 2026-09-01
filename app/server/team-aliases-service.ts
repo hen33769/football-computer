@@ -8,9 +8,12 @@ import {
 
 const MAX_TEAM_NAMES = 32;
 const MAX_TEAM_NAME_LENGTH = 80;
+const MAX_TEAM_ICON_DATA_LENGTH = 350_000;
+const TEAM_ICON_DATA_URL_PATTERN = /^data:(image\/(?:png|jpeg|webp));base64,[A-Za-z0-9+/]+={0,2}$/;
 
 type TeamNameGroupRow = {
   id: string;
+  icon_data_url: string | null;
   revision: number;
   updated_at: string;
 };
@@ -25,6 +28,7 @@ type TeamNameRow = {
 };
 
 export type TeamNameGroupPayload = {
+  iconDataUrl?: string | null;
   names: Array<{
     id?: string;
     name: string;
@@ -34,8 +38,16 @@ export type TeamNameGroupPayload = {
 };
 
 function constraintError(error: unknown): void {
-  if (!(error instanceof Error) || !/unique|constraint/i.test(error.message)) return undefined;
+  if (!(error instanceof Error) || !/unique|constraint/i.test(error.message)) return;
   throw httpError("队伍名称已被其他配置占用，请刷新后重试", 409, { code: "TEAM_NAME_CONFLICT" });
+}
+
+function validateTeamIcon(raw: unknown) {
+  if (raw === null || typeof raw === "undefined" || raw === "") return null;
+  if (typeof raw !== "string" || raw.length > MAX_TEAM_ICON_DATA_LENGTH || !TEAM_ICON_DATA_URL_PATTERN.test(raw)) {
+    throw httpError("队伍图标必须是 350KB 以内的 PNG、JPG 或 WebP 图片", 400);
+  }
+  return raw;
 }
 
 export function validateTeamNameGroupPayload(raw: unknown): TeamNameGroupPayload {
@@ -79,6 +91,9 @@ export function validateTeamNameGroupPayload(raw: unknown): TeamNameGroupPayload
   }
 
   return {
+    iconDataUrl: Object.prototype.hasOwnProperty.call(payload, "iconDataUrl")
+      ? validateTeamIcon(payload.iconDataUrl)
+      : undefined,
     names: names.map(({ id, name, activeSlot }) => ({ id, name, activeSlot })),
     expectedRevision: Number.isInteger(payload.expectedRevision) ? Number(payload.expectedRevision) : undefined,
   };
@@ -117,6 +132,7 @@ function mapGroups(groupRows: TeamNameGroupRow[], nameRows: TeamNameRow[]): Team
   });
   return groupRows.map((row) => ({
     id: row.id,
+    iconDataUrl: row.icon_data_url ?? null,
     names: (namesByGroup.get(row.id) ?? []).sort((left, right) => (
       (left.activeSlot ?? 3) - (right.activeSlot ?? 3) || left.name.localeCompare(right.name, "zh-CN")
     )),
@@ -128,7 +144,7 @@ function mapGroups(groupRows: TeamNameGroupRow[], nameRows: TeamNameRow[]): Team
 export async function listTeamNameGroups(d1: D1Database) {
   const [groups, names] = await Promise.all([
     d1.prepare(`
-      SELECT id, revision, updated_at
+      SELECT id, icon_data_url, revision, updated_at
       FROM shared_team_name_groups
       ORDER BY updated_at DESC, id ASC
     `).all<TeamNameGroupRow>(),
@@ -147,7 +163,7 @@ export async function listTeamNameGroups(d1: D1Database) {
 
 async function getGroup(d1: D1Database, groupId: string) {
   const row = await d1.prepare(`
-    SELECT id, revision, updated_at
+    SELECT id, icon_data_url, revision, updated_at
     FROM shared_team_name_groups
     WHERE id = ?1
   `).bind(groupId).first<TeamNameGroupRow>();
@@ -161,9 +177,9 @@ export async function createTeamNameGroup(d1: D1Database, userId: string, rawPay
   const now = new Date().toISOString();
   const statements = [
     d1.prepare(`
-      INSERT INTO shared_team_name_groups (id, updated_by, revision, updated_at)
-      VALUES (?1, ?2, 0, ?3)
-    `).bind(groupId, userId, now),
+      INSERT INTO shared_team_name_groups (id, icon_data_url, updated_by, revision, updated_at)
+      VALUES (?1, ?2, ?3, 0, ?4)
+    `).bind(groupId, payload.iconDataUrl ?? null, userId, now),
     ...payload.names.map((entry) => d1.prepare(`
       INSERT INTO shared_team_names (id, group_id, name, name_key, active_slot, updated_by, updated_at)
       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -212,13 +228,14 @@ export async function updateTeamNameGroup(d1: D1Database, userId: string, groupI
   await ensureNameKeysAvailable(d1, groupId, payload.names);
 
   const now = new Date().toISOString();
+  const iconDataUrl = typeof payload.iconDataUrl === "undefined" ? current.icon_data_url : payload.iconDataUrl;
   const statements = [
     d1.prepare(`
       UPDATE shared_team_name_groups
-      SET updated_by = ?1, revision = revision + 1, updated_at = ?2
-      WHERE id = ?3
-        AND (?4 IS NULL OR revision = ?4)
-    `).bind(userId, now, groupId, expectedRevision),
+      SET icon_data_url = ?1, updated_by = ?2, revision = revision + 1, updated_at = ?3
+      WHERE id = ?4
+        AND (?5 IS NULL OR revision = ?5)
+    `).bind(iconDataUrl, userId, now, groupId, expectedRevision),
     d1.prepare(`
       DELETE FROM shared_team_names
       WHERE group_id = ?1

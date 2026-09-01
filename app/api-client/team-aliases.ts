@@ -11,6 +11,7 @@ export function getTeamNameGroups(baseUrl = "") {
 
 export async function saveTeamNameGroup(group: TeamNameGroupDraft): Promise<TeamNameGroup> {
   const payload = {
+    iconDataUrl: group.iconDataUrl ?? null,
     names: group.names.map(({ id, name, activeSlot }) => ({ id, name, activeSlot })),
     expectedRevision: group.expectedRevision,
   };
