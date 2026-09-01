@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildTeamNameIndex, normalizeTeamName, resolveTeamIcon, resolveTeamNameDisplay, type TeamNameGroup } from "../app/team-aliases";
+import { buildTeamNameIndex, normalizeTeamName, resolveTeamIcon, resolveTeamNameDisplay, type TeamNameGroup, upsertTeamNameGroupAtPosition } from "../app/team-aliases";
 import { validateTeamNameGroupPayload } from "../app/server/team-aliases-service";
 
 const group: TeamNameGroup = {
@@ -20,29 +20,52 @@ test("队伍名称匹配会忽略空白、大小写和全角差异", () => {
   assert.equal(normalizeTeamName("佐 加顿斯"), "佐加顿斯");
 });
 
-test("接口名称是第一个激活名时，第二个激活名显示在前面", () => {
+test("编辑队伍组保留原列表位置，新建队伍组放在列表顶部", () => {
+  const first = { ...group, id: "first" };
+  const second = { ...group, id: "second" };
+  const edited = { ...second, updatedAt: "2026-09-01T01:00:00.000Z" };
+  assert.deepEqual(upsertTeamNameGroupAtPosition([first, second], edited).map(({ id }) => id), ["first", "second"]);
+  assert.deepEqual(upsertTeamNameGroupAtPosition([first, second], { ...group, id: "new" }).map(({ id }) => id), ["new", "first", "second"]);
+});
+
+test("接口名称是第一个激活名时，配置激活 1 作为主名，激活 2 显示在前面", () => {
   const display = resolveTeamNameDisplay("尤加尔登", buildTeamNameIndex([group]));
   assert.deepEqual(display, { normalName: "尤加尔登", aliasName: "佐加顿斯", aliasBefore: true });
 });
 
-test("接口名称是第二个激活名时，第一个激活名显示在后面", () => {
+test("接口名称是第二个激活名时，仍按激活 1 主名、激活 2 别名", () => {
   const display = resolveTeamNameDisplay("佐加顿斯", buildTeamNameIndex([group]));
-  assert.deepEqual(display, { normalName: "尤加尔登", aliasName: "佐加顿斯", aliasBefore: false });
+  assert.deepEqual(display, { normalName: "尤加尔登", aliasName: "佐加顿斯", aliasBefore: true });
 });
 
-test("接口名称是未激活名称时，首个激活名显示为副名", () => {
+test("接口名称是未激活名称时，仍按配置激活名称优先", () => {
   const display = resolveTeamNameDisplay("Djurgardens", buildTeamNameIndex([group]));
-  assert.deepEqual(display, { normalName: "Djurgardens", aliasName: "尤加尔登", aliasBefore: true });
+  assert.deepEqual(display, { normalName: "尤加尔登", aliasName: "佐加顿斯", aliasBefore: true });
 });
 
-test("没有匹配队伍配置时不显示别名，未完整激活时也不生效", () => {
+test("没有匹配队伍配置时不显示别名，单独激活名称 1 时可显示主名和图标", () => {
   assert.deepEqual(resolveTeamNameDisplay("未知队伍", buildTeamNameIndex([group])), {
     normalName: "未知队伍",
     aliasName: null,
     aliasBefore: false,
   });
   const incomplete = { ...group, names: group.names.map((entry) => ({ ...entry, activeSlot: entry.activeSlot === 2 ? null : entry.activeSlot })) };
-  assert.equal(resolveTeamNameDisplay("尤加尔登", buildTeamNameIndex([incomplete])).aliasName, null);
+  assert.deepEqual(resolveTeamNameDisplay("Djurgardens", buildTeamNameIndex([incomplete])), {
+    normalName: "尤加尔登",
+    aliasName: null,
+    aliasBefore: true,
+  });
+  assert.equal(resolveTeamIcon("Djurgardens", buildTeamNameIndex([incomplete])), "data:image/png;base64,AAAA");
+});
+
+test("全部名称未激活时使用首个名称作为主名并保留队伍图标", () => {
+  const inactive = { ...group, names: group.names.map((entry) => ({ ...entry, activeSlot: null })) };
+  assert.deepEqual(resolveTeamNameDisplay("Djurgardens", buildTeamNameIndex([inactive])), {
+    normalName: "尤加尔登",
+    aliasName: null,
+    aliasBefore: true,
+  });
+  assert.equal(resolveTeamIcon("Djurgardens", buildTeamNameIndex([inactive])), "data:image/png;base64,AAAA");
 });
 
 test("队伍名称的历史名称会解析到名称组图标", () => {
@@ -51,14 +74,32 @@ test("队伍名称的历史名称会解析到名称组图标", () => {
   assert.equal(resolveTeamIcon("未知队伍", index), null);
 });
 
-test("保存校验拒绝重复名称和非两个激活位", () => {
+test("保存校验清理空名称，允许未激活名称并规范激活位", () => {
   assert.throws(
     () => validateTeamNameGroupPayload({ names: [{ name: "队伍", activeSlot: 1 }, { name: " 队伍 ", activeSlot: 2 }] }),
     (error: unknown) => error instanceof Error && error.message.includes("队伍名称重复"),
   );
+  assert.deepEqual(validateTeamNameGroupPayload({
+    iconDataUrl: "data:image/png;base64,AAAA",
+    names: [{ name: " ", activeSlot: null }, { name: "队伍 A", activeSlot: null }],
+  }).names, [
+    { id: undefined, name: "队伍 A", activeSlot: null },
+  ]);
+  assert.deepEqual(validateTeamNameGroupPayload({
+    names: [{ name: "队伍 A", activeSlot: 2 }, { name: "队伍 B", activeSlot: null }],
+  }).names, [
+    { id: undefined, name: "队伍 A", activeSlot: 1 },
+    { id: undefined, name: "队伍 B", activeSlot: null },
+  ]);
+  assert.deepEqual(validateTeamNameGroupPayload({
+    names: [{ name: "队伍 A", activeSlot: null }, { name: "队伍 B", activeSlot: null }],
+  }).names.map(({ name, activeSlot }) => ({ name, activeSlot })), [
+    { name: "队伍 A", activeSlot: null },
+    { name: "队伍 B", activeSlot: null },
+  ]);
   assert.throws(
-    () => validateTeamNameGroupPayload({ names: [{ name: "队伍 A", activeSlot: 1 }, { name: "队伍 B", activeSlot: null }] }),
-    (error: unknown) => error instanceof Error && error.message.includes("恰好激活两个名称"),
+    () => validateTeamNameGroupPayload({ names: [{ name: " ", activeSlot: null }] }),
+    (error: unknown) => error instanceof Error && error.message.includes("至少输入一个队伍名称"),
   );
 });
 

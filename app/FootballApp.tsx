@@ -40,6 +40,7 @@ import {
   ExpandOutlined,
   EyeOutlined,
   GithubOutlined,
+  HolderOutlined,
   ImportOutlined,
   InfoCircleOutlined,
   LineChartOutlined,
@@ -52,6 +53,7 @@ import {
   RightOutlined,
   RollbackOutlined,
   SaveOutlined,
+  SearchOutlined,
   UndoOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
@@ -755,7 +757,7 @@ function scoreResultTone(score: { home: number; away: number }) {
 }
 
 function MatchTeamsLabel({ match, teamNameIndex }: { match: MatchItem; teamNameIndex: ReturnType<typeof buildTeamNameIndex> }) {
-  return <><TeamNameWithIcon name={match.home} index={teamNameIndex} /> VS <TeamNameWithIcon name={match.away} index={teamNameIndex} iconPosition="before" /></>;
+  return <><TeamNameWithIcon name={match.home} index={teamNameIndex} /> VS <TeamNameWithIcon name={match.away} index={teamNameIndex} iconPosition="before" aliasPosition="after" /></>;
 }
 
 function MatchCard({
@@ -817,7 +819,7 @@ function MatchCard({
           <span className="match-result-loading" title="正在获取赛果" aria-label="正在获取赛果"><LoadingOutlined spin /></span>
         ) : <span className="match-versus">VS</span>}
         <div className="match-team-side match-away-side">
-          <b className="match-team-name match-away-team"><TeamNameWithIcon name={match.away} index={teamNameIndex} iconPosition="before" /></b>
+          <b className="match-team-name match-away-team"><TeamNameWithIcon name={match.away} index={teamNameIndex} iconPosition="before" aliasPosition="after" /></b>
         </div>
         {halfScore && (
           <>
@@ -887,6 +889,7 @@ function TeamNameGroupEditor({
   saving: boolean;
 }) {
   const [iconUploading, setIconUploading] = useState(false);
+  const [draggingNameIndex, setDraggingNameIndex] = useState<number | null>(null);
   const activeCount = draft.names.filter((entry) => entry.activeSlot !== null).length;
   const updateName = (index: number, name: string) => {
     onChange({
@@ -904,6 +907,14 @@ function TeamNameGroupEditor({
           : entry),
     });
   };
+  const reorderName = (fromIndex: number, toIndex: number) => {
+    if (fromIndex === toIndex) return;
+    const names = [...draft.names];
+    const [moved] = names.splice(fromIndex, 1);
+    if (!moved) return;
+    names.splice(toIndex, 0, moved);
+    onChange({ ...draft, names });
+  };
   const uploadIcon = async (file: File) => {
     setIconUploading(true);
     try {
@@ -917,7 +928,7 @@ function TeamNameGroupEditor({
     <div className="team-name-group-editor">
       <div className="team-name-group-editor-title">
         <div><b>{draft.id ? "编辑队伍名称组" : "新增队伍名称组"}</b><span>所有名称都会参与识别，激活名称用于投注页展示。</span></div>
-        <Tag color={activeCount === 2 ? "success" : "warning"}>已激活 {activeCount} / 2</Tag>
+        <Tag color={activeCount >= 1 ? "success" : "warning"}>已激活 {activeCount} / 2</Tag>
       </div>
       <div className="team-name-icon-editor">
         <div className="team-name-icon-preview">
@@ -940,7 +951,19 @@ function TeamNameGroupEditor({
       </div>
       <div className="team-name-editor-rows">
         {draft.names.map((entry, index) => (
-          <div className="team-name-editor-row" key={entry.id ?? `new-${index}`}>
+          <div
+            className={`team-name-editor-row${draggingNameIndex === index ? " is-dragging" : ""}`}
+            key={entry.id ?? `new-${index}`}
+            onDragOver={(event) => {
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "move";
+            }}
+            onDrop={(event) => {
+              event.preventDefault();
+              if (draggingNameIndex !== null) reorderName(draggingNameIndex, index);
+              setDraggingNameIndex(null);
+            }}
+          >
             <Input
               value={entry.name}
               maxLength={80}
@@ -954,11 +977,25 @@ function TeamNameGroupEditor({
               aria-label={`队伍名称 ${index + 1} 的激活状态`}
               onChange={(value) => updateActiveSlot(index, value as TeamNameActiveSlot)}
             />
+            <span
+              className="team-name-drag-handle"
+              role="button"
+              tabIndex={saving ? -1 : 0}
+              aria-label={`拖拽队伍名称 ${index + 1}`}
+              draggable={!saving}
+              onDragStart={(event) => {
+                setDraggingNameIndex(index);
+                event.dataTransfer.effectAllowed = "move";
+              }}
+              onDragEnd={() => setDraggingNameIndex(null)}
+            >
+              <HolderOutlined />
+            </span>
             <Button
               type="text"
               danger
               icon={<DeleteOutlined />}
-              disabled={draft.names.length <= 2}
+              disabled={draft.names.length <= 1}
               aria-label={`删除队伍名称 ${index + 1}`}
               onClick={() => onRemoveName(index)}
             />
@@ -972,7 +1009,7 @@ function TeamNameGroupEditor({
           <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={iconUploading} onClick={onSave}>保存</Button>
         </Space>
       </div>
-      <p className="team-name-editor-help">必须恰好激活两个名称；未激活名称仍可用于识别接口返回的历史翻译。</p>
+      <p className="team-name-editor-help">激活名称 1 和 2 用于投注页展示，均未激活时只保留名称识别和 Logo；未激活名称仍可用于识别接口返回的历史翻译。</p>
     </div>
   );
 }
@@ -990,18 +1027,19 @@ function TeamNameGroupSummary({
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const summaryName = group.names.find((entry) => entry.activeSlot === 1)?.name ?? group.names[0]?.name ?? "队伍信息";
   return (
     <section className="team-name-group-summary">
       <div className="team-name-group-summary-head">
         <div className="team-name-group-summary-main">
           {group.iconDataUrl && <img className="team-name-group-icon" src={group.iconDataUrl} alt="队伍图标" />}
-          <div><b>队伍名称组</b><span>{group.names.length} 个名称 · 已激活 {group.names.filter((entry) => entry.activeSlot !== null).length} 个</span></div>
+          <div><b>{summaryName}</b><span>{group.names.length} 个名称 · 已激活 {group.names.filter((entry) => entry.activeSlot !== null).length} 个</span></div>
         </div>
         {canManage && (
           <Space size="small">
             <Button size="small" icon={<EditOutlined />} onClick={onEdit}>编辑</Button>
             <Popconfirm title="删除这组队伍名称？" description="删除后投注页将不再显示这组名称的辅助名称。" okText="删除" cancelText="取消" okButtonProps={{ danger: true, loading: deleting }} onConfirm={onDelete}>
-              <Button size="small" danger icon={<DeleteOutlined />} loading={deleting}>删除</Button>
+              <Button className="team-name-delete-button" size="small" type="primary" danger icon={<DeleteOutlined />} loading={deleting}>删除</Button>
             </Popconfirm>
           </Space>
         )}
@@ -1266,8 +1304,18 @@ function InnerFootballApp({
   const [teamNameEditor, setTeamNameEditor] = useState<TeamNameGroupDraft | null>(null);
   const [teamNameSaving, setTeamNameSaving] = useState(false);
   const [teamNameDeletingId, setTeamNameDeletingId] = useState<string | null>(null);
+  const [teamNameQuery, setTeamNameQuery] = useState("");
+  const [leagueSettingsCollapsed, setLeagueSettingsCollapsed] = useState(true);
+  const [teamNameSettingsCollapsed, setTeamNameSettingsCollapsed] = useState(true);
+  const [leagueAddOpen, setLeagueAddOpen] = useState(false);
+  const [leagueAddName, setLeagueAddName] = useState("");
   const [importStrategy, setImportStrategy] = useState<ImportStrategy>("merge");
   const saleNow = useMemo(() => new Date(saleClock), [saleClock]);
+  const filteredTeamNameGroups = useMemo(() => {
+    const query = normalizeTeamName(teamNameQuery);
+    if (!query) return teamNameGroups;
+    return teamNameGroups.filter((group) => group.names.some((entry) => normalizeTeamName(entry.name).includes(query)));
+  }, [teamNameGroups, teamNameQuery]);
   const manualSelectedMatchIds = useMemo(() => new Set(manualOrderEntries.flatMap((entry) => (
     entry.matchId ? [normalizeSportteryMatchId(entry.matchId)] : []
   ))), [manualOrderEntries]);
@@ -3376,6 +3424,28 @@ function InnerFootballApp({
     notification.success({ message: "联赛颜色已恢复默认", placement: "bottomRight" });
   };
 
+  const startAddLeague = () => {
+    setLeagueAddName("");
+    setLeagueAddOpen(true);
+  };
+
+  const addLeague = () => {
+    const leagueName = leagueAddName.normalize("NFKC").trim();
+    if (!leagueName) {
+      message.error("请输入联赛名称");
+      return;
+    }
+    const leagueKey = leagueColorSettingKey(leagueName);
+    if (settingsLeagueNames.includes(leagueKey)) {
+      message.warning("该联赛已经存在");
+      return;
+    }
+    const next = persistAppSettings(withLeagueTagColor(appSettings, leagueKey, "#108a83"));
+    setAppSettings(next);
+    setLeagueAddOpen(false);
+    notification.success({ message: "联赛已添加", description: `${leagueKey} · 默认颜色`, placement: "bottomRight" });
+  };
+
   const startNewTeamNameGroup = () => {
     if (teamNameEditor) return;
     setTeamNameEditor({
@@ -3406,12 +3476,12 @@ function InnerFootballApp({
   };
 
   const teamNameDraftError = (draft: TeamNameGroupDraft) => {
-    if (draft.names.length < 2) return "每个队伍至少需要两个名称";
-    const keys = draft.names.map((entry) => normalizeTeamName(entry.name));
-    if (keys.some((key) => !key)) return "队伍名称不能为空";
+    const namedEntries = draft.names.filter((entry) => normalizeTeamName(entry.name));
+    if (namedEntries.length < 1) return "至少输入一个队伍名称";
+    const keys = namedEntries.map((entry) => normalizeTeamName(entry.name));
     if (new Set(keys).size !== keys.length) return "同一队伍中不能填写重复名称";
-    const activeSlots = draft.names.flatMap((entry) => entry.activeSlot === null ? [] : [entry.activeSlot]);
-    if (activeSlots.length !== 2 || new Set(activeSlots).size !== 2) return "请恰好激活两个名称";
+    const activeSlots = namedEntries.flatMap((entry) => entry.activeSlot === null ? [] : [entry.activeSlot]);
+    if (activeSlots.length > 2 || new Set(activeSlots).size !== activeSlots.length) return "激活名称最多两个，且激活位不能重复";
     return null;
   };
 
@@ -3424,7 +3494,14 @@ function InnerFootballApp({
     }
     setTeamNameSaving(true);
     try {
-      await onTeamNameGroupSave(teamNameEditor);
+      const names = teamNameEditor.names
+        .filter((entry) => normalizeTeamName(entry.name))
+        .map((entry) => ({ ...entry, name: entry.name.normalize("NFKC").trim() }));
+      const hasActiveOne = names.some((entry) => entry.activeSlot === 1);
+      const normalizedNames = names.map((entry) => (
+        !hasActiveOne && entry.activeSlot === 2 ? { ...entry, activeSlot: 1 as TeamNameActiveSlot } : entry
+      ));
+      await onTeamNameGroupSave({ ...teamNameEditor, names: normalizedNames });
       setTeamNameEditor(null);
       notification.success({ message: "队伍信息已保存", placement: "bottomRight" });
     } catch (error) {
@@ -4282,63 +4359,82 @@ function InnerFootballApp({
             <div className="section-heading settings-heading">
               <div><span className="eyebrow">{isGuestMode ? "LOCAL SETTINGS" : "CLOUD SETTINGS"}</span><h2>设置</h2><p>{isGuestMode ? "游客设置只保存在当前浏览器，清理浏览器数据后将无法恢复。" : "应用设置与当前账号绑定，并在其他设备登录后自动同步。"}</p></div>
               <Space wrap>
-                <Tag color="cyan">{settingsLeagueNames.length} 个联赛颜色</Tag>
                 <Button icon={<GithubOutlined />} href={UPDATE_LOG_URL} target="_blank" rel="noreferrer">GitHub</Button>
                 <Button type="primary" icon={<SaveOutlined />} onClick={saveRepositoryPage}>保存页面</Button>
               </Space>
             </div>
             <Card className="settings-card">
               <div className="settings-card-head">
-                <div><h3>联赛标签颜色</h3><p>比赛列表会自动加入接口返回的新联赛；修改颜色后立即保存到当前{isGuestMode ? "浏览器" : "账号"}。</p></div>
-                <Popconfirm title="恢复默认联赛颜色？" okText="恢复默认" cancelText="取消" onConfirm={resetLeagueTagColors}>
-                  <Button icon={<UndoOutlined />}>恢复默认</Button>
-                </Popconfirm>
+                <div>
+                  <div className="settings-card-title"><h3>联赛标签颜色</h3><Tag color="cyan">{settingsLeagueNames.length} 个联赛</Tag></div>
+                  <p>比赛列表会自动加入接口返回的新联赛；修改颜色后立即保存到当前{isGuestMode ? "浏览器" : "账号"}。</p>
+                </div>
+                <Space size="small">
+                  <Popconfirm title="恢复默认联赛颜色？" okText="恢复默认" cancelText="取消" onConfirm={resetLeagueTagColors}>
+                    <Button icon={<UndoOutlined />}>恢复默认</Button>
+                  </Popconfirm>
+                  <Button type="primary" icon={<PlusOutlined />} onClick={startAddLeague}>添加联赛</Button>
+                  <Button
+                    type="text"
+                    className={`settings-card-collapse-button${leagueSettingsCollapsed ? " is-collapsed" : ""}`}
+                    icon={<CaretUpOutlined />}
+                    aria-label={leagueSettingsCollapsed ? "展开联赛标签颜色配置" : "折叠联赛标签颜色配置"}
+                    aria-expanded={!leagueSettingsCollapsed}
+                    onClick={() => setLeagueSettingsCollapsed((collapsed) => !collapsed)}
+                  />
+                </Space>
               </div>
-              <div className="league-settings-grid">
-                {settingsLeagueNames.map((leagueName) => {
-                  const color = getLeagueTagColor(appSettings, leagueName);
-                  const apiLeague = leagueOptions.find((item) => leagueColorSettingKey(item.leagueNameAbbr) === leagueName);
-                  return (
-                    <div className="league-setting-row" key={leagueName}>
-                      <div className="league-setting-preview">
-                        <Tag color={color} variant="solid" style={{ color: readableTagTextColor(color) }}>{leagueName}</Tag>
-                        <span>{apiLeague?.leagueName ?? (DEFAULT_LEAGUE_TAG_COLORS[leagueName] ? "默认配置" : "自定义配置")}</span>
+              {!leagueSettingsCollapsed && (
+                <div className="league-settings-grid">
+                  {settingsLeagueNames.map((leagueName) => {
+                    const color = getLeagueTagColor(appSettings, leagueName);
+                    const apiLeague = leagueOptions.find((item) => leagueColorSettingKey(item.leagueNameAbbr) === leagueName);
+                    return (
+                      <div className="league-setting-row" key={leagueName}>
+                        <div className="league-setting-preview">
+                          <Tag color={color} variant="solid" style={{ color: readableTagTextColor(color) }}>{leagueName}</Tag>
+                          <span>{apiLeague?.leagueName ?? (DEFAULT_LEAGUE_TAG_COLORS[leagueName] ? "默认配置" : "自定义配置")}</span>
+                        </div>
+                        <ColorPicker
+                          value={color}
+                          showText
+                          disabledAlpha
+                          onChangeComplete={(value) => updateLeagueTagColor(leagueName, value.toHexString())}
+                        />
                       </div>
-                      <ColorPicker
-                        value={color}
-                        showText
-                        disabledAlpha
-                        onChangeComplete={(value) => updateLeagueTagColor(leagueName, value.toHexString())}
-                      />
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+              )}
             </Card>
             {canManageTeamNames && <Card className="settings-card team-name-card">
               <div className="settings-card-head">
                 <div><h3>队伍信息配置</h3><p>公共配置，所有用户共用；可维护队伍名称别名和图标，只有管理员可以修改。</p></div>
-                <Button type="primary" icon={<PlusOutlined />} disabled={Boolean(teamNameEditor)} onClick={startNewTeamNameGroup}>添加队伍</Button>
+                <Space size="small">
+                  <Input
+                    size="middle"
+                    value={teamNameQuery}
+                    prefix={<SearchOutlined />}
+                    placeholder="搜索队伍名称"
+                    aria-label="搜索队伍名称"
+                    onChange={(event) => setTeamNameQuery(event.target.value)}
+                    style={{ width: 190 }}
+                  />
+                  <Button type="primary" icon={<PlusOutlined />} disabled={Boolean(teamNameEditor)} onClick={startNewTeamNameGroup}>添加队伍</Button>
+                  <Button
+                    type="text"
+                    className={`settings-card-collapse-button${teamNameSettingsCollapsed ? " is-collapsed" : ""}`}
+                    icon={<CaretUpOutlined />}
+                    aria-label={teamNameSettingsCollapsed ? "展开队伍信息配置" : "折叠队伍信息配置"}
+                    aria-expanded={!teamNameSettingsCollapsed}
+                    onClick={() => setTeamNameSettingsCollapsed((collapsed) => !collapsed)}
+                  />
+                </Space>
               </div>
-              {teamNameEditor && !teamNameEditor.id && (
-                <TeamNameGroupEditor
-                  draft={teamNameEditor}
-                  onChange={setTeamNameEditor}
-                  onAddName={() => setTeamNameEditor((current) => current ? { ...current, names: [...current.names, { name: "", activeSlot: null }] } : current)}
-                  onRemoveName={(index) => setTeamNameEditor((current) => current ? { ...current, names: current.names.filter((_, entryIndex) => entryIndex !== index) } : current)}
-                  onIconUpload={uploadTeamNameIcon}
-                  onCancel={() => setTeamNameEditor(null)}
-                  onSave={() => { void saveTeamNameEditor(); }}
-                  saving={teamNameSaving}
-                />
-              )}
-              {teamNameGroups.length === 0 && !teamNameEditor ? (
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有队伍名称配置，点击右上角添加" />
-              ) : (
-                <div className="team-name-group-list">
-                  {teamNameGroups.map((group) => teamNameEditor?.id === group.id ? (
+              {!teamNameSettingsCollapsed && (
+                <>
+                  {teamNameEditor && !teamNameEditor.id && (
                     <TeamNameGroupEditor
-                      key={group.id}
                       draft={teamNameEditor}
                       onChange={setTeamNameEditor}
                       onAddName={() => setTeamNameEditor((current) => current ? { ...current, names: [...current.names, { name: "", activeSlot: null }] } : current)}
@@ -4348,17 +4444,38 @@ function InnerFootballApp({
                       onSave={() => { void saveTeamNameEditor(); }}
                       saving={teamNameSaving}
                     />
+                  )}
+                  {teamNameGroups.length === 0 && !teamNameEditor ? (
+                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有队伍名称配置，点击右上角添加" />
+                  ) : filteredTeamNameGroups.length === 0 && !teamNameEditor ? (
+                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有匹配的队伍名称" />
                   ) : (
-                    <TeamNameGroupSummary
-                      key={group.id}
-                      group={group}
-                      canManage={canManageTeamNames}
-                      deleting={teamNameDeletingId === group.id}
-                      onEdit={() => editTeamNameGroup(group)}
-                      onDelete={() => { void removeTeamNameGroup(group); }}
-                    />
-                  ))}
-                </div>
+                    <div className="team-name-group-list">
+                      {filteredTeamNameGroups.map((group) => teamNameEditor?.id === group.id ? (
+                        <TeamNameGroupEditor
+                          key={group.id}
+                          draft={teamNameEditor}
+                          onChange={setTeamNameEditor}
+                          onAddName={() => setTeamNameEditor((current) => current ? { ...current, names: [...current.names, { name: "", activeSlot: null }] } : current)}
+                          onRemoveName={(index) => setTeamNameEditor((current) => current ? { ...current, names: current.names.filter((_, entryIndex) => entryIndex !== index) } : current)}
+                          onIconUpload={uploadTeamNameIcon}
+                          onCancel={() => setTeamNameEditor(null)}
+                          onSave={() => { void saveTeamNameEditor(); }}
+                          saving={teamNameSaving}
+                        />
+                      ) : (
+                        <TeamNameGroupSummary
+                          key={group.id}
+                          group={group}
+                          canManage={canManageTeamNames}
+                          deleting={teamNameDeletingId === group.id}
+                          onEdit={() => editTeamNameGroup(group)}
+                          onDelete={() => { void removeTeamNameGroup(group); }}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </>
               )}
             </Card>}
             <Card className="settings-card settings-data-card">
@@ -4674,6 +4791,26 @@ function InnerFootballApp({
       >
         <Input ref={saveNameInputRef} autoFocus value={saveName} disabled={saveSlipLoading} onChange={(event) => setSaveName(event.target.value)} onPressEnter={() => { if (!saveSlipLoading) void saveSlip(); }} placeholder="可选；留空则使用当前日期时间" maxLength={30} showCount />
         <p className="modal-help">名称留空时将使用“年月日时分秒”自动命名。保存后会同步到当前账号。</p>
+      </Modal>
+
+      <Modal
+        open={leagueAddOpen}
+        title="添加联赛"
+        okText="添加联赛"
+        cancelText="取消"
+        onCancel={() => setLeagueAddOpen(false)}
+        onOk={addLeague}
+      >
+        <Input
+          autoFocus
+          value={leagueAddName}
+          maxLength={40}
+          showCount
+          placeholder="请输入联赛名称"
+          onChange={(event) => setLeagueAddName(event.target.value)}
+          onPressEnter={addLeague}
+        />
+        <p className="modal-help">添加后会使用默认颜色，并可在联赛标签颜色列表中继续调整。</p>
       </Modal>
 
       <Modal

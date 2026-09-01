@@ -31,6 +31,7 @@
 - [x] 让 GitHub Pages standalone 通过正式版公开接口加载公共名称组，并为 Worker 增加跨域 GET 响应。
 - [x] 在投注页比赛卡片显示别名；设置页在数据管理卡片上方仅向管理员显示维护卡片。
 - [x] 增加名称规范化、双向展示、非激活名称匹配、重复名称、权限和激活切换测试。
+- [x] 增加队伍组持久化显示顺序，编辑组时保留原列表位置。
 - [x] 运行 `npm test`、`npm run lint`、`npm run build`，并用浏览器验证云端/游客版、桌面/移动端和控制台错误。
 
 ## 数据结构
@@ -40,6 +41,7 @@
 ### `shared_team_name_groups`
 
 - `id`：UUID，队伍组稳定身份。
+- `display_order`：持久化列表显示顺序；迁移时按原列表顺序初始化，编辑队伍组时保持不变。
 - `updated_by`：最后修改管理员，可为空。
 - `updated_at`：最后修改时间。
 
@@ -57,7 +59,7 @@
 ## 接口与前端数据流
 
 - `GET /api/team-aliases`：无需登录，返回完整名称组及两个激活名称。所有名称（包括未激活名称）都返回，用于识别接口名称；只有激活名称用于展示。
-- `POST /api/team-aliases`：管理员新建队伍组，至少包含两个名称并指定两个激活槽位。
+- `POST /api/team-aliases`：管理员新建队伍组，至少包含一个名称，激活槽位可选。
 - `PATCH /api/team-aliases/[groupId]`：管理员修改组内名称或激活槽位，带版本/更新时间校验。
 - `DELETE /api/team-aliases/[groupId]`：管理员删除整组及其名称。
 

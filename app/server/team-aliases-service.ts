@@ -16,6 +16,7 @@ type TeamNameGroupRow = {
   icon_data_url: string | null;
   revision: number;
   updated_at: string;
+  display_order: number;
 };
 
 type TeamNameRow = {
@@ -53,11 +54,18 @@ function validateTeamIcon(raw: unknown) {
 export function validateTeamNameGroupPayload(raw: unknown): TeamNameGroupPayload {
   if (!raw || typeof raw !== "object") throw httpError("队伍名称配置无效", 400);
   const payload = raw as Partial<TeamNameGroupPayload>;
-  if (!Array.isArray(payload.names) || payload.names.length < 2 || payload.names.length > MAX_TEAM_NAMES) {
-    throw httpError(`每个队伍需要配置 2 至 ${MAX_TEAM_NAMES} 个名称`, 400);
+  if (!Array.isArray(payload.names)) {
+    throw httpError("至少输入一个队伍名称", 400);
   }
 
-  const names = payload.names.map((entry) => {
+  const entries = payload.names.filter((entry) => {
+    if (!entry || typeof entry !== "object" || typeof entry.name !== "string") return true;
+    return Boolean(entry.name.normalize("NFKC").trim());
+  });
+  if (entries.length < 1) throw httpError("至少输入一个队伍名称", 400);
+  if (entries.length > MAX_TEAM_NAMES) throw httpError(`每个队伍最多配置 ${MAX_TEAM_NAMES} 个名称`, 400);
+
+  const names = entries.map((entry) => {
     if (!entry || typeof entry !== "object" || typeof entry.name !== "string") {
       throw httpError("队伍名称不能为空", 400);
     }
@@ -86,15 +94,20 @@ export function validateTeamNameGroupPayload(raw: unknown): TeamNameGroupPayload
     nameKeys.add(entry.nameKey);
   });
   const activeSlots = names.flatMap((entry) => entry.activeSlot === null ? [] : [entry.activeSlot]);
-  if (activeSlots.length !== 2 || new Set(activeSlots).size !== 2) {
-    throw httpError("每个队伍必须恰好激活两个名称", 400);
+  if (activeSlots.length > 2 || new Set(activeSlots).size !== activeSlots.length) {
+    throw httpError("每个队伍最多激活两个名称，且激活位不能重复", 400);
   }
+  const normalizedNames = names.map((entry) => (
+    activeSlots.length === 1 && activeSlots[0] === 2 && entry.activeSlot === 2
+      ? { ...entry, activeSlot: 1 as TeamNameActiveSlot }
+      : entry
+  ));
 
   return {
     iconDataUrl: Object.prototype.hasOwnProperty.call(payload, "iconDataUrl")
       ? validateTeamIcon(payload.iconDataUrl)
       : undefined,
-    names: names.map(({ id, name, activeSlot }) => ({ id, name, activeSlot })),
+    names: normalizedNames.map(({ id, name, activeSlot }) => ({ id, name, activeSlot })),
     expectedRevision: Number.isInteger(payload.expectedRevision) ? Number(payload.expectedRevision) : undefined,
   };
 }
@@ -144,9 +157,9 @@ function mapGroups(groupRows: TeamNameGroupRow[], nameRows: TeamNameRow[]): Team
 export async function listTeamNameGroups(d1: D1Database) {
   const [groups, names] = await Promise.all([
     d1.prepare(`
-      SELECT id, icon_data_url, revision, updated_at
+      SELECT id, icon_data_url, revision, updated_at, display_order
       FROM shared_team_name_groups
-      ORDER BY updated_at DESC, id ASC
+      ORDER BY display_order ASC, id ASC
     `).all<TeamNameGroupRow>(),
     d1.prepare(`
       SELECT id, group_id, name, name_key, active_slot, updated_at
@@ -163,7 +176,7 @@ export async function listTeamNameGroups(d1: D1Database) {
 
 async function getGroup(d1: D1Database, groupId: string) {
   const row = await d1.prepare(`
-    SELECT id, icon_data_url, revision, updated_at
+    SELECT id, icon_data_url, revision, updated_at, display_order
     FROM shared_team_name_groups
     WHERE id = ?1
   `).bind(groupId).first<TeamNameGroupRow>();
@@ -175,11 +188,18 @@ export async function createTeamNameGroup(d1: D1Database, userId: string, rawPay
   await ensureNameKeysAvailable(d1, null, payload.names);
   const groupId = crypto.randomUUID();
   const now = new Date().toISOString();
+  const orderRow = await d1.prepare(`
+    SELECT MIN(display_order) AS min_display_order
+    FROM shared_team_name_groups
+  `).first<{ min_display_order: number | null }>();
+  const displayOrder = orderRow?.min_display_order === null || typeof orderRow?.min_display_order === "undefined"
+    ? 0
+    : Number(orderRow.min_display_order) - 1;
   const statements = [
     d1.prepare(`
-      INSERT INTO shared_team_name_groups (id, icon_data_url, updated_by, revision, updated_at)
-      VALUES (?1, ?2, ?3, 0, ?4)
-    `).bind(groupId, payload.iconDataUrl ?? null, userId, now),
+      INSERT INTO shared_team_name_groups (id, icon_data_url, updated_by, revision, updated_at, display_order)
+      VALUES (?1, ?2, ?3, 0, ?4, ?5)
+    `).bind(groupId, payload.iconDataUrl ?? null, userId, now, displayOrder),
     ...payload.names.map((entry) => d1.prepare(`
       INSERT INTO shared_team_names (id, group_id, name, name_key, active_slot, updated_by, updated_at)
       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)

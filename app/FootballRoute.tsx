@@ -36,7 +36,7 @@ import {
 } from "./api-client/matches";
 import type { AppSettings } from "./settings";
 import type { SportteryMatchSnapshot } from "./sporttery";
-import type { TeamNameGroup, TeamNameGroupDraft } from "./team-aliases";
+import { upsertTeamNameGroupAtPosition, type TeamNameGroup, type TeamNameGroupDraft } from "./team-aliases";
 
 type RouteStatus = "loading" | "ready" | "error";
 type VersionResponse = { appVersion?: string };
@@ -332,10 +332,7 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
   const saveSharedTeamNameGroup = useCallback(async (draft: TeamNameGroupDraft) => {
     if (!accountIdRef.current) throw new Error("请先输入账号登录");
     const saved = await saveTeamNameGroup(draft);
-    setTeamNameGroups((current) => {
-      const next = current.filter((group) => group.id !== saved.id);
-      return draft.id ? [...next, saved] : [saved, ...next];
-    });
+    setTeamNameGroups((current) => upsertTeamNameGroupAtPosition(current, saved));
     return saved;
   }, []);
 

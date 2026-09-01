@@ -85,7 +85,10 @@ export const sharedTeamNameGroups = sqliteTable("shared_team_name_groups", {
   updatedBy: text("updated_by").references(() => users.id, { onDelete: "set null" }),
   revision: integer("revision").notNull().default(0),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-});
+  displayOrder: integer("display_order").notNull().default(0),
+}, (table) => [
+  index("shared_team_name_groups_order_idx").on(table.displayOrder),
+]);
 
 export const sharedTeamNames = sqliteTable("shared_team_names", {
   id: text("id").primaryKey(),

@@ -36,11 +36,12 @@ export type TeamNameAliasesResponse = {
 
 export type TeamNameResolution = {
   groupId: string;
-  activeNames: [TeamNameEntry, TeamNameEntry];
+  activeNames: [TeamNameEntry, TeamNameEntry?];
   iconDataUrl: string | null;
 };
 
 export type TeamNameIndex = Map<string, TeamNameResolution>;
+export type TeamNameAliasPosition = "before" | "after" | "auto";
 
 /** 与比赛名称匹配时忽略全角差异、大小写和空白差异。 */
 export function normalizeTeamName(value: string) {
@@ -53,15 +54,24 @@ export function activeTeamNames(group: TeamNameGroup): TeamNameEntry[] {
     .sort((left, right) => (left.activeSlot ?? 0) - (right.activeSlot ?? 0));
 }
 
-/** 只有两个激活槽位完整时才生成展示索引，避免半配置状态影响比赛页面。 */
+/** 编辑队伍组时替换原位置；新建队伍组沿用当前行为放在列表顶部。 */
+export function upsertTeamNameGroupAtPosition(groups: TeamNameGroup[], saved: TeamNameGroup): TeamNameGroup[] {
+  const existingIndex = groups.findIndex((group) => group.id === saved.id);
+  if (existingIndex < 0) return [saved, ...groups];
+  return groups.map((group, index) => index === existingIndex ? saved : group);
+}
+
+/** 有名称即可生成展示索引；激活名称 1/2 用于展示主名和别名，没有激活名称时使用首个名称。 */
 export function buildTeamNameIndex(groups: TeamNameGroup[]): TeamNameIndex {
   const index: TeamNameIndex = new Map();
   groups.forEach((group) => {
     const activeNames = activeTeamNames(group);
-    if (activeNames.length !== 2 || activeNames[0].activeSlot !== 1 || activeNames[1].activeSlot !== 2) return;
+    const firstActive = activeNames.find((entry) => entry.activeSlot === 1) ?? group.names[0];
+    const secondActive = activeNames.find((entry) => entry.activeSlot === 2);
+    if (!firstActive) return;
     const resolution: TeamNameResolution = {
       groupId: group.id,
-      activeNames: [activeNames[0], activeNames[1]],
+      activeNames: [firstActive, secondActive],
       iconDataUrl: group.iconDataUrl ?? null,
     };
     group.names.forEach((entry) => {
@@ -84,11 +94,5 @@ export function resolveTeamNameDisplay(name: string, index: TeamNameIndex) {
   }
 
   const [firstActive, secondActive] = resolution.activeNames;
-  if (currentKey === normalizeTeamName(firstActive.name)) {
-    return { normalName: name, aliasName: secondActive.name, aliasBefore: true };
-  }
-  if (currentKey === normalizeTeamName(secondActive.name)) {
-    return { normalName: firstActive.name, aliasName: name, aliasBefore: false };
-  }
-  return { normalName: name, aliasName: firstActive.name, aliasBefore: true };
+  return { normalName: firstActive.name, aliasName: secondActive?.name ?? null, aliasBefore: true };
 }
