@@ -39,7 +39,7 @@ import {
   EditOutlined,
   ExpandOutlined,
   EyeOutlined,
-  HomeOutlined,
+  GithubOutlined,
   ImportOutlined,
   InfoCircleOutlined,
   LineChartOutlined,
@@ -100,7 +100,7 @@ import { buildFinanceTrendFromOrders, shanghaiDateKey } from "./finance-trend";
 import { getFinanceTrend } from "./api-client/finance";
 import { orderFilterIncomeTotal, orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "./imports";
 import { isOrderPaid } from "./order-model";
-import { CLOUD_APP_URL } from "./links";
+import { CLOUD_APP_URL, UPDATE_LOG_URL } from "./links";
 import { formatManualMatchText, formatManualOrderText } from "./manual-order-format";
 import { AppShellHeader } from "./components/AppShellHeader";
 import { TeamNameWithIcon } from "./components/TeamNameWithAlias";
@@ -3550,7 +3550,6 @@ function InnerFootballApp({
         onLogout={onLogout}
         onNavigate={navigateToView}
         onRequireAccount={() => onRequireAccount()}
-        onSavePage={saveRepositoryPage}
       />
 
       {activeView === "betting" ? <main className="page-shell">
@@ -3749,7 +3748,6 @@ function InnerFootballApp({
                 <Popover content={bulkSettleContent} trigger="click" open={bulkSettlePopoverOpen} onOpenChange={setBulkSettlePopoverOpen}>
                   <Button className="checkout-order-button" icon={<CheckOutlined />} loading={settlingOrderIds.length > 0} disabled={cloudOrdersLoading || filteredSettleableOrders.length === 0 || settlingOrderIds.length > 0}>一键结账</Button>
                 </Popover>
-                <Button type="primary" icon={<HomeOutlined />} onClick={() => navigateToView("betting")}>返回投注</Button>
               </Space>
             </div>
             <div className="order-overview">
@@ -4285,7 +4283,8 @@ function InnerFootballApp({
               <div><span className="eyebrow">{isGuestMode ? "LOCAL SETTINGS" : "CLOUD SETTINGS"}</span><h2>设置</h2><p>{isGuestMode ? "游客设置只保存在当前浏览器，清理浏览器数据后将无法恢复。" : "应用设置与当前账号绑定，并在其他设备登录后自动同步。"}</p></div>
               <Space wrap>
                 <Tag color="cyan">{settingsLeagueNames.length} 个联赛颜色</Tag>
-                <Button type="primary" icon={<HomeOutlined />} onClick={() => navigateToView("betting")}>返回投注</Button>
+                <Button icon={<GithubOutlined />} href={UPDATE_LOG_URL} target="_blank" rel="noreferrer">GitHub</Button>
+                <Button type="primary" icon={<SaveOutlined />} onClick={saveRepositoryPage}>保存页面</Button>
               </Space>
             </div>
             <Card className="settings-card">

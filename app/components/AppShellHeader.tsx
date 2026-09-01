@@ -7,7 +7,6 @@ import {
   InfoCircleOutlined,
   LogoutOutlined,
   PlusOutlined,
-  SaveOutlined,
   SettingOutlined,
   UserOutlined,
 } from "@ant-design/icons";
@@ -29,7 +28,6 @@ type AppShellHeaderProps = {
   onLogout: () => Promise<void>;
   onNavigate: (view: AppView) => void;
   onRequireAccount: () => void;
-  onSavePage: () => void;
 };
 
 export function AppShellHeader({
@@ -43,7 +41,6 @@ export function AppShellHeader({
   onLogout,
   onNavigate,
   onRequireAccount,
-  onSavePage,
 }: AppShellHeaderProps) {
   const syncLabel = isGuestMode
     ? "游客数据仅保存在当前浏览器"
@@ -83,9 +80,6 @@ export function AppShellHeader({
                 <span className="header-button-label">添加订单</span>
               </Button>
             )}
-            <Button icon={<SaveOutlined />} onClick={onSavePage}>
-              <span className="header-button-label">保存页面</span>
-            </Button>
             <Button className={activeView === "betting" ? "view-toggle active" : "view-toggle"} icon={<HomeOutlined />} onClick={() => onNavigate("betting")}>
               <span className="header-button-label">投注</span>
             </Button>
