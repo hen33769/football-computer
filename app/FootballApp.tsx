@@ -77,6 +77,7 @@ import {
   MAX_SELECTED_MATCHES,
   selectedMatches,
   selectedOptions,
+  sortPassMultiplierDetails,
   winningOptionId,
   type PrizeRangeMetrics,
 } from "./calculator";
@@ -104,11 +105,13 @@ import { orderFilterIncomeTotal, orderLedgerTotals, orderStakeTotal, sortSavedOr
 import { isOrderPaid } from "./order-model";
 import { CLOUD_APP_URL, UPDATE_LOG_URL } from "./links";
 import { formatManualMatchText, formatManualOrderText } from "./manual-order-format";
+import { formatMatchCopyLine } from "./match-format";
 import { AppShellHeader } from "./components/AppShellHeader";
 import { TeamNameWithIcon } from "./components/TeamNameWithAlias";
 import { parseRecognizedText } from "./ocr";
 import {
   convertSportteryMatches,
+  fetchSportteryUniformMatchResultPage,
   fetchSportteryMatchCalculator,
   fetchSportteryMatchById,
   fetchSportteryMatchHandicap,
@@ -117,20 +120,24 @@ import {
   getMatchSaleState,
   getNextSportteryAutoRefreshDelay,
   getSportteryRefreshPolicy,
+  getSportteryMatchStartDateKey,
   hasMatchStarted,
   getSportteryMatchPhaseTc,
   isSportteryRegularTimeFinished,
   isMatchSelectable,
   mergeSportteryMatchCache,
   normalizeSportteryMatchId,
+  parseSportteryUniformMatchResult,
   parseSportteryMatchScoreDetails,
   refreshSelectedOdds,
   selectAvailableOrderBets,
+  splitSportteryMatchResultDateRanges,
   unionSportteryMatchCache,
   type SportteryLeague,
   type SportteryMatchFetchMode,
   type SportteryMatchSnapshot,
   type SportteryMatchDate,
+  type SportteryUniformMatchResult,
 } from "./sporttery";
 import { hasCompleteMatchResult, isMatchResult, isOrderMatchJudged, judgeLoadedOrdersWithResults, repairSlipHandicapResults, RESULT_MARKETS, resultSelectOptions } from "./results";
 import {
@@ -442,7 +449,10 @@ function PassMultiplierDetails({ matches, passes, hits }: { matches: MatchItem[]
   const details = useMemo(() => calculatePassMultipliers(orderedMatches, passes, hits), [orderedMatches, passes, hits]);
   const summary = useMemo(() => calculateBetSummary(orderedMatches, passes), [orderedMatches, passes]);
   if (details.length === 0) return null;
-  const grouped = [...passes].sort((left, right) => left - right).map((pass) => ({ pass, items: details.filter((item) => item.pass === pass) }));
+  const grouped = [...passes].sort((left, right) => left - right).map((pass) => ({
+    pass,
+    items: sortPassMultiplierDetails(details.filter((item) => item.pass === pass)),
+  }));
   const fullMultiplier = (value: number) => value.toLocaleString("zh-CN", { useGrouping: false, minimumFractionDigits: 0, maximumFractionDigits: 4 });
   return (
     <section className="pass-multiplier-details">
@@ -2731,64 +2741,136 @@ function InnerFootballApp({
         && (!retryState || retryState.nextAttemptAt <= saleNow.getTime());
     });
     if (candidates.length === 0) return;
-    const queue = candidates.map((match) => {
+    const candidateById = new Map(candidates.map((match) => [normalizeSportteryMatchId(match.id), match]));
+    const candidateRetryCounts = new Map(candidates.map((match) => {
       const matchId = normalizeSportteryMatchId(match.id);
       const retryState = autoResultRetryAtRef.current.get(matchId);
-      return {
-        match,
-        retryCount: retryState?.retryCount ?? 0,
-        retryAt: retryState?.nextAttemptAt ?? 0,
-      };
-    });
+      return [matchId, retryState?.retryCount ?? 0] as const;
+    }));
+    const dateRanges = splitSportteryMatchResultDateRanges(candidates);
+    if (dateRanges.length === 0) return;
     autoResultFetchingRef.current = true;
     void (async () => {
       const resultUpdates: MatchItem[] = [];
-      let lastRequestAt = 0;
-      while (queue.length > 0) {
-        const readyIndex = queue.findIndex((item) => item.retryAt <= Date.now());
-        if (readyIndex < 0) break;
-        const [{ match, retryCount }] = queue.splice(readyIndex, 1);
+      const applyLocalResults = (updates: MatchItem[]) => {
+        if (updates.length === 0) return;
+        const resultById = new Map(updates.map((match) => [normalizeSportteryMatchId(match.id), match.result]));
+        setMatchResults((current) => {
+          const next = { ...current };
+          updates.forEach((match) => {
+            const matchId = normalizeSportteryMatchId(match.id);
+            if (match.result) next[matchId] = match.result;
+          });
+          return next;
+        });
+        const localMatches = matchesRef.current.map((match) => {
+          const result = resultById.get(normalizeSportteryMatchId(match.id));
+          return result ? { ...match, result } : match;
+        });
+        matchesRef.current = localMatches;
+        setMatches(localMatches);
+        saveCachedMatches(localMatches);
+      };
+      const scheduleRetryForMatch = (match: MatchItem, kind: "unfinished" | "error") => {
         const matchId = normalizeSportteryMatchId(match.id);
-        const waitMs = Math.max(0, AUTO_RESULT_REQUEST_INTERVAL_MS - (Date.now() - lastRequestAt));
-        if (waitMs > 0) await new Promise((resolve) => window.setTimeout(resolve, waitMs));
-        setBettingResultFetchingMatchIds([matchId]);
-        lastRequestAt = Date.now();
+        const retryCount = candidateRetryCounts.get(matchId) ?? 0;
+        const retryState = scheduleAutoResultRetry(retryCount, kind);
+        autoResultRetryAtRef.current.set(matchId, retryState ?? {
+          retryCount,
+          nextAttemptAt: Number.POSITIVE_INFINITY,
+        });
+      };
+      let lastRequestAt = 0;
+      for (const dateRange of dateRanges) {
+        const rangeEntries = dateRange.matches
+          .map((match) => ({ match, matchId: normalizeSportteryMatchId(match.id) }))
+          .filter(({ matchId }) => candidateById.has(matchId));
+        if (rangeEntries.length === 0) continue;
+        const rangeMatchIds = new Set(rangeEntries.map(({ matchId }) => matchId));
+        const unresolvedIds = new Set(rangeMatchIds);
+        setBettingResultFetchingMatchIds([...unresolvedIds]);
+        const dateMatchesCount = filteredMatches.filter((match) => {
+          const dateKey = getSportteryMatchStartDateKey(match);
+          return Boolean(dateKey && dateKey >= dateRange.matchBeginDate && dateKey <= dateRange.matchEndDate);
+        }).length;
+        const pageSize = Math.max(1, dateMatchesCount || rangeEntries.length);
+        let pageNo = 1;
+        let totalPages = 1;
+        let rangeError: unknown;
         try {
-          const outcome = await requestMatchResult(match);
-          if (outcome.status === "success") {
-            autoResultRetryAtRef.current.delete(matchId);
-            resultUpdates.push({ ...match, result: outcome.result });
-          } else {
-            const retryState = scheduleAutoResultRetry(retryCount, "unfinished");
-            if (retryState) {
-              autoResultRetryAtRef.current.set(matchId, retryState);
-              queue.push({ match, retryCount: retryState.retryCount, retryAt: retryState.nextAttemptAt });
-            } else {
-              autoResultRetryAtRef.current.set(matchId, { retryCount, nextAttemptAt: Number.POSITIVE_INFINITY });
-            }
+          while (pageNo <= totalPages) {
+            const waitMs = Math.max(0, AUTO_RESULT_REQUEST_INTERVAL_MS - (Date.now() - lastRequestAt));
+            if (waitMs > 0) await new Promise((resolve) => window.setTimeout(resolve, waitMs));
+            lastRequestAt = Date.now();
+            const payload = await fetchSportteryUniformMatchResultPage({
+              matchBeginDate: dateRange.matchBeginDate,
+              matchEndDate: dateRange.matchEndDate,
+              pageSize,
+              pageNo,
+              leagueId: "",
+              isFix: 0,
+              matchPage: 1,
+              pcOrWap: 1,
+            });
+            const pageResults = payload.value?.matchResult ?? [];
+            const pageResultById = new Map<string, SportteryUniformMatchResult>();
+            pageResults.forEach((record) => {
+              const matchId = normalizeSportteryMatchId(String(record.matchId ?? ""));
+              if (matchId && rangeMatchIds.has(matchId)) pageResultById.set(matchId, record);
+            });
+            const pageUpdates: MatchItem[] = [];
+            pageResultById.forEach((record, matchId) => {
+              if (!unresolvedIds.has(matchId)) return;
+              const match = candidateById.get(matchId);
+              if (!match) return;
+              const parsedResult = parseSportteryUniformMatchResult(record, match);
+              if (!parsedResult.fullScore || Object.keys(parsedResult.values).length === 0) return;
+              const nextResult = {
+                matchId,
+                updatedAt: new Date().toISOString(),
+                source: "api" as const,
+                values: parsedResult.values,
+                ...(typeof parsedResult.rqspfHandicap === "number" ? { rqspfHandicap: parsedResult.rqspfHandicap } : {}),
+                fullScore: parsedResult.fullScore,
+                halfScore: parsedResult.halfScore,
+              };
+              unresolvedIds.delete(matchId);
+              autoResultRetryAtRef.current.delete(matchId);
+              const updatedMatch = { ...match, result: nextResult };
+              resultUpdates.push(updatedMatch);
+              pageUpdates.push(updatedMatch);
+            });
+            applyLocalResults(pageUpdates);
+            setBettingResultFetchingMatchIds([...unresolvedIds]);
+
+            const reportedPages = Number(payload.value?.pages);
+            const reportedTotal = Number(payload.value?.total);
+            const reportedPageSize = Number(payload.value?.pageSize);
+            const effectivePageSize = Number.isInteger(reportedPageSize) && reportedPageSize > 0 ? reportedPageSize : pageSize;
+            totalPages = Number.isInteger(reportedPages) && reportedPages > 0
+              ? reportedPages
+              : Number.isInteger(reportedTotal) && reportedTotal > 0
+                ? Math.ceil(reportedTotal / effectivePageSize)
+                : pageResults.length >= effectivePageSize ? pageNo + 1 : pageNo;
+            if (totalPages > 1000) throw new Error("赛果批量接口分页数量异常");
+            pageNo += 1;
           }
         } catch (error) {
-          const retryState = scheduleAutoResultRetry(retryCount, "error");
-          if (retryState) {
-            autoResultRetryAtRef.current.set(matchId, retryState);
-            queue.push({ match, retryCount: retryState.retryCount, retryAt: retryState.nextAttemptAt });
-          } else {
-            autoResultRetryAtRef.current.set(matchId, { retryCount, nextAttemptAt: Number.POSITIVE_INFINITY });
-          }
-          console.error("[体彩接口] 自动获取投注页赛果失败", { matchId: match.id, error });
+          rangeError = error;
+          console.error("[体彩接口] 自动获取投注页批量赛果失败", {
+            matchBeginDate: dateRange.matchBeginDate,
+            matchEndDate: dateRange.matchEndDate,
+            pageNo,
+            error,
+          });
         }
+        unresolvedIds.forEach((matchId) => {
+          const match = candidateById.get(matchId);
+          if (match) scheduleRetryForMatch(match, rangeError ? "error" : "unfinished");
+        });
         setBettingResultFetchingMatchIds([]);
       }
       if (resultUpdates.length === 0) return;
-      const resultById = new Map(resultUpdates.map((match) => [normalizeSportteryMatchId(match.id), match.result]));
-      const applyResults = (current: MatchItem[]) => current.map((match) => {
-        const result = resultById.get(normalizeSportteryMatchId(match.id));
-        return result ? { ...match, result } : match;
-      });
-      const localMatches = applyResults(matchesRef.current);
-      matchesRef.current = localMatches;
-      setMatches(localMatches);
-      saveCachedMatches(localMatches);
       try {
         const saved = await onCloudMatchesUpdate(resultUpdates);
         const savedResultById = new Map(saved.map((match) => [normalizeSportteryMatchId(match.id), match.result]));
@@ -2814,6 +2896,7 @@ function InnerFootballApp({
   }, [
     activeView,
     collapsedMatchDates,
+    filteredMatches,
     groupedMatches,
     notification,
     onCloudMatchesUpdate,
@@ -3401,7 +3484,7 @@ function InnerFootballApp({
   };
 
   const copyMatchesForDate = async (date: string, dateMatches: MatchItem[]) => {
-    const content = [date, ...dateMatches.map((match) => `${match.home} vs ${match.away}`)].join("\n");
+    const content = [date, ...dateMatches.map(formatMatchCopyLine)].join("\n");
     try {
       await navigator.clipboard.writeText(content);
       message.success(`已复制 ${date} 的 ${dateMatches.length} 场比赛`);

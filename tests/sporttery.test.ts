@@ -10,12 +10,15 @@ import {
 import {
   convertSportteryMorningMatches,
   convertSportteryMatches,
+  buildSportteryUniformMatchResultUrl,
   enrichSportteryMatchOddsHistory,
+  fetchSportteryUniformMatchResultPage,
   fetchSportteryMatchById,
   fetchSportteryMatchSnapshot,
   getNextSportteryAutoRefreshDelay,
   getMatchSaleState,
   getSportteryRefreshPolicy,
+  getSportteryMatchStartDateKey,
   getSportteryMatchPhaseTc,
   hasMatchStarted,
   isSportteryRegularTimeFinished,
@@ -26,11 +29,13 @@ import {
   parseSportteryOptionOddsHistory,
   parseSportteryMatchScore,
   parseSportteryMatchScoreDetails,
+  parseSportteryUniformMatchResult,
   parseSportteryMatchHandicap,
   parseSportteryFixedBonus,
   refreshSelectedOdds,
   replaceSportteryMatches,
   selectAvailableOrderBets,
+  splitSportteryMatchResultDateRanges,
   unionSportteryMatchCache,
   type SportteryMatchCalculatorResponse,
   type SportteryMatchListResponse,
@@ -92,6 +97,80 @@ const payload: SportteryMatchCalculatorResponse = {
 const market = (match: ReturnType<typeof convertSportteryMatches>[number], type: "spf" | "rqspf" | "score" | "goals" | "halfFull") => (
   match.markets.find((item) => item.type === type)!
 );
+
+test("批量赛果 URL 使用确认的日期、分页和页面参数", () => {
+  const url = buildSportteryUniformMatchResultUrl({
+    matchBeginDate: "2026-08-31",
+    matchEndDate: "2026-09-01",
+    pageSize: 22,
+    pageNo: 2,
+  });
+  assert.equal(url.pathname, "/gateway/uniform/football/getUniformMatchResultV1.qry");
+  assert.equal(url.searchParams.get("matchBeginDate"), "2026-08-31");
+  assert.equal(url.searchParams.get("matchEndDate"), "2026-09-01");
+  assert.equal(url.searchParams.get("leagueId"), "");
+  assert.equal(url.searchParams.get("pageSize"), "22");
+  assert.equal(url.searchParams.get("pageNo"), "2");
+  assert.equal(url.searchParams.get("isFix"), "0");
+  assert.equal(url.searchParams.get("matchPage"), "1");
+  assert.equal(url.searchParams.get("pcOrWap"), "1");
+});
+
+test("批量赛果日期按实际开赛日期拆分为最多 30 天的闭区间", () => {
+  const [match] = convertSportteryMatches(payload, beforeKickoff);
+  const matches = [
+    { ...match, id: "1", date: "2026-01-01", time: "2026-01-01 12:00" },
+    { ...match, id: "2", date: "2026-01-01", time: "2026-01-30 12:00" },
+    { ...match, id: "3", date: "2026-01-01", time: "2026-01-31 12:00" },
+  ];
+  assert.equal(getSportteryMatchStartDateKey({ date: "2026-01-01", time: "2026-01-31 12:00" }), "2026-01-31");
+  assert.deepEqual(splitSportteryMatchResultDateRanges(matches).map((range) => ({
+    start: range.matchBeginDate,
+    end: range.matchEndDate,
+    ids: range.matches.map((item) => item.id),
+  })), [
+    { start: "2026-01-01", end: "2026-01-30", ids: ["1", "2"] },
+    { start: "2026-01-31", end: "2026-01-31", ids: ["3"] },
+  ]);
+});
+
+test("批量赛果记录复用常规时间解析并使用接口让球值", () => {
+  const [match] = convertSportteryMatches(payload, beforeKickoff);
+  const parsed = parseSportteryUniformMatchResult({
+    matchId: match.id,
+    goalLine: "+1",
+    sectionsNo1: "1:0",
+    sectionsNo999: "2:1",
+  }, { ...match, markets: match.markets.map((item) => item.type === "rqspf" ? { ...item, handicap: -2 } : item) });
+  assert.deepEqual(parsed.fullScore, { home: 2, away: 1 });
+  assert.deepEqual(parsed.halfScore, { home: 1, away: 0 });
+  assert.equal(parsed.rqspfHandicap, 1);
+  assert.ok(parsed.values.rqspf);
+});
+
+test("批量赛果接口校验成功 JSON 并返回分页数据", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input) => {
+    const url = new URL(String(input));
+    assert.equal(url.searchParams.get("pageNo"), "2");
+    return new Response(JSON.stringify({
+      success: true,
+      value: { total: 2, pages: 2, pageNo: 2, pageSize: 1, matchResult: [{ matchId: 2040585, sectionsNo1: "1:0", sectionsNo999: "2:0" }] },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const response = await fetchSportteryUniformMatchResultPage({
+      matchBeginDate: "2026-07-23",
+      matchEndDate: "2026-07-23",
+      pageSize: 1,
+      pageNo: 2,
+    });
+    assert.equal(response.value?.pages, 2);
+    assert.equal(response.value?.matchResult?.[0].matchId, 2040585);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 test("体彩接口五类玩法完整转换为投注页比赛结构", () => {
   const [match] = convertSportteryMatches(payload, beforeKickoff);

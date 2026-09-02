@@ -16,6 +16,7 @@ import {
   isNewMatchSelectionBlocked,
   isOrderSettleable,
   MAX_SELECTED_MATCHES,
+  sortPassMultiplierDetails,
 } from "../app/calculator";
 import { cloneMatches, initialMatches } from "../app/data";
 import { orderFilterIncomeTotal, orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "../app/imports";
@@ -23,6 +24,7 @@ import { matchPassesLeagueFilter, orderContainsTeam, orderPassesLeagueFilter, re
 import { appendOrderPassValue, inferOrderPasses, parseOrderPassValues } from "../app/order-passes";
 import { isOrderMatchJudged, judgeLoadedOrdersWithResults, judgeSlipWithResults, repairSlipHandicapResults } from "../app/results";
 import { prioritizeLeagueNames, sortMatchesForManualOrder } from "../app/sorting";
+import { formatMatchCopyLine } from "../app/match-format";
 import type { MatchItem, SavedSlip } from "../app/types";
 
 test("订单按创建时间降序排列，非法时间排在末尾", () => {
@@ -344,6 +346,38 @@ test("串关倍数明细标记完整命中与单项命中", () => {
   assert.equal(details[1].hitMultiplier, 3);
   assert.equal(details[1].fullyHit, false);
   assert.deepEqual(details[1].factors.map((factor) => factor.hit), [false, true]);
+  assert.deepEqual(sortPassMultiplierDetails(details).map((item) => item.multiplier), [12, 6]);
+});
+
+test("串关明细总倍率相同时保持原有组合顺序", () => {
+  const matches = select();
+  matches[0].markets[0].options[1].selected = true;
+  matches[0].markets[0].options[1].odds = 2;
+  const details = calculatePassMultipliers(matches, [2], {});
+  const reordered = [details[0], details[1], details[0]];
+  const sorted = sortPassMultiplierDetails(reordered);
+
+  assert.deepEqual(sorted.map((item) => item.multiplier), [6, 6, 6]);
+  assert.equal(sorted[0], details[0]);
+  assert.equal(sorted[1], details[1]);
+  assert.equal(sorted[2], details[0]);
+});
+
+test("复制日期比赛时按让球方向格式化队伍行", () => {
+  const match = cloneMatches(initialMatches.slice(0, 1))[0];
+  const rqspf = match.markets.find((market) => market.type === "rqspf")!;
+
+  rqspf.handicap = -2;
+  assert.equal(formatMatchCopyLine(match), "富川FC VS 安养FC（主让 2）");
+
+  rqspf.handicap = 1;
+  assert.equal(formatMatchCopyLine(match), "富川FC VS 安养FC（客让 1）");
+
+  rqspf.handicap = 0;
+  assert.equal(formatMatchCopyLine(match), "富川FC VS 安养FC（平手）");
+
+  rqspf.handicap = undefined;
+  assert.equal(formatMatchCopyLine(match), "富川FC VS 安养FC");
 });
 
 test("4 串 1 明细分别计算当前命中与完整赔率积", () => {

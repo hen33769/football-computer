@@ -10,6 +10,8 @@ export const SPORTTERY_FIXED_BONUS_URL =
   "https://webapi.sporttery.cn/gateway/uniform/football/getFixedBonusV1.qry";
 export const SPORTTERY_MATCH_SCORE_URL =
   "https://webapi.sporttery.cn/gateway/uniform/fb/getMatchScoreV1.qry";
+export const SPORTTERY_UNIFORM_MATCH_RESULT_URL =
+  "https://webapi.sporttery.cn/gateway/uniform/football/getUniformMatchResultV1.qry";
 
 const LEGACY_SPORTTERY_MATCH_ID_PREFIX = "sporttery-";
 export const SPORTTERY_MATCH_CACHE_DAYS = 7;
@@ -105,6 +107,38 @@ export type SportteryMatchSnapshot = {
   refreshError?: string;
 };
 
+export type SportteryUniformMatchResult = {
+  matchId: string | number;
+  matchDate?: string;
+  goalLine?: string | number;
+  sectionsNo1?: string;
+  sectionsNo999?: string;
+  matchResultStatus?: string | number;
+  [key: string]: unknown;
+};
+
+export type SportteryUniformMatchResultResponse = {
+  success?: boolean;
+  errorCode?: string | number;
+  errorMessage?: string;
+  emptyFlag?: boolean;
+  value?: {
+    total?: number;
+    pages?: number;
+    pageNo?: number;
+    pageSize?: number;
+    matchResult?: SportteryUniformMatchResult[];
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+};
+
+export type SportteryMatchResultDateRange = {
+  matchBeginDate: string;
+  matchEndDate: string;
+  matches: MatchItem[];
+};
+
 const POOL_BY_MARKET: Record<MarketType, string> = {
   spf: "HAD",
   rqspf: "HHAD",
@@ -167,6 +201,102 @@ const identityPart = (value: string) => value.replace(/\s+/g, "").toLocaleLowerC
 export const normalizeSportteryMatchId = (id: string) => id.startsWith(LEGACY_SPORTTERY_MATCH_ID_PREFIX)
   ? id.slice(LEGACY_SPORTTERY_MATCH_ID_PREFIX.length)
   : id;
+
+const ISO_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+const normalizeIsoDateKey = (value: unknown) => {
+  const text = String(value ?? "").trim();
+  const matched = text.match(ISO_DATE_PATTERN);
+  if (!matched) return null;
+  const date = new Date(`${text}T00:00:00Z`);
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== text) return null;
+  return text;
+};
+
+const addDaysToDateKey = (dateKey: string, days: number) => {
+  const date = new Date(`${dateKey}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+};
+
+/** 使用比赛实际开赛时间的自然日；只有 time 没有完整日期时才退回业务日。 */
+export function getSportteryMatchStartDateKey(match: Pick<MatchItem, "date" | "time">) {
+  const timeDate = String(match.time ?? "").match(/^(\d{4}-\d{2}-\d{2})/i)?.[1];
+  return normalizeIsoDateKey(timeDate) ?? normalizeIsoDateKey(match.date);
+}
+
+/** 将候选比赛拆为最多 maxDays 个自然日的闭区间，比赛按实际开赛日期归入区间。 */
+export function splitSportteryMatchResultDateRanges(
+  matches: MatchItem[],
+  maxDays = 30,
+): SportteryMatchResultDateRange[] {
+  if (!Number.isInteger(maxDays) || maxDays < 1) throw new Error("赛果批量日期范围必须至少包含 1 天");
+  const datedMatches = matches.flatMap((match) => {
+    const dateKey = getSportteryMatchStartDateKey(match);
+    return dateKey ? [{ match, dateKey }] : [];
+  });
+  if (datedMatches.length === 0) return [];
+
+  const firstDate = datedMatches.reduce((min, item) => item.dateKey < min ? item.dateKey : min, datedMatches[0].dateKey);
+  const lastDate = datedMatches.reduce((max, item) => item.dateKey > max ? item.dateKey : max, datedMatches[0].dateKey);
+  const ranges: SportteryMatchResultDateRange[] = [];
+  let rangeStart = firstDate;
+  while (rangeStart <= lastDate) {
+    const rangeEnd = addDaysToDateKey(rangeStart, maxDays - 1);
+    ranges.push({
+      matchBeginDate: rangeStart,
+      matchEndDate: rangeEnd < lastDate ? rangeEnd : lastDate,
+      matches: datedMatches
+        .filter((item) => item.dateKey >= rangeStart && item.dateKey <= (rangeEnd < lastDate ? rangeEnd : lastDate))
+        .map((item) => item.match),
+    });
+    rangeStart = addDaysToDateKey(rangeEnd, 1);
+  }
+  return ranges;
+}
+
+export type SportteryUniformMatchResultUrlParams = {
+  matchBeginDate: string;
+  matchEndDate: string;
+  pageSize: number;
+  pageNo?: number;
+  leagueId?: string | number;
+  isFix?: string | number;
+  matchPage?: string | number;
+  pcOrWap?: string | number;
+};
+
+export function buildSportteryUniformMatchResultUrl(params: SportteryUniformMatchResultUrlParams) {
+  const url = new URL(SPORTTERY_UNIFORM_MATCH_RESULT_URL);
+  url.searchParams.set("matchBeginDate", params.matchBeginDate);
+  url.searchParams.set("matchEndDate", params.matchEndDate);
+  url.searchParams.set("leagueId", String(params.leagueId ?? ""));
+  url.searchParams.set("pageSize", String(params.pageSize));
+  url.searchParams.set("pageNo", String(params.pageNo ?? 1));
+  url.searchParams.set("isFix", String(params.isFix ?? 0));
+  url.searchParams.set("matchPage", String(params.matchPage ?? 1));
+  url.searchParams.set("pcOrWap", String(params.pcOrWap ?? 1));
+  return url;
+}
+
+export async function fetchSportteryUniformMatchResultPage(params: SportteryUniformMatchResultUrlParams) {
+  if (!Number.isInteger(params.pageSize) || params.pageSize < 1) throw new Error("赛果批量 pageSize 必须为正整数");
+  const response = await fetch(buildSportteryUniformMatchResultUrl(params), {
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`赛果批量接口请求失败：HTTP ${response.status}`);
+  let payload: SportteryUniformMatchResultResponse;
+  try {
+    payload = JSON.parse(text) as SportteryUniformMatchResultResponse;
+  } catch {
+    throw new Error("赛果批量接口未返回有效 JSON");
+  }
+  if (payload.success === false) throw new Error(String(payload.errorMessage || payload.errorCode || "赛果批量接口返回失败"));
+  if (!payload.value || !Array.isArray(payload.value.matchResult)) throw new Error("赛果批量接口缺少 matchResult");
+  return payload;
+}
 
 const matchIdentityKey = (match: MatchItem) => [
   identityPart(match.weekday),
@@ -1126,6 +1256,36 @@ export function parseSportteryMatchScoreDetails(payload: unknown, match: MatchIt
 
 export function parseSportteryMatchScore(payload: unknown, match: MatchItem): Partial<Record<MarketType, string>> {
   return parseSportteryMatchScoreDetails(payload, match).values;
+}
+
+/** 将按日期批量赛果记录适配为现有比分解析器可识别的常规时间赛果。 */
+export function parseSportteryUniformMatchResult(
+  record: SportteryUniformMatchResult,
+  match: MatchItem,
+): ParsedSportteryMatchScore & { rqspfHandicap?: number } {
+  const goalLine = Number.parseFloat(String(record.goalLine ?? ""));
+  const rqspfHandicap = Number.isFinite(goalLine) ? goalLine : match.markets.find((market) => market.type === "rqspf")?.handicap;
+  const resultMatch = {
+    ...match,
+    markets: match.markets.map((market) => market.type === "rqspf" && typeof rqspfHandicap === "number"
+      ? { ...market, handicap: rqspfHandicap }
+      : market),
+  };
+  const parsed = parseSportteryMatchScoreDetails({
+    success: true,
+    value: {
+      sectionsNo1: record.sectionsNo1,
+      sectionsNo999: record.sectionsNo999,
+      sectionsNos: [
+        { sectionNo: 1, score: record.sectionsNo1 },
+        { sectionNo: 2, score: record.sectionsNo999 },
+      ],
+    },
+  }, resultMatch);
+  return {
+    ...parsed,
+    ...(typeof rqspfHandicap === "number" && Number.isFinite(rqspfHandicap) ? { rqspfHandicap } : {}),
+  };
 }
 
 const findPoolResult = (payload: unknown, poolCode: string): unknown => {

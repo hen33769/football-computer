@@ -224,6 +224,13 @@ export function calculatePassMultipliers(matches: MatchItem[], passes: number[],
   return details;
 }
 
+export function sortPassMultiplierDetails(details: PassMultiplierDetail[]): PassMultiplierDetail[] {
+  return details
+    .map((item, index) => ({ item, index }))
+    .sort((left, right) => right.item.multiplier - left.item.multiplier || left.index - right.index)
+    .map(({ item }) => item);
+}
+
 function payoutForWinningOdds(winning: number[][], marketCounts: number[], passes: number[], multiple: number, applyCap: boolean): number {
   let baseTotal = 0;
   for (const pass of passes) {
