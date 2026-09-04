@@ -3952,8 +3952,8 @@ function InnerFootballApp({
                         { value: "all", label: "不限" },
                         { value: "settled", label: "已结账" },
                         { value: "unsettled", label: "未结账" },
-                        { value: "unpaid", label: "未支付" },
                         { value: "paid", label: "已支付" },
+                        { value: "unpaid", label: "未支付" },
                       ]}
                       onChange={(value) => {
                         setRenderedOrderCount(ORDER_LIST_BATCH_SIZE);
