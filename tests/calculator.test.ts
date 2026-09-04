@@ -22,7 +22,7 @@ import { cloneMatches, initialMatches } from "../app/data";
 import { orderFilterIncomeTotal, orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "../app/imports";
 import { matchPassesLeagueFilter, orderContainsTeam, orderPassesLeagueFilter, retainAvailableLeagueNames, splitTeamNameByQuery } from "../app/order-filters";
 import { appendOrderPassValue, inferOrderPasses, parseOrderPassValues } from "../app/order-passes";
-import { isOrderMatchJudged, judgeLoadedOrdersWithResults, judgeSlipWithResults, repairSlipHandicapResults } from "../app/results";
+import { isOrderMatchJudged, isOrderMatchResultUnavailable, judgeLoadedOrdersWithResults, judgeSlipWithResults, repairSlipHandicapResults } from "../app/results";
 import { prioritizeLeagueNames, sortMatchesForManualOrder } from "../app/sorting";
 import { formatMatchCopyLine } from "../app/match-format";
 import type { MatchItem, SavedSlip } from "../app/types";
@@ -645,6 +645,31 @@ test("订单比赛仅在全部已选玩法有赛果后视为已判断", () => {
     resultValues: { [match.id]: { spf: "win", halfFull: "WW" } },
   }, match), true);
   assert.equal(isOrderMatchJudged({ ...base, failedMatches: [match.id] }, match), true);
+});
+
+test("失败但没有保存赛果值的比赛仍可重新获取接口赛果", () => {
+  const matches = cloneMatches(initialMatches.slice(0, 1));
+  const match = matches[0];
+  match.id = "2040594";
+  match.markets[0].options[0].selected = true;
+  const base: SavedSlip = { name: "失败待补赛果", savedAt: new Date(0).toISOString(), matches, passes: [1], multiple: 1 };
+
+  assert.equal(isOrderMatchResultUnavailable({ ...base, failedMatches: [match.id] }, match), true);
+  assert.equal(isOrderMatchResultUnavailable({ ...base, failedMatches: [match.id], resultValues: { [match.id]: {} } }, match), true);
+  assert.equal(isOrderMatchResultUnavailable({ ...base, failedMatches: [match.id], resultValues: { [match.id]: { spf: "lose" } } }, match), false);
+  assert.equal(isOrderMatchResultUnavailable({ ...base, resultValues: { [match.id]: { spf: "lose" } } }, match), false);
+  assert.equal(isOrderMatchResultUnavailable({ ...base, failedMatches: ["sporttery-2040594"] }, match), true);
+
+  const corrected = judgeSlipWithResults({ ...base, failedMatches: [match.id] }, {
+    [match.id]: {
+      matchId: match.id,
+      updatedAt: new Date(0).toISOString(),
+      source: "api",
+      values: { spf: "win" },
+    },
+  });
+  assert.deepEqual(corrected.failedMatches, []);
+  assert.deepEqual(corrected.resultValues?.[match.id], { spf: "win" });
 });
 
 test("同场比赛统一按赛果接口重新取得的固定让球数判断并修正订单快照", () => {

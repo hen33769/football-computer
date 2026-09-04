@@ -103,6 +103,19 @@ export function isOrderMatchJudged(order: SavedSlip, match: MatchItem): boolean 
   return matchHasSelectedHit(match, order.hits ?? {});
 }
 
+/** 失败标记可能来自手动操作；没有保存赛果值时，仍允许订单页重新通过接口获取赛果。 */
+export function isOrderMatchResultUnavailable(order: SavedSlip, match: MatchItem): boolean {
+  const matchId = normalizeSportteryMatchId(match.id);
+  const failed = (order.failedMatches ?? []).some((failedMatchId) => (
+    normalizeSportteryMatchId(failedMatchId) === matchId
+  ));
+  if (!failed) return false;
+  const savedResultValues = Object.entries(order.resultValues ?? {}).find(([savedMatchId]) => (
+    normalizeSportteryMatchId(savedMatchId) === matchId
+  ))?.[1];
+  return !savedResultValues || Object.keys(savedResultValues).length === 0;
+}
+
 /** 只返回传入的当前已渲染订单中，确实会被现有赛果改变的订单。 */
 export function judgeLoadedOrdersWithResults(orders: SavedSlip[], results: MatchResults): SavedSlip[] {
   return orders.flatMap((order) => {

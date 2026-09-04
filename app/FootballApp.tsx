@@ -139,7 +139,7 @@ import {
   type SportteryMatchDate,
   type SportteryUniformMatchResult,
 } from "./sporttery";
-import { hasCompleteMatchResult, isMatchResult, isOrderMatchJudged, judgeLoadedOrdersWithResults, repairSlipHandicapResults, RESULT_MARKETS, resultSelectOptions } from "./results";
+import { hasCompleteMatchResult, isMatchResult, isOrderMatchJudged, isOrderMatchResultUnavailable, judgeLoadedOrdersWithResults, repairSlipHandicapResults, RESULT_MARKETS, resultSelectOptions } from "./results";
 import {
   AUTO_RESULT_REQUEST_INTERVAL_MS,
   scheduleAutoResultRetry,
@@ -1883,7 +1883,7 @@ function InnerFootballApp({
     const officialById = new Map(matches.map((match) => [normalizeSportteryMatchId(match.id), match]));
     filteredSavedSlips
       .forEach((slip) => selectedMatches(slip.matches)
-        .filter((match) => !isOrderMatchJudged(slip, match))
+        .filter((match) => !isOrderMatchJudged(slip, match) || isOrderMatchResultUnavailable(slip, match))
         .forEach((match) => {
         const matchId = normalizeSportteryMatchId(match.id);
         if (!unique.has(matchId)) unique.set(matchId, officialById.get(matchId) ?? match);
