@@ -194,3 +194,31 @@ test("订单列表的已支付状态可单独筛选并与订单状态按 OR 组�
   assert.match(preparedSql[0], /\(payment_status = 'paid' OR status IN \(SELECT value FROM json_each\(\?\)\)\)/);
   assert.deepEqual(boundArgs[0], ["user", JSON.stringify(["success"]), 10, 0]);
 });
+
+test("订单列表的订单进度支持筛选已支付并与订单状态按 AND 组合", async () => {
+  const preparedSql: string[] = [];
+  const boundArgs: unknown[][] = [];
+  const d1 = {
+    prepare: (sql: string) => {
+      preparedSql.push(sql);
+      const statement = {
+        bind: (...args: unknown[]) => {
+          boundArgs.push(args);
+          return statement;
+        },
+        all: async () => ({ results: [] }),
+        first: async () => ({ total: 0 }),
+      };
+      return statement;
+    },
+  };
+
+  await listOrders(d1 as unknown as D1Database, "user", {
+    progress: "paid",
+    statuses: ["success"],
+    limit: 10,
+  });
+
+  assert.match(preparedSql[0], /WHERE user_id = \? AND payment_status = 'paid' AND status IN \(SELECT value FROM json_each\(\?\)\)/);
+  assert.deepEqual(boundArgs[0], ["user", JSON.stringify(["success"]), 10, 0]);
+});

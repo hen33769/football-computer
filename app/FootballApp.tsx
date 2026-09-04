@@ -175,7 +175,7 @@ const RESPONSIVE_DATE_PICKER_CLASS_NAMES = { popup: { root: "responsive-date-pic
 export type AppView = "betting" | "orders" | "settings";
 type DataTransferMode = "orders" | "settings" | "matches" | "full";
 type ImportStrategy = "merge" | "replace";
-type OrderProgressFilter = "settled" | "unsettled" | "unpaid" | null;
+type OrderProgressFilter = "settled" | "unsettled" | "unpaid" | "paid" | null;
 type OrderStatusFilter = "success" | "hopeful" | "failed" | "paid";
 type CloudOrderQuery = {
   from?: string | null;
@@ -3953,11 +3953,12 @@ function InnerFootballApp({
                         { value: "settled", label: "已结账" },
                         { value: "unsettled", label: "未结账" },
                         { value: "unpaid", label: "未支付" },
+                        { value: "paid", label: "已支付" },
                       ]}
                       onChange={(value) => {
                         setRenderedOrderCount(ORDER_LIST_BATCH_SIZE);
                         const nextValue = String(value);
-                        setOrderProgressFilter(nextValue === "settled" || nextValue === "unsettled" || nextValue === "unpaid" ? nextValue : null);
+                        setOrderProgressFilter(nextValue === "settled" || nextValue === "unsettled" || nextValue === "unpaid" || nextValue === "paid" ? nextValue : null);
                       }}
                     />
                   </label>

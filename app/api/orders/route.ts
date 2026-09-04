@@ -10,7 +10,7 @@ const parseStatuses = (value: string | null) => (value ?? "")
   .filter(Boolean);
 
 const parseProgress = (value: string | null): OrderProgressQuery => (
-  value === "settled" || value === "unsettled" || value === "unpaid" ? value : null
+  value === "settled" || value === "unsettled" || value === "unpaid" || value === "paid" ? value : null
 );
 
 export async function GET(request: Request) {
