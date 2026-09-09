@@ -6,6 +6,7 @@ import {
   isOrderPaid,
   normalizeCompactOrder,
   savedSlipToCompactOrder,
+  withdrawOrderState,
   type BulkOrderOperation,
   type CompactOrder,
 } from "../order-model";
@@ -344,6 +345,7 @@ function finalizeBulkOrder(current: CompactOrder, incoming: CompactOrder, operat
     return normalizeCompactOrder({
       ...incoming,
       paymentStatus: "paid",
+      oddsLockedBeforePayment: Boolean(current.oddsLocked),
       oddsLocked: true,
       settledAt: undefined,
       settledPrize: undefined,
@@ -360,6 +362,11 @@ function finalizeBulkOrder(current: CompactOrder, incoming: CompactOrder, operat
       oddsLockedBeforeSettlement: Boolean(current.oddsLocked),
       oddsLocked: true,
     });
+  }
+  if (operation === "withdraw") {
+    const withdrawn = withdrawOrderState(current);
+    if (!withdrawn) throw httpError(`订单“${current.name}”没有可撤回的结账或支付`, 409);
+    return normalizeCompactOrder(withdrawn);
   }
   if (operation === "lock-odds") {
     if (isOrderPaid(current) || current.settledAt) throw httpError(`订单“${current.name}”的倍率已经冻结`, 409);

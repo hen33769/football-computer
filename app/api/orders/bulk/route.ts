@@ -10,6 +10,7 @@ const OPERATIONS = new Set<BulkOrderOperation>([
   "lock-odds",
   "pay",
   "settle",
+  "withdraw",
 ]);
 
 export async function PATCH(request: Request) {

@@ -102,7 +102,7 @@ import { FinanceTrendModal } from "./FinanceTrendModal";
 import { buildFinanceTrendFromOrders, shanghaiDateKey } from "./finance-trend";
 import { getFinanceTrend } from "./api-client/finance";
 import { orderFilterIncomeTotal, orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "./imports";
-import { isOrderPaid } from "./order-model";
+import { getOrderWithdrawalType, isOrderPaid, withdrawOrderState } from "./order-model";
 import { CLOUD_APP_URL, UPDATE_LOG_URL } from "./links";
 import { formatManualMatchText, formatManualOrderText } from "./manual-order-format";
 import { formatMatchCopyLine } from "./match-format";
@@ -558,6 +558,7 @@ const isExportedOrder = (value: unknown): value is SavedSlip => {
     && (typeof order.failedMatches === "undefined" || (Array.isArray(order.failedMatches) && order.failedMatches.every((matchId) => typeof matchId === "string")))
     && (typeof order.settledAt === "undefined" || typeof order.settledAt === "string")
     && (typeof order.settledPrize === "undefined" || (typeof order.settledPrize === "number" && Number.isFinite(order.settledPrize)))
+    && (typeof order.oddsLockedBeforePayment === "undefined" || typeof order.oddsLockedBeforePayment === "boolean")
     && (typeof order.oddsLockedBeforeSettlement === "undefined" || typeof order.oddsLockedBeforeSettlement === "boolean");
 };
 
@@ -1397,7 +1398,8 @@ function InnerFootballApp({
       }
       setSavedSlips(nextOrders);
       if (result.finance) applyCloudFinance(result.finance);
-      return nextOrders;
+      // 状态变化后订单可能离开当前筛选，调用方仍需取得已提交的版本来更新明细。
+      return applyOrderSyncIntent(nextOrders, { upsertOrders: result.upsertedOrders, deleteOrderIds: result.deletedOrderIds });
     } catch (error) {
       message.error(error instanceof Error ? error.message : "订单同步失败，请刷新后重试");
       return null;
@@ -3033,6 +3035,7 @@ function InnerFootballApp({
           ...target,
           matches: refreshed.matches,
           paymentStatus: "paid" as const,
+          oddsLockedBeforePayment: Boolean(target.oddsLocked),
           oddsLocked: true,
         };
       });
@@ -3102,27 +3105,38 @@ function InnerFootballApp({
     }
   };
 
-  const withdrawOrderSettlement = async (target: SavedSlip) => {
+  const withdrawOrder = async (target: SavedSlip) => {
     const targetKey = orderActionKey(target);
     if (withdrawingOrderIds.includes(targetKey)) return;
-    if (!target.settledAt || !savedSlips.includes(target)) return;
-    const withdrawn: SavedSlip = {
-      ...target,
-      settledAt: undefined,
-      settledPrize: undefined,
-      oddsLocked: target.oddsLockedBeforeSettlement ?? false,
-      oddsLockedBeforeSettlement: undefined,
-    };
+    if (!savedSlips.includes(target)) return;
+    const withdrawalType = getOrderWithdrawalType(target);
+    const withdrawn = withdrawOrderState(target);
+    if (!withdrawalType || !withdrawn) return;
     setWithdrawingOrderIds((current) => [...new Set([...current, targetKey])]);
     try {
-      const committedOrders = await commitOrderMutation({ upsertOrders: [withdrawn], deleteOrderIds: [] });
+      const committedOrders = await commitOrderMutation({
+        upsertOrders: [withdrawn],
+        deleteOrderIds: [],
+        operation: "withdraw",
+      });
       if (!committedOrders) return;
       const committedOrder = committedOrders.find((slip) => slip.id === withdrawn.id) ?? withdrawn;
-      if (isGuestMode) setIncomeTotal((current) => Math.max(0, current - (target.settledPrize ?? 0)));
-      if (orderDetail === target) setOrderDetail(committedOrder);
-      notification.success({
-        message: "结账已撤回",
-        description: `订单已恢复为未结账状态，累计收入已扣除 ¥${currency(target.settledPrize ?? 0)}`,
+      if (isGuestMode) {
+        if (withdrawalType === "settlement") {
+          setIncomeTotal((current) => Math.max(0, current - (target.settledPrize ?? 0)));
+        } else {
+          const paidStake = calculateStake(target.matches, target.passes, target.multiple);
+          setExpenseTotal((current) => Math.max(0, current - paidStake));
+        }
+      }
+      if (orderDetail?.id === committedOrder.id) setOrderDetail(committedOrder);
+      notification.success(withdrawalType === "settlement" ? {
+        title: "结账已撤回",
+        description: `订单已恢复为未结账状态，支付状态保持不变，累计收入已扣除 ¥${currency(target.settledPrize ?? 0)}`,
+        placement: "bottomRight",
+      } : {
+        title: "支付已撤回",
+        description: `订单已恢复为未支付状态，累计支出已扣除 ¥${currency(calculateStake(target.matches, target.passes, target.multiple))}`,
         placement: "bottomRight",
       });
     } finally {
@@ -4378,18 +4392,21 @@ function InnerFootballApp({
 	                        {!slip.settledAt && !orderPaid && <Button type="primary" icon={<ImportOutlined />} loading={orderLoading} disabled={orderBusy || cloudOrdersLoading} onClick={() => { void loadSlip(slip); }}>载入投注</Button>}
 	                        <Button color="orange" variant="solid" icon={<CopyOutlined />} disabled={orderBusy || cloudOrdersLoading} onClick={() => copySlip(slip)}>复制投注</Button>
 	                        <div className="order-closing-actions">
-	                          {slip.settledAt ? (
+	                          {(slip.settledAt || orderPaid) && (
 	                            <Popconfirm
-                              title="确认撤回结账？"
-                              description={`将从累计收入中扣除 ¥${currency(slip.settledPrize ?? 0)}，并把订单恢复为未结账状态。`}
+	                              title={slip.settledAt ? "确认撤回结账？" : "确认撤回支付？"}
+	                              description={slip.settledAt
+	                                ? `将从累计收入中扣除 ¥${currency(slip.settledPrize ?? 0)}，并把订单恢复为未结账状态，支付状态保持不变。`
+	                                : `将从累计支出中扣除 ¥${currency(orderStake)}，并把订单恢复为未支付状态。`}
 	                              okText="确认撤回"
 	                              cancelText="取消"
 	                              okButtonProps={{ loading: orderWithdrawing, disabled: orderWithdrawing }}
-	                              onConfirm={() => { void withdrawOrderSettlement(slip); }}
+	                              onConfirm={() => { void withdrawOrder(slip); }}
 	                            >
 	                              <Button className="withdraw-checkout-button" icon={<RollbackOutlined />} loading={orderWithdrawing} disabled={orderBusy || cloudOrdersLoading}>撤回</Button>
 	                            </Popconfirm>
-	                          ) : !orderPaid ? (
+	                          )}
+	                          {!slip.settledAt && (!orderPaid ? (
 	                            <Popconfirm
 	                              title="确认支付？"
 	                              description="支付前会更新倍率；无法取得最新倍率时保留原值。支付后投注内容与倍率全部冻结。"
@@ -4415,7 +4432,7 @@ function InnerFootballApp({
                             <Tooltip title="该订单未对比赛果">
                               <span><Button className="checkout-order-button" icon={<CheckOutlined />} disabled>结账</Button></span>
                             </Tooltip>
-	                          )}
+	                          ))}
 	                          {!slip.settledAt && (
 	                            <Popconfirm title="删除这张预测单？" description="将同时回滚该订单的支出和已入账收入。" okText="删除" cancelText="取消" okButtonProps={{ loading: orderDeleting, disabled: orderDeleting }} onConfirm={() => { void deleteSlip(slip); }}>
 	                              <Button className="delete-order-button" danger icon={<DeleteOutlined />} loading={orderDeleting} disabled={orderBusy || cloudOrdersLoading}>删除</Button>
