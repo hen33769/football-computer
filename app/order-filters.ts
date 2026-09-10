@@ -87,3 +87,8 @@ export const orderPassesLeagueFilter = (
 ) => selectedLeagues.size === 0 || selectedMatches(slip.matches).some((match) => (
   selectedLeagues.has(match.league)
 ));
+
+export const orderPassesMatchCountFilter = (
+  slip: SavedSlip,
+  selectedCounts: ReadonlySet<number>,
+) => selectedCounts.size === 0 || selectedCounts.has(selectedMatches(slip.matches).length);

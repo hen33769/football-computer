@@ -82,7 +82,7 @@ import {
   type PrizeRangeMetrics,
 } from "./calculator";
 import { appendOrderPassValue, formatOrderPassValue, inferOrderPasses } from "./order-passes";
-import { matchPassesLeagueFilter, orderContainsTeam, orderPassesLeagueFilter, retainAvailableLeagueNames, splitTeamNameByQuery } from "./order-filters";
+import { matchPassesLeagueFilter, orderContainsTeam, orderPassesLeagueFilter, orderPassesMatchCountFilter, retainAvailableLeagueNames, splitTeamNameByQuery } from "./order-filters";
 import { prioritizeLeagueNames, sortMatchesForManualOrder } from "./sorting";
 import {
   cloneMatches,
@@ -176,7 +176,7 @@ export type AppView = "betting" | "orders" | "settings";
 type DataTransferMode = "orders" | "settings" | "matches" | "full";
 type ImportStrategy = "merge" | "replace";
 type OrderProgressFilter = "settled" | "unsettled" | "unpaid" | "paid" | null;
-type OrderStatusFilter = "success" | "hopeful" | "failed" | "paid";
+type OrderStatusFilter = "success" | "hopeful" | "failed";
 type CloudOrderQuery = {
   from?: string | null;
   to?: string | null;
@@ -1237,6 +1237,9 @@ function InnerFootballApp({
   const [orderShortPassFilters, setOrderShortPassFilters] = useState<number[]>([]);
   const [orderShortPassDropdownOpen, setOrderShortPassDropdownOpen] = useState(false);
   const orderShortPassInputClickRef = useRef(false);
+  const [orderMatchCountFilters, setOrderMatchCountFilters] = useState<number[]>([]);
+  const [orderMatchCountDropdownOpen, setOrderMatchCountDropdownOpen] = useState(false);
+  const orderMatchCountInputClickRef = useRef(false);
   const [orderTeamQuery, setOrderTeamQuery] = useState("");
   const [selectedOrderLeagueNames, setSelectedOrderLeagueNames] = useState<string[]>([]);
   const [renderedOrderCount, setRenderedOrderCount] = useState(ORDER_LIST_BATCH_SIZE);
@@ -1796,6 +1799,7 @@ function InnerFootballApp({
     retainAvailableLeagueNames(selectedOrderLeagueNames, availableOrderLeagueNameSet)
   ), [availableOrderLeagueNameSet, selectedOrderLeagueNames]);
   const selectedOrderLeagueSet = useMemo(() => new Set(effectiveSelectedOrderLeagueNames), [effectiveSelectedOrderLeagueNames]);
+  const selectedOrderMatchCountSet = useMemo(() => new Set(orderMatchCountFilters), [orderMatchCountFilters]);
   const cloudOrderQuery = useMemo(() => currentCloudOrderQuery(), [currentCloudOrderQuery]);
 
   useEffect(() => {
@@ -1836,10 +1840,9 @@ function InnerFootballApp({
       if (orderProgressFilter === "settled" && !slip.settledAt) return false;
       if (orderProgressFilter === "unsettled" && slip.settledAt) return false;
       if (orderProgressFilter === "unpaid" && isOrderPaid(slip)) return false;
-      if (orderStatusFilters.length > 0 && !orderStatusFilters.some((status) => (
-        status === "paid" ? isOrderPaid(slip) : getOrderStatus(slip) === status
-      ))) return false;
+      if (orderStatusFilters.length > 0 && !orderStatusFilters.includes(getOrderStatus(slip))) return false;
       if (orderShortPassFilters.length > 0 && !orderShortPassFilters.some((pass) => getOrderShortPasses(slip).includes(pass))) return false;
+      if (!orderPassesMatchCountFilter(slip, selectedOrderMatchCountSet)) return false;
       if (orderDateRange) {
         const savedDate = savedSlipDateKey(slip.savedAt);
         if (savedDate < orderDateRange[0] || savedDate > orderDateRange[1]) return false;
@@ -1854,6 +1857,7 @@ function InnerFootballApp({
       orderStatusFilters,
       orderTeamQuery,
       selectedOrderLeagueSet,
+      selectedOrderMatchCountSet,
     ]);
   const orderTotalCount = isCloudMode ? cloudOrderTotal : savedSlips.length;
   const unsettledOrderCount = useMemo(() => (
@@ -2441,6 +2445,8 @@ function InnerFootballApp({
     setOrderStatusFilters([]);
     setOrderShortPassFilters([]);
     setOrderShortPassDropdownOpen(false);
+    setOrderMatchCountFilters([]);
+    setOrderMatchCountDropdownOpen(false);
     setOrderTeamQuery("");
     setSelectedOrderLeagueNames([]);
   };
@@ -2449,6 +2455,12 @@ function InnerFootballApp({
     setRenderedOrderCount(ORDER_LIST_BATCH_SIZE);
     setOrderShortPassFilters([]);
     setOrderShortPassDropdownOpen(false);
+  };
+
+  const clearOrderMatchCountFilter = () => {
+    setRenderedOrderCount(ORDER_LIST_BATCH_SIZE);
+    setOrderMatchCountFilters([]);
+    setOrderMatchCountDropdownOpen(false);
   };
 
   const toggleOrderLeagueFilter = (leagueName: string) => {
@@ -3991,7 +4003,6 @@ function InnerFootballApp({
                         { value: "success", label: "成功" },
                         { value: "hopeful", label: "有希望" },
                         { value: "failed", label: "失败" },
-                        { value: "paid", label: "已支付" },
                       ]}
                       onChange={(values) => {
                         setRenderedOrderCount(ORDER_LIST_BATCH_SIZE);
@@ -4062,6 +4073,76 @@ function InnerFootballApp({
                               event.preventDefault();
                               event.stopPropagation();
                               clearOrderShortPassFilter();
+                            }}
+                          >
+                            <CloseOutlined />
+                          </button>
+                        )}
+                      </div>
+                    </Dropdown>
+                  </label>
+                  <label className="order-filter-field order-match-count-filter-field">
+                    <span>比赛场次</span>
+                    <Dropdown
+                      open={orderMatchCountDropdownOpen}
+                      trigger={["click"]}
+                      placement="bottomLeft"
+                      rootClassName="manual-pass-shortcut-dropdown order-match-count-dropdown"
+                      onOpenChange={(open, info) => {
+                        if (info.source !== "trigger") return;
+                        if (!open && orderMatchCountInputClickRef.current) return;
+                        setOrderMatchCountDropdownOpen(open);
+                      }}
+                      menu={{
+                        items: MANUAL_ORDER_PASS_SHORTCUTS.map((value) => ({
+                          key: String(value),
+                          label: `${value}场`,
+                        })),
+                        selectedKeys: orderMatchCountFilters.map(String),
+                        onClick: ({ key }) => {
+                          const value = Number(key);
+                          setRenderedOrderCount(ORDER_LIST_BATCH_SIZE);
+                          setOrderMatchCountFilters((current) => current.includes(value)
+                            ? current.filter((item) => item !== value)
+                            : [...current, value].sort((left, right) => left - right));
+                          setOrderMatchCountDropdownOpen(true);
+                        },
+                      }}
+                    >
+                      <div className="order-short-pass-filter-control">
+                        <Input
+                          aria-label="比赛场次"
+                          readOnly
+                          value={orderMatchCountFilters.map((value) => `${value}场`).join("、")}
+                          disabled={cloudOrdersLoading}
+                          onClickCapture={() => {
+                            orderMatchCountInputClickRef.current = true;
+                            window.setTimeout(() => {
+                              orderMatchCountInputClickRef.current = false;
+                            });
+                          }}
+                          onFocus={(event) => {
+                            const input = event.currentTarget;
+                            window.requestAnimationFrame(() => {
+                              if (document.activeElement === input) setOrderMatchCountDropdownOpen(true);
+                            });
+                          }}
+                          placeholder="请选择场次"
+                        />
+                        {orderMatchCountFilters.length > 0 && (
+                          <button
+                            type="button"
+                            className="order-short-pass-clear"
+                            aria-label="清除比赛场次筛选"
+                            disabled={cloudOrdersLoading}
+                            onMouseDown={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                            }}
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              clearOrderMatchCountFilter();
                             }}
                           >
                             <CloseOutlined />
@@ -4345,6 +4426,7 @@ function InnerFootballApp({
                           const matchSuccessful = matchHasSelectedHit(match, slip.hits ?? {});
                           const scoreResult = matchResultOptionLabel(match, "score", slip.resultValues?.[match.id]?.score);
                           const halfFullResult = matchResultOptionLabel(match, "halfFull", slip.resultValues?.[match.id]?.halfFull);
+                          const matchLeagueColor = getLeagueTagColor(appSettings, match.league);
                           return (
                           <section className={`order-match-entry ${matchFailed ? "failed" : ""}`} key={match.id}>
                             <div className="order-match-entry-head">
@@ -4353,6 +4435,16 @@ function InnerFootballApp({
                                 <HighlightedOrderTeamName name={match.home} query={orderTeamQuery} />
                                 {" VS "}
                                 <HighlightedOrderTeamName name={match.away} query={orderTeamQuery} />
+                                {match.league && (
+                                  <Tag
+                                    className="order-match-league-tag"
+                                    color={matchLeagueColor}
+                                    variant="solid"
+                                    style={{ color: readableTagTextColor(matchLeagueColor) }}
+                                  >
+                                    {match.league}
+                                  </Tag>
+                                )}
                               </b>
                               <div className="order-match-result-tags">
                                 {scoreResult && <Tag color="blue">比分 {scoreResult}</Tag>}

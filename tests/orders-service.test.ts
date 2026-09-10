@@ -296,7 +296,7 @@ test("账本预览只把已支付订单计入支出", () => {
   assert.deepEqual(preview, { expense: 2, income: 0 });
 });
 
-test("订单列表的已支付状态可单独筛选并与订单状态按 OR 组合", async () => {
+test("订单列表忽略状态参数中的已支付伪状态", async () => {
   const preparedSql: string[] = [];
   const boundArgs: unknown[][] = [];
   const d1 = {
@@ -319,7 +319,8 @@ test("订单列表的已支付状态可单独筛选并与订单状态按 OR 组�
     limit: 10,
   });
 
-  assert.match(preparedSql[0], /\(payment_status = 'paid' OR status IN \(SELECT value FROM json_each\(\?\)\)\)/);
+  assert.doesNotMatch(preparedSql[0], /payment_status = 'paid'/);
+  assert.match(preparedSql[0], /status IN \(SELECT value FROM json_each\(\?\)\)/);
   assert.deepEqual(boundArgs[0], ["user", JSON.stringify(["success"]), 10, 0]);
 });
 

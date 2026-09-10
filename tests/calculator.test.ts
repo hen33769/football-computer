@@ -20,7 +20,7 @@ import {
 } from "../app/calculator";
 import { cloneMatches, initialMatches } from "../app/data";
 import { orderFilterIncomeTotal, orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "../app/imports";
-import { matchPassesLeagueFilter, orderContainsTeam, orderPassesLeagueFilter, retainAvailableLeagueNames, splitTeamNameByQuery } from "../app/order-filters";
+import { matchPassesLeagueFilter, orderContainsTeam, orderPassesLeagueFilter, orderPassesMatchCountFilter, retainAvailableLeagueNames, splitTeamNameByQuery } from "../app/order-filters";
 import { appendOrderPassValue, inferOrderPasses, parseOrderPassValues } from "../app/order-passes";
 import { isOrderMatchJudged, isOrderMatchResultUnavailable, judgeLoadedOrdersWithResults, judgeSlipWithResults, repairSlipHandicapResults } from "../app/results";
 import { prioritizeLeagueNames, sortMatchesForManualOrder } from "../app/sorting";
@@ -124,6 +124,25 @@ test("订单队伍名称按筛选文字拆分高亮片段", () => {
   assert.deepEqual(splitTeamNameByQuery("阿森纳", "  "), [
     { text: "阿森纳", highlighted: false },
   ]);
+});
+
+test("订单比赛场次按实际已投注比赛数量多选过滤", () => {
+  const matches = cloneMatches(initialMatches.slice(0, 3));
+  matches[0].markets[0].options[0].selected = true;
+  matches[1].markets[0].options[0].selected = true;
+  const slip: SavedSlip = {
+    name: "场次筛选测试",
+    savedAt: "2026-09-10T00:00:00.000Z",
+    matches,
+    passes: [2],
+    multiple: 1,
+  };
+
+  assert.equal(orderPassesMatchCountFilter(slip, new Set()), true);
+  assert.equal(orderPassesMatchCountFilter(slip, new Set([2])), true);
+  assert.equal(orderPassesMatchCountFilter(slip, new Set([1])), false);
+  assert.equal(orderPassesMatchCountFilter(slip, new Set([1, 2])), true);
+  assert.equal(orderPassesMatchCountFilter(slip, new Set([3, 8])), false);
 });
 
 test("新增导入订单以新值更新同 ID 订单", () => {
