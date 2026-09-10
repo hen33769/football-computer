@@ -27,6 +27,7 @@ import {
   type InputRef,
 } from "antd";
 import {
+  BarChartOutlined,
   CalculatorOutlined,
   CaretDownOutlined,
   CaretUpOutlined,
@@ -99,6 +100,8 @@ import { applyOrderSyncIntent, type CloudOrderMutationResult, type OrderSyncInte
 import { localCache, sessionCache } from "./browser-storage";
 import { MatchPreviewModal, OfficialTrendModal } from "./FootballInsights";
 import { FinanceTrendModal } from "./FinanceTrendModal";
+import { LeagueAccuracyModal } from "./LeagueAccuracyModal";
+import { buildLeagueAccuracyStats, formatLeagueHitRate, summarizeLeagueAccuracyStats } from "./league-accuracy";
 import { buildFinanceTrendFromOrders, shanghaiDateKey } from "./finance-trend";
 import { getFinanceTrend } from "./api-client/finance";
 import { orderFilterIncomeTotal, orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "./imports";
@@ -1161,6 +1164,9 @@ function InnerFootballApp({
   const [moreMatchId, setMoreMatchId] = useState<string | null>(null);
   const [trendMatchId, setTrendMatchId] = useState<string | null>(null);
   const [financeTrendOpen, setFinanceTrendOpen] = useState(false);
+  const [leagueAccuracyOpen, setLeagueAccuracyOpen] = useState(false);
+  const [leagueAccuracyExcludeScore, setLeagueAccuracyExcludeScore] = useState(true);
+  const [leagueAccuracyCountDuplicates, setLeagueAccuracyCountDuplicates] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const activeView = initialView;
   const [orderDetail, setOrderDetail] = useState<SavedSlip | null>(null);
@@ -1871,6 +1877,22 @@ function InnerFootballApp({
   const filteredOrderPaidStake = useMemo(() => orderLedgerTotals(filteredSavedSlips).expense, [filteredSavedSlips]);
   const filteredOrderIncome = useMemo(() => orderFilterIncomeTotal(filteredSavedSlips), [filteredSavedSlips]);
   const filteredOrderProfit = filteredOrderIncome - filteredOrderPaidStake;
+  const leagueAccuracyStats = useMemo(() => buildLeagueAccuracyStats(filteredSavedSlips, {
+    excludeScore: leagueAccuracyExcludeScore,
+    countDuplicates: leagueAccuracyCountDuplicates,
+  }), [filteredSavedSlips, leagueAccuracyCountDuplicates, leagueAccuracyExcludeScore]);
+  const leagueAccuracyColors = useMemo(() => Object.fromEntries(
+    leagueAccuracyStats.map((stat) => [stat.league, getLeagueTagColor(appSettings, stat.league)]),
+  ), [appSettings, leagueAccuracyStats]);
+  const leagueAccuracySummary = useMemo(
+    () => summarizeLeagueAccuracyStats(leagueAccuracyStats),
+    [leagueAccuracyStats],
+  );
+  const leagueAccuracyRateLabel = formatLeagueHitRate(leagueAccuracySummary.hitRate);
+  const leagueAccuracySuccessOrderCount = useMemo(
+    () => filteredSavedSlips.filter((slip) => getOrderStatus(slip) === "success").length,
+    [filteredSavedSlips],
+  );
   const renderedSavedSlips = useMemo(
     () => filteredSavedSlips.slice(0, renderedOrderCount),
     [filteredSavedSlips, renderedOrderCount],
@@ -4166,7 +4188,24 @@ function InnerFootballApp({
                     />
                   </label>
                   <div className="order-filter-field order-league-filter-field">
-                    <span>比赛类型 <small>不选代表不限</small></span>
+                    <div className="order-league-filter-title">
+                      <span>比赛类型 <small>不选代表不限</small></span>
+                      <Tooltip title={`查看联赛命中率（命中 ${leagueAccuracySummary.hit}，未命中 ${leagueAccuracySummary.miss}）`}>
+                        <Button
+                          type="text"
+                          className="order-trend-button order-league-accuracy-button"
+                          aria-label={`查看联赛命中率，命中率 ${leagueAccuracyRateLabel}，成功订单 ${leagueAccuracySuccessOrderCount}`}
+                          icon={<BarChartOutlined />}
+                          disabled={cloudOrdersLoading}
+                          onClick={() => setLeagueAccuracyOpen(true)}
+                        >
+                          <span className="order-league-accuracy-summary">
+                            <span>命中率 <b>{leagueAccuracyRateLabel}</b></span>
+                            <small>成功订单 <b>{leagueAccuracySuccessOrderCount}</b></small>
+                          </span>
+                        </Button>
+                      </Tooltip>
+                    </div>
                     <div className="league-filter-tags">
                       {availableOrderLeagueNames.map((leagueName) => {
                         const selected = selectedOrderLeagueNames.includes(leagueName);
@@ -4704,6 +4743,17 @@ function InnerFootballApp({
         open={financeTrendOpen}
         onClose={() => setFinanceTrendOpen(false)}
         loadTrend={loadFinanceTrend}
+      />
+      <LeagueAccuracyModal
+        open={leagueAccuracyOpen}
+        onClose={() => setLeagueAccuracyOpen(false)}
+        orderCount={filteredSavedSlips.length}
+        stats={leagueAccuracyStats}
+        leagueColors={leagueAccuracyColors}
+        excludeScore={leagueAccuracyExcludeScore}
+        onExcludeScoreChange={setLeagueAccuracyExcludeScore}
+        countDuplicates={leagueAccuracyCountDuplicates}
+        onCountDuplicatesChange={setLeagueAccuracyCountDuplicates}
       />
 
       <Modal
