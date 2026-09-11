@@ -3,8 +3,7 @@
 import { Alert, Button, Checkbox, Empty, Modal, Select } from "antd";
 import type { ECharts, EChartsOption } from "echarts";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { formatLeagueHitRate, type LeagueAccuracyStat } from "./league-accuracy";
-import { prioritizeLeagueNames } from "./sorting";
+import { formatLeagueHitRate, sortLeagueAccuracyLeagueNames, type LeagueAccuracyStat } from "./league-accuracy";
 
 type LeagueAccuracyModalProps = {
   open: boolean;
@@ -22,6 +21,8 @@ type ChartFormatterParam = {
   dataIndex?: number;
   marker?: string;
 };
+
+const SELECT_ALL_LEAGUES = "__select_all_leagues__";
 
 const escapeHtml = (value: string) => value
   .replaceAll("&", "&amp;")
@@ -130,7 +131,7 @@ export function LeagueAccuracyModal({
   const [chartError, setChartError] = useState("");
   const [chartReloadKey, setChartReloadKey] = useState(0);
   const statByLeague = useMemo(() => new Map(stats.map((stat) => [stat.league, stat])), [stats]);
-  const availableLeagueNames = useMemo(() => prioritizeLeagueNames(stats.map((stat) => stat.league)), [stats]);
+  const availableLeagueNames = useMemo(() => sortLeagueAccuracyLeagueNames(stats.map((stat) => stat.league)), [stats]);
   const availableLeagueNameSet = useMemo(() => new Set(availableLeagueNames), [availableLeagueNames]);
   const effectiveSelectedLeagueNames = useMemo(() => (
     selectedLeagueNames === null
@@ -163,6 +164,14 @@ export function LeagueAccuracyModal({
           fixedMax,
           chartElementRef.current.clientWidth < 480,
         ));
+        chart.on("click", (rawParam: unknown) => {
+          const param = rawParam as ChartFormatterParam;
+          const stat = selectedStats[param.dataIndex ?? -1];
+          if (!stat) return;
+          setSelectedLeagueNames((current) => (
+            (current ?? availableLeagueNames).filter((leagueName) => leagueName !== stat.league)
+          ));
+        });
         if (typeof ResizeObserver !== "undefined") {
           resizeObserver = new ResizeObserver(resize);
           resizeObserver.observe(chartElementRef.current);
@@ -181,7 +190,7 @@ export function LeagueAccuracyModal({
       window.removeEventListener("resize", resize);
       chart?.dispose();
     };
-  }, [chartError, chartReloadKey, fixedMax, leagueColors, modalVisible, open, selectedStats]);
+  }, [availableLeagueNames, chartError, chartReloadKey, fixedMax, leagueColors, modalVisible, open, selectedStats]);
 
   return (
     <Modal
@@ -207,8 +216,17 @@ export function LeagueAccuracyModal({
             maxTagCount="responsive"
             placeholder="请选择联赛"
             value={effectiveSelectedLeagueNames}
-            options={availableLeagueNames.map((leagueName) => ({ value: leagueName, label: leagueName }))}
-            onChange={(values) => setSelectedLeagueNames(values)}
+            options={[
+              { value: SELECT_ALL_LEAGUES, label: "全选" },
+              ...availableLeagueNames.map((leagueName) => ({ value: leagueName, label: leagueName })),
+            ]}
+            onChange={(values) => {
+              if (values.includes(SELECT_ALL_LEAGUES)) {
+                setSelectedLeagueNames(availableLeagueNames);
+                return;
+              }
+              setSelectedLeagueNames(values.filter((leagueName) => availableLeagueNameSet.has(leagueName)));
+            }}
           />
         </label>
         <div className="league-accuracy-options">
@@ -218,7 +236,7 @@ export function LeagueAccuracyModal({
         </div>
       </div>
       <p className="league-accuracy-note">
-        基于当前筛选的 {orderCount} 个订单，按每场比赛的已选玩法统计；命中率不包含未确认结果。
+        基于当前筛选的 {orderCount} 个订单，按每场比赛的已选玩法统计；命中率不包含未确认结果，点击柱子可取消该联赛。
       </p>
       {availableLeagueNames.length === 0 ? (
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前筛选订单暂无可统计的联赛投注" />

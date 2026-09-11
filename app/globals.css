@@ -753,6 +753,7 @@ button, input, textarea { font: inherit; }
 .finance-trend-tooltip > strong { margin-bottom: 2px; color: #314e54; font-size: 12px; }
 .finance-trend-tooltip > span { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 5px; color: #586f75; font-size: 11px; }
 .finance-trend-tooltip b { margin-left: 14px; color: #263f45; font-size: 11px; font-variant-numeric: tabular-nums; }
+.league-accuracy-modal .ant-modal-container { min-height: 660px; }
 .league-accuracy-modal .ant-modal-body { overflow: hidden; }
 .league-accuracy-controls { display: grid; grid-template-columns: minmax(280px, 1fr) auto; align-items: end; gap: 16px; }
 .league-accuracy-league-select { min-width: 0; display: flex; flex-direction: column; gap: 7px; }

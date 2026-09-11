@@ -1,4 +1,5 @@
 import { normalizeSportteryMatchId } from "./sporttery";
+import { getOrderStatus } from "./calculator";
 import type { CurrentHits, Market, MatchItem, SavedSlip } from "./types";
 
 export type LeagueAccuracyStatus = "hit" | "miss" | "unconfirmed";
@@ -22,6 +23,16 @@ export type LeagueAccuracySummary = {
   confirmed: number;
   hitRate: number | null;
 };
+
+export type OrderHitRateSummary = {
+  success: number;
+  failed: number;
+  confirmed: number;
+  hitRate: number | null;
+};
+
+const LEAGUE_ACCURACY_PRIORITY = ["世界杯", "欧冠", "英超", "法甲", "西甲", "德甲", "意甲"];
+const leagueAccuracyPriority = new Map(LEAGUE_ACCURACY_PRIORITY.map((leagueName, index) => [leagueName, index]));
 
 type Prediction = {
   key: string;
@@ -132,6 +143,30 @@ export function summarizeLeagueAccuracyStats(stats: LeagueAccuracyStat[]): Leagu
     hitRate: confirmed > 0 ? totals.hit / confirmed * 100 : null,
   };
 }
+
+export function summarizeOrderHitRate(orders: SavedSlip[]): OrderHitRateSummary {
+  const totals = orders.reduce((summary, order) => {
+    const status = getOrderStatus(order);
+    if (status === "success") summary.success += 1;
+    if (status === "failed") summary.failed += 1;
+    return summary;
+  }, { success: 0, failed: 0 });
+  const confirmed = totals.success + totals.failed;
+  return {
+    ...totals,
+    confirmed,
+    hitRate: confirmed > 0 ? totals.success / confirmed * 100 : null,
+  };
+}
+
+export const sortLeagueAccuracyLeagueNames = (leagueNames: string[]) => [...leagueNames].sort((left, right) => {
+  const leftPriority = leagueAccuracyPriority.get(left);
+  const rightPriority = leagueAccuracyPriority.get(right);
+  if (leftPriority !== undefined || rightPriority !== undefined) {
+    return (leftPriority ?? LEAGUE_ACCURACY_PRIORITY.length) - (rightPriority ?? LEAGUE_ACCURACY_PRIORITY.length);
+  }
+  return left.localeCompare(right, "zh-CN", { numeric: true, sensitivity: "base" });
+});
 
 export const formatLeagueHitRate = (hitRate: number | null) => {
   if (hitRate === null) return "—";

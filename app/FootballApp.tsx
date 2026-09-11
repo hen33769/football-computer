@@ -101,7 +101,7 @@ import { localCache, sessionCache } from "./browser-storage";
 import { MatchPreviewModal, OfficialTrendModal } from "./FootballInsights";
 import { FinanceTrendModal } from "./FinanceTrendModal";
 import { LeagueAccuracyModal } from "./LeagueAccuracyModal";
-import { buildLeagueAccuracyStats, formatLeagueHitRate, summarizeLeagueAccuracyStats } from "./league-accuracy";
+import { buildLeagueAccuracyStats, formatLeagueHitRate, summarizeOrderHitRate } from "./league-accuracy";
 import { buildFinanceTrendFromOrders, shanghaiDateKey } from "./finance-trend";
 import { getFinanceTrend } from "./api-client/finance";
 import { orderFilterIncomeTotal, orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "./imports";
@@ -1884,15 +1884,12 @@ function InnerFootballApp({
   const leagueAccuracyColors = useMemo(() => Object.fromEntries(
     leagueAccuracyStats.map((stat) => [stat.league, getLeagueTagColor(appSettings, stat.league)]),
   ), [appSettings, leagueAccuracyStats]);
-  const leagueAccuracySummary = useMemo(
-    () => summarizeLeagueAccuracyStats(leagueAccuracyStats),
-    [leagueAccuracyStats],
-  );
-  const leagueAccuracyRateLabel = formatLeagueHitRate(leagueAccuracySummary.hitRate);
-  const leagueAccuracySuccessOrderCount = useMemo(
-    () => filteredSavedSlips.filter((slip) => getOrderStatus(slip) === "success").length,
+  const leagueAccuracyOrderSummary = useMemo(
+    () => summarizeOrderHitRate(filteredSavedSlips),
     [filteredSavedSlips],
   );
+  const leagueAccuracyOrderRateLabel = formatLeagueHitRate(leagueAccuracyOrderSummary.hitRate);
+  const leagueAccuracySuccessOrderCount = leagueAccuracyOrderSummary.success;
   const renderedSavedSlips = useMemo(
     () => filteredSavedSlips.slice(0, renderedOrderCount),
     [filteredSavedSlips, renderedOrderCount],
@@ -4190,17 +4187,17 @@ function InnerFootballApp({
                   <div className="order-filter-field order-league-filter-field">
                     <div className="order-league-filter-title">
                       <span>比赛类型 <small>不选代表不限</small></span>
-                      <Tooltip title={`查看联赛命中率（命中 ${leagueAccuracySummary.hit}，未命中 ${leagueAccuracySummary.miss}）`}>
+                      <Tooltip title={`查看联赛命中率图表（成功订单 ${leagueAccuracyOrderSummary.success}，失败订单 ${leagueAccuracyOrderSummary.failed}）`}>
                         <Button
                           type="text"
                           className="order-trend-button order-league-accuracy-button"
-                          aria-label={`查看联赛命中率，命中率 ${leagueAccuracyRateLabel}，成功订单 ${leagueAccuracySuccessOrderCount}`}
+                          aria-label={`查看联赛命中率图表，订单命中率 ${leagueAccuracyOrderRateLabel}，成功订单 ${leagueAccuracySuccessOrderCount}`}
                           icon={<BarChartOutlined />}
                           disabled={cloudOrdersLoading}
                           onClick={() => setLeagueAccuracyOpen(true)}
                         >
                           <span className="order-league-accuracy-summary">
-                            <span>命中率 <b>{leagueAccuracyRateLabel}</b></span>
+                            <span>订单命中率 <b>{leagueAccuracyOrderRateLabel}</b></span>
                             <small>成功订单 <b>{leagueAccuracySuccessOrderCount}</b></small>
                           </span>
                         </Button>

@@ -3,7 +3,9 @@ import test from "node:test";
 import {
   buildLeagueAccuracyStats,
   formatLeagueHitRate,
+  sortLeagueAccuracyLeagueNames,
   summarizeLeagueAccuracyStats,
+  summarizeOrderHitRate,
 } from "../app/league-accuracy";
 import type { Market, MarketType, MatchItem, SavedSlip } from "../app/types";
 
@@ -138,4 +140,37 @@ test("命中率汇总使用命中加未命中作为已确认分母", () => {
   assert.equal(formatLeagueHitRate(summary.hitRate), "60%");
   assert.equal(formatLeagueHitRate(2 / 3 * 100), "66.7%");
   assert.equal(formatLeagueHitRate(null), "—");
+});
+
+test("订单命中率只使用成功和失败订单作为已确认分母", () => {
+  const target = match();
+  const hopeful = order([target], { id: "hopeful" });
+  const success = order([target], {
+    id: "success",
+    hits: { [target.id]: { spf: "win" } },
+  });
+  const failed = order([target], {
+    id: "failed",
+    failedMatches: [target.id],
+  });
+
+  assert.deepEqual(summarizeOrderHitRate([hopeful, success, failed]), {
+    success: 1,
+    failed: 1,
+    confirmed: 2,
+    hitRate: 50,
+  });
+  assert.deepEqual(summarizeOrderHitRate([hopeful]), {
+    success: 0,
+    failed: 0,
+    confirmed: 0,
+    hitRate: null,
+  });
+});
+
+test("联赛命中率图表按固定优先级和其余名称升序排列", () => {
+  assert.deepEqual(
+    sortLeagueAccuracyLeagueNames(["B联", "意甲", "英超", "世界杯", "A联", "德甲", "欧冠", "西甲", "法甲"]),
+    ["世界杯", "欧冠", "英超", "法甲", "西甲", "德甲", "意甲", "A联", "B联"],
+  );
 });
