@@ -1523,9 +1523,7 @@ function InnerFootballApp({
   const loadSportterySnapshot = useCallback(async (manual: boolean) => {
     try {
       const snapshot = await onCloudMatchesRefresh(manual);
-      if (snapshot.fromCache && snapshot.refreshError) {
-        return { snapshot, source: "cloud-cache-error" as const };
-      }
+      if (snapshot.fromCache && snapshot.refreshError) throw new Error(snapshot.refreshError);
       return { snapshot, source: "cloud" as const };
     } catch (cloudError) {
       const mode = getSportteryRefreshPolicy(new Date()).mode;
@@ -1675,8 +1673,7 @@ function InnerFootballApp({
         .then(({ snapshot, source }) => {
           if (!active) return;
           applySportterySnapshot(snapshot, source === "official-fallback");
-          const log = source === "cloud-cache-error" ? console.warn : console.log;
-          log("[体彩接口] 进入投注页获取比赛", { source, mode: snapshot.mode, totalCount: snapshot.matches.length, fixedBonusFailureCount: snapshot.fixedBonusFailureCount, refreshError: snapshot.refreshError });
+          console.log("[体彩接口] 进入投注页获取比赛", { source, mode: snapshot.mode, totalCount: snapshot.matches.length, fixedBonusFailureCount: snapshot.fixedBonusFailureCount });
         })
         .catch((error: unknown) => {
           if (!active) return;
@@ -1726,10 +1723,9 @@ function InnerFootballApp({
     try {
       const { snapshot, source } = await loadSportterySnapshot(true);
       applySportterySnapshot(snapshot, source === "official-fallback");
-      const notifyRefresh = source === "cloud-cache-error" ? notification.warning : notification.success;
-      notifyRefresh({
-        title: source === "cloud-cache-error" ? "官方刷新失败，已保留云端缓存" : "比赛数据已刷新",
-        description: `${snapshot.mode === "morning" ? "早间逐场最新赔率" : "常规接口 + 缺失比赛补充"} · ${source === "cloud" ? "云端缓存/刷新" : source === "cloud-cache-error" ? "云端旧快照" : "前端官方兜底"} · 共 ${snapshot.matches.length} 场${snapshot.fixedBonusFailureCount ? ` · ${snapshot.fixedBonusFailureCount} 场投注情况获取失败` : ""}${snapshot.lastUpdateTime ? ` · 接口更新 ${snapshot.lastUpdateTime}` : ""}${snapshot.refreshError ? ` · ${snapshot.refreshError}` : ""}`,
+      notification.success({
+        title: "比赛数据已刷新",
+        description: `${snapshot.mode === "morning" ? "早间逐场最新赔率" : "常规接口 + 缺失比赛补充"} · ${source === "cloud" ? "云端缓存/刷新" : "前端官方兜底"} · 共 ${snapshot.matches.length} 场${snapshot.fixedBonusFailureCount ? ` · ${snapshot.fixedBonusFailureCount} 场投注情况获取失败` : ""}${snapshot.lastUpdateTime ? ` · 接口更新 ${snapshot.lastUpdateTime}` : ""}`,
         placement: "bottomRight",
       });
     } catch (error) {
