@@ -111,6 +111,7 @@ import { CLOUD_APP_URL, UPDATE_LOG_URL } from "./links";
 import { formatManualMatchText, formatManualOrderText } from "./manual-order-format";
 import { formatMatchCopyLine } from "./match-format";
 import {
+  collectCurrentMatchStartItems,
   collectMatchStartReminders,
   isMatchStartingSoon,
   parseMatchStartReminderRecord,
@@ -1355,6 +1356,10 @@ function InnerFootballApp({
   const [leagueAddName, setLeagueAddName] = useState("");
   const [importStrategy, setImportStrategy] = useState<ImportStrategy>("merge");
   const saleNow = useMemo(() => new Date(saleClock), [saleClock]);
+  const currentStartReminderItems = useMemo(
+    () => collectCurrentMatchStartItems(matches, saleNow),
+    [matches, saleNow],
+  );
   const closeStartReminder = useCallback(() => {
     if (startReminderItemsRef.current.length === 0 || startReminderClosingRef.current) return;
     startReminderItemsRef.current = [];
@@ -3837,8 +3842,8 @@ function InnerFootballApp({
         cloudSyncStatus={cloudSyncStatus}
         headerRef={headerRef}
         isGuestMode={isGuestMode}
+        startReminderMatches={currentStartReminderItems}
         unsettledOrderCount={unsettledOrderCount}
-        onAddOrder={openManualOrder}
         onLogout={onLogout}
         onNavigate={navigateToView}
         onRequireAccount={() => onRequireAccount()}
@@ -3895,6 +3900,28 @@ function InnerFootballApp({
             <div className="match-filter-row league-filter-control">
               <span className="match-filter-label">比赛类型<small>不选则不限</small></span>
               <div className="league-filter-tags">
+                <Tag
+                  color="#108a83"
+                  variant={effectiveSelectedLeagueNames.length === 0 ? "solid" : "outlined"}
+                  style={effectiveSelectedLeagueNames.length === 0 ? { color: readableTagTextColor("#108a83") } : undefined}
+                  role="button"
+                  aria-pressed={effectiveSelectedLeagueNames.length === 0}
+                  aria-disabled={sportteryLoading}
+                  tabIndex={sportteryLoading ? -1 : 0}
+                  title="不限比赛类型；点击清除已选联赛"
+                  onClick={() => {
+                    if (!sportteryLoading) setSelectedLeagueNames([]);
+                  }}
+                  onKeyDown={(event) => {
+                    if (sportteryLoading) return;
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setSelectedLeagueNames([]);
+                    }
+                  }}
+                >
+                  不限
+                </Tag>
                 {availableLeagueOptions.map((league) => {
                   const selected = selectedLeagueSet.has(league.leagueNameAbbr);
                   const leagueColor = getLeagueTagColor(appSettings, league.leagueNameAbbr);
@@ -4029,23 +4056,56 @@ function InnerFootballApp({
           <section className="orders-page">
             <div className="section-heading orders-heading">
               <div><span className="eyebrow">{isGuestMode ? "LOCAL ORDERS" : "CLOUD ORDERS"}</span><h2>订单列表</h2><p>{isGuestMode ? "游客订单和累计收支只保存在当前浏览器，不会上传服务器或跨设备同步。" : "订单、累计收支会保存到当前账号，并在其他设备登录后自动同步。"}</p></div>
-              <Space wrap>
+              <Space className="orders-heading-actions" wrap>
                 <Tag color="cyan">{cloudOrdersLoading ? "正在加载订单…" : `显示 ${filteredSavedSlips.length} / 共 ${orderTotalCount} 个订单`}</Tag>
-                <Button icon={<ExpandOutlined />} disabled={cloudOrdersLoading || filteredSavedSlips.length === 0} onClick={expandAllOrderOptions}>展开全部选项</Button>
-                <Button icon={<ReloadOutlined />} loading={orderOddsRefreshing} disabled={cloudOrdersLoading || lockingOrderOdds || filteredSavedSlips.length === 0} onClick={() => { void refreshUnlockedOrderOdds(); }}>更新倍率</Button>
-                <Button icon={<LockOutlined />} loading={lockingOrderOdds} disabled={cloudOrdersLoading || orderOddsRefreshing || visibleUnlockedOrderCount === 0} onClick={() => { void lockVisibleOrderOdds(); }}>锁定倍率</Button>
+                <Tooltip title="添加订单">
+                  <Button aria-label="添加订单" icon={<PlusOutlined />} onClick={openManualOrder} />
+                </Tooltip>
+                <Tooltip title="展开全部选项">
+                  <Button aria-label="展开全部选项" icon={<ExpandOutlined />} disabled={cloudOrdersLoading || filteredSavedSlips.length === 0} onClick={expandAllOrderOptions} />
+                </Tooltip>
+                <Tooltip title="更新倍率">
+                  <Button aria-label="更新倍率" icon={<ReloadOutlined />} loading={orderOddsRefreshing} disabled={cloudOrdersLoading || lockingOrderOdds || filteredSavedSlips.length === 0} onClick={() => { void refreshUnlockedOrderOdds(); }} />
+                </Tooltip>
+                <Tooltip title="锁定倍率">
+                  <Button aria-label="锁定倍率" icon={<LockOutlined />} loading={lockingOrderOdds} disabled={cloudOrdersLoading || orderOddsRefreshing || visibleUnlockedOrderCount === 0} onClick={() => { void lockVisibleOrderOdds(); }} />
+                </Tooltip>
                 <Popover content={bulkPayContent} trigger="click" open={bulkPayPopoverOpen} onOpenChange={setBulkPayPopoverOpen}>
-                  <Button icon={<DollarOutlined />} loading={payingOrderIds.length > 0} disabled={cloudOrdersLoading || filteredPayableOrders.length === 0 || payingOrderIds.length > 0}>一键支付</Button>
+                  <Tooltip title="一键支付">
+                    <Button aria-label="一键支付" icon={<DollarOutlined />} loading={payingOrderIds.length > 0} disabled={cloudOrdersLoading || filteredPayableOrders.length === 0 || payingOrderIds.length > 0} />
+                  </Tooltip>
                 </Popover>
                 <Popover content={bulkSettleContent} trigger="click" open={bulkSettlePopoverOpen} onOpenChange={setBulkSettlePopoverOpen}>
-                  <Button className="checkout-order-button" icon={<CheckOutlined />} loading={settlingOrderIds.length > 0} disabled={cloudOrdersLoading || filteredSettleableOrders.length === 0 || settlingOrderIds.length > 0}>一键结账</Button>
+                  <Tooltip title="一键结账">
+                    <Button className="checkout-order-button" aria-label="一键结账" icon={<CheckOutlined />} loading={settlingOrderIds.length > 0} disabled={cloudOrdersLoading || filteredSettleableOrders.length === 0 || settlingOrderIds.length > 0} />
+                  </Tooltip>
                 </Popover>
               </Space>
             </div>
             <div className="order-overview">
               <Card className="order-filter-panel">
                 <div className="order-panel-heading">
-                  <div><span className="eyebrow">FILTERS</span><h3>筛选订单</h3></div>
+                  <div>
+                    <span className="eyebrow">FILTERS</span>
+                    <div className="order-filter-title-row">
+                      <h3>筛选订单</h3>
+                      <Tooltip title={`查看联赛命中率图表（成功订单 ${leagueAccuracyOrderSummary.success}，失败订单 ${leagueAccuracyOrderSummary.failed}）`}>
+                        <Button
+                          type="text"
+                          className="order-trend-button order-league-accuracy-button"
+                          aria-label={`查看联赛命中率图表，订单命中率 ${leagueAccuracyOrderRateLabel}，成功订单 ${leagueAccuracySuccessOrderCount}`}
+                          icon={<BarChartOutlined />}
+                          disabled={cloudOrdersLoading}
+                          onClick={() => setLeagueAccuracyOpen(true)}
+                        >
+                          <span className="order-league-accuracy-summary">
+                            <span>订单命中率 <b>{leagueAccuracyOrderRateLabel}</b></span>
+                            <small>成功订单 <b>{leagueAccuracySuccessOrderCount}</b></small>
+                          </span>
+                        </Button>
+                      </Tooltip>
+                    </div>
+                  </div>
                   <Button
                     type="text"
                     icon={<UndoOutlined />}
@@ -4274,23 +4334,34 @@ function InnerFootballApp({
                   <div className="order-filter-field order-league-filter-field">
                     <div className="order-league-filter-title">
                       <span>比赛类型 <small>不选代表不限</small></span>
-                      <Tooltip title={`查看联赛命中率图表（成功订单 ${leagueAccuracyOrderSummary.success}，失败订单 ${leagueAccuracyOrderSummary.failed}）`}>
-                        <Button
-                          type="text"
-                          className="order-trend-button order-league-accuracy-button"
-                          aria-label={`查看联赛命中率图表，订单命中率 ${leagueAccuracyOrderRateLabel}，成功订单 ${leagueAccuracySuccessOrderCount}`}
-                          icon={<BarChartOutlined />}
-                          disabled={cloudOrdersLoading}
-                          onClick={() => setLeagueAccuracyOpen(true)}
-                        >
-                          <span className="order-league-accuracy-summary">
-                            <span>订单命中率 <b>{leagueAccuracyOrderRateLabel}</b></span>
-                            <small>成功订单 <b>{leagueAccuracySuccessOrderCount}</b></small>
-                          </span>
-                        </Button>
-                      </Tooltip>
                     </div>
                     <div className="league-filter-tags">
+                      <Tag
+                        color="#108a83"
+                        variant={effectiveSelectedOrderLeagueNames.length === 0 ? "solid" : "outlined"}
+                        style={effectiveSelectedOrderLeagueNames.length === 0 ? { color: readableTagTextColor("#108a83") } : undefined}
+                        role="button"
+                        aria-pressed={effectiveSelectedOrderLeagueNames.length === 0}
+                        aria-disabled={cloudOrdersLoading}
+                        tabIndex={cloudOrdersLoading ? -1 : 0}
+                        title="不限比赛类型；点击清除已选联赛"
+                        onClick={() => {
+                          if (!cloudOrdersLoading) {
+                            setRenderedOrderCount(ORDER_LIST_BATCH_SIZE);
+                            setSelectedOrderLeagueNames([]);
+                          }
+                        }}
+                        onKeyDown={(event) => {
+                          if (cloudOrdersLoading) return;
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            setRenderedOrderCount(ORDER_LIST_BATCH_SIZE);
+                            setSelectedOrderLeagueNames([]);
+                          }
+                        }}
+                      >
+                        不限
+                      </Tag>
                       {availableOrderLeagueNames.map((leagueName) => {
                         const selected = selectedOrderLeagueNames.includes(leagueName);
                         const leagueColor = getLeagueTagColor(appSettings, leagueName);

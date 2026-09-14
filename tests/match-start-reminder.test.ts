@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   collectMatchStartReminders,
+  collectCurrentMatchStartItems,
   isMatchStartingSoon,
   MATCH_START_REMINDER_WINDOW_MS,
   parseMatchStartReminderRecord,
@@ -78,6 +79,19 @@ test("筛选全部公共比赛、按开赛时间排序并对标准化比赛 ID �
     "200": new Date("2026-09-14T12:20:00").getTime(),
     "300": new Date("2026-09-14T12:30:00").getTime(),
   });
+});
+
+test("当前临近比赛列表不受已提醒记录影响，并按开赛时间去重排序", () => {
+  const now = new Date("2026-09-14T12:00:00");
+  const items = collectCurrentMatchStartItems([
+    match("sporttery-200", "2026-09-14 12:20", "200"),
+    match("100", "2026-09-14 12:10", "100"),
+    match("sporttery-100", "2026-09-14 12:12", "100"),
+    match("300", "2026-09-14 12:31", "300"),
+  ], now);
+
+  assert.deepEqual(items.map((item) => item.match.id), ["100", "sporttery-200"]);
+  assert.deepEqual(items.map((item) => item.minutesUntil), [10, 20]);
 });
 
 test("原提醒时间过期后，延期比赛可在新窗口再次提醒", () => {

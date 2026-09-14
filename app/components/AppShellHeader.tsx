@@ -1,19 +1,21 @@
 "use client";
 
-import { Badge, Button, Popover, Tag } from "antd";
+import { Badge, Button, Popover, Tag, Tooltip } from "antd";
 import {
+  BellOutlined,
   FileTextOutlined,
   HomeOutlined,
   InfoCircleOutlined,
   LogoutOutlined,
-  PlusOutlined,
   SettingOutlined,
   UserOutlined,
 } from "@ant-design/icons";
+import dayjs from "dayjs";
 import type { RefObject } from "react";
 import { APP_VERSION } from "../AppVersion";
 import { CLOUD_APP_URL } from "../links";
 import type { CloudAccount, CloudSyncStatus } from "../cloud";
+import type { MatchStartReminderItem } from "../match-start-reminder";
 
 type AppView = "betting" | "orders" | "settings";
 
@@ -23,8 +25,8 @@ type AppShellHeaderProps = {
   cloudSyncStatus: CloudSyncStatus;
   headerRef: RefObject<HTMLElement | null>;
   isGuestMode: boolean;
+  startReminderMatches: MatchStartReminderItem[];
   unsettledOrderCount: number;
-  onAddOrder: () => void;
   onLogout: () => Promise<void>;
   onNavigate: (view: AppView) => void;
   onRequireAccount: () => void;
@@ -36,8 +38,8 @@ export function AppShellHeader({
   cloudSyncStatus,
   headerRef,
   isGuestMode,
+  startReminderMatches,
   unsettledOrderCount,
-  onAddOrder,
   onLogout,
   onNavigate,
   onRequireAccount,
@@ -65,6 +67,27 @@ export function AppShellHeader({
     </div>
   ) : null;
 
+  const startReminderPopover = (
+    <div className="header-start-reminder-popover">
+      <div className="header-start-reminder-heading">
+        <b>准备开赛</b>
+        <span>未来 30 分钟内的比赛</span>
+      </div>
+      <div className="header-start-reminder-list">
+        {startReminderMatches.map((item) => (
+          <div className="header-start-reminder-item" key={`${item.match.id}-${item.kickoffAt}`}>
+            <div>
+              <b>{item.match.weekday}{item.match.code}</b>
+              <span>{item.match.league || "未分类"}</span>
+            </div>
+            <strong><span>{item.match.home}</span><i>VS</i><span>{item.match.away}</span></strong>
+            <small>{dayjs(item.kickoffAt).format("MM-DD HH:mm")} · 约 {item.minutesUntil} 分钟后</small>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
   return (
     <>
       <header className="hero-header" ref={headerRef}>
@@ -75,10 +98,12 @@ export function AppShellHeader({
             <div><p>中国以小博大 · 玩法模拟 · v{APP_VERSION}</p><h1>Small Money Get Rich</h1></div>
           </div>
           <div className="hero-actions">
-            {activeView === "orders" && (
-              <Button icon={<PlusOutlined />} onClick={onAddOrder}>
-                <span className="header-button-label">添加订单</span>
-              </Button>
+            {startReminderMatches.length > 0 && (
+              <Tooltip title={`准备开赛（${startReminderMatches.length} 场）`}>
+                <Popover content={startReminderPopover} trigger="click" placement="bottomRight">
+                  <Button aria-label={`准备开赛，${startReminderMatches.length} 场`} icon={<BellOutlined />} />
+                </Popover>
+              </Tooltip>
             )}
             <Button className={activeView === "betting" ? "view-toggle active" : "view-toggle"} icon={<HomeOutlined />} onClick={() => onNavigate("betting")}>
               <span className="header-button-label">投注</span>

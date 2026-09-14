@@ -42,14 +42,18 @@ export function isMatchStartingSoon(
   return remainingMs > 0 && remainingMs <= windowMs;
 }
 
-export function collectMatchStartReminders(
+const compareMatchStartReminderItems = (left: MatchStartReminderItem, right: MatchStartReminderItem) => (
+  left.kickoffAt - right.kickoffAt
+  || left.match.code.localeCompare(right.match.code, "zh-CN", { numeric: true, sensitivity: "base" })
+  || left.match.id.localeCompare(right.match.id, "zh-CN", { numeric: true, sensitivity: "base" })
+);
+
+export function collectCurrentMatchStartItems(
   matches: MatchItem[],
-  reminded: MatchStartReminderRecord,
   now = new Date(),
   windowMs = MATCH_START_REMINDER_WINDOW_MS,
-): { reminders: MatchStartReminderItem[]; nextRecord: MatchStartReminderRecord } {
+): MatchStartReminderItem[] {
   const nowMs = now.getTime();
-  const nextRecord = normalizedReminderRecord(reminded, nowMs);
   const uniqueMatches = new Map<string, { match: MatchItem; kickoffAt: number }>();
 
   matches.forEach((match) => {
@@ -62,17 +66,24 @@ export function collectMatchStartReminders(
     if (!current || kickoffAt < current.kickoffAt) uniqueMatches.set(matchId, { match, kickoffAt });
   });
 
-  const reminders = [...uniqueMatches.entries()]
-    .filter(([matchId]) => typeof nextRecord[matchId] === "undefined")
-    .map(([, item]) => ({
+  return [...uniqueMatches.values()]
+    .map((item) => ({
       ...item,
       minutesUntil: Math.max(1, Math.ceil((item.kickoffAt - nowMs) / 60_000)),
     }))
-    .sort((left, right) => (
-      left.kickoffAt - right.kickoffAt
-      || left.match.code.localeCompare(right.match.code, "zh-CN", { numeric: true, sensitivity: "base" })
-      || left.match.id.localeCompare(right.match.id, "zh-CN", { numeric: true, sensitivity: "base" })
-    ));
+    .sort(compareMatchStartReminderItems);
+}
+
+export function collectMatchStartReminders(
+  matches: MatchItem[],
+  reminded: MatchStartReminderRecord,
+  now = new Date(),
+  windowMs = MATCH_START_REMINDER_WINDOW_MS,
+): { reminders: MatchStartReminderItem[]; nextRecord: MatchStartReminderRecord } {
+  const nowMs = now.getTime();
+  const nextRecord = normalizedReminderRecord(reminded, nowMs);
+  const reminders = collectCurrentMatchStartItems(matches, now, windowMs)
+    .filter(({ match }) => typeof nextRecord[normalizeSportteryMatchId(match.id)] === "undefined");
 
   reminders.forEach(({ match, kickoffAt }) => {
     nextRecord[normalizeSportteryMatchId(match.id)] = kickoffAt;
