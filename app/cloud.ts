@@ -7,6 +7,7 @@ export const CLOUD_STORAGE_KEYS = {
   income: "football-simulator-total-income-v1",
   settings: "football-simulator-settings-v1",
   matches: "football-simulator-match-cache-v1",
+  matchStartReminders: "football-simulator-match-start-reminders-v1",
   accountId: "football-simulator-cloud-account-id-v1",
   pendingPersonal: "football-simulator-cloud-pending-personal-v1",
   pendingPersonalChanges: "football-simulator-cloud-pending-personal-changes-v3",

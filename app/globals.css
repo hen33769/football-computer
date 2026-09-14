@@ -323,6 +323,11 @@ button, input, textarea { font: inherit; }
 .match-card.stopped .match-team-name, .match-card.stopped .match-time { color: #829095; }
 .match-card.stopped .odds-option:disabled { color: #718086; background: #edf1f0; opacity: .85; }
 .match-card:hover { transform: translateY(-1px); box-shadow: 0 13px 36px rgba(22, 54, 58, .09); }
+.match-card.starting-soon,
+.match-card.starting-soon:hover {
+  border-color: rgba(22, 119, 255, .42);
+  box-shadow: 0 0 0 2px rgba(22, 119, 255, .12), 0 15px 40px rgba(22, 119, 255, .2);
+}
 .match-meta, .market-name-line { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .match-meta { font-size: 12px; color: var(--muted); }
 .match-code { font-weight: 800; color: #51656b; }
@@ -1008,6 +1013,19 @@ button, input, textarea { font: inherit; }
   overflow-y: auto;
   overscroll-behavior: contain;
 }
+.match-start-reminder-intro { margin: 0 0 14px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.match-start-reminder-list { display: grid; gap: 10px; max-height: min(56dvh, 520px); overflow-y: auto; overscroll-behavior: contain; }
+.match-start-reminder-item { display: grid; gap: 9px; padding: 13px 14px; border: 1px solid rgba(22,119,255,.18); border-radius: 14px; background: linear-gradient(145deg, rgba(22,119,255,.075), rgba(255,255,255,.94)); }
+.match-start-reminder-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #657a80; font-size: 11px; }
+.match-start-reminder-meta > span { min-width: 0; display: flex; align-items: center; gap: 7px; }
+.match-start-reminder-meta b { color: #315269; white-space: nowrap; }
+.match-start-reminder-meta .ant-tag { max-width: 150px; margin: 0; overflow: hidden; text-overflow: ellipsis; }
+.match-start-reminder-meta time { flex: 0 0 auto; color: #1677ff; font-variant-numeric: tabular-nums; font-weight: 700; }
+.match-start-reminder-item > strong { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 10px; color: #213c45; font-size: 15px; line-height: 1.45; }
+.match-start-reminder-item > strong span:first-child { text-align: right; }
+.match-start-reminder-item > strong span:last-child { text-align: left; }
+.match-start-reminder-item > strong i { color: #8ca0a5; font-size: 10px; font-style: normal; }
+.match-start-reminder-item > small { color: #1677ff; text-align: center; font-size: 11px; font-weight: 700; }
 
 @media (max-width: 1400px) {
   .order-overview { grid-template-columns: 1fr; }
@@ -1069,6 +1087,9 @@ button, input, textarea { font: inherit; }
   .match-refresh-button { width: 100%; justify-self: stretch; }
   .match-update-time { text-align: right; }
   .match-card { padding: 14px 12px; }
+  .match-start-reminder-modal .ant-modal-footer .ant-btn { width: 100%; }
+  .match-start-reminder-meta { align-items: flex-start; flex-direction: column; gap: 5px; }
+  .match-start-reminder-item > strong { gap: 7px; font-size: 14px; }
   .match-team-name { font-size: 14px; }
   .team-name-icon { width: 20px; height: 20px; flex-basis: 20px; }
   .team-name-alias { font-size: 10px; }

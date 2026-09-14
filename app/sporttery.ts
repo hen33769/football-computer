@@ -310,11 +310,20 @@ const sameMatch = (left: MatchItem, right: MatchItem) => (
   || matchIdentityKey(left) === matchIdentityKey(right)
 );
 
+export const getMatchKickoffAt = (match: Pick<MatchItem, "date" | "time">) => {
+  const time = match.time?.trim();
+  if (!time) return null;
+  const timeOnly = time.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  const source = timeOnly
+    ? `${match.date}T${timeOnly[1].padStart(2, "0")}:${timeOnly[2]}:${timeOnly[3] ?? "00"}`
+    : time.replace(" ", "T");
+  const kickoffAt = new Date(source).getTime();
+  return Number.isFinite(kickoffAt) ? kickoffAt : null;
+};
+
 export const hasMatchStarted = (match: Pick<MatchItem, "date" | "time">, now = new Date()) => {
-  if (!match.time) return false;
-  const source = /^\d{4}-\d{2}-\d{2}/.test(match.time) ? match.time : `${match.date} ${match.time}`;
-  const kickoff = new Date(source.replace(" ", "T"));
-  return !Number.isNaN(kickoff.getTime()) && now.getTime() >= kickoff.getTime();
+  const kickoffAt = getMatchKickoffAt(match);
+  return kickoffAt !== null && now.getTime() >= kickoffAt;
 };
 
 export type MatchSaleState = "pending" | "selling" | "stopped";

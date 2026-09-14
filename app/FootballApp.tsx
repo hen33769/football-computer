@@ -32,6 +32,7 @@ import {
   CaretDownOutlined,
   CaretUpOutlined,
   CheckOutlined,
+  ClockCircleOutlined,
   CloseOutlined,
   CopyOutlined,
   DeleteOutlined,
@@ -109,6 +110,12 @@ import { getOrderWithdrawalType, isOrderPaid, withdrawOrderState } from "./order
 import { CLOUD_APP_URL, UPDATE_LOG_URL } from "./links";
 import { formatManualMatchText, formatManualOrderText } from "./manual-order-format";
 import { formatMatchCopyLine } from "./match-format";
+import {
+  collectMatchStartReminders,
+  isMatchStartingSoon,
+  parseMatchStartReminderRecord,
+  type MatchStartReminderItem,
+} from "./match-start-reminder";
 import { AppShellHeader } from "./components/AppShellHeader";
 import { TeamNameWithIcon } from "./components/TeamNameWithAlias";
 import { parseRecognizedText } from "./ocr";
@@ -121,6 +128,7 @@ import {
   fetchSportteryMatchScore,
   fetchSportteryMatchSnapshot,
   getMatchSaleState,
+  getMatchKickoffAt,
   getNextSportteryAutoRefreshDelay,
   getSportteryRefreshPolicy,
   getSportteryMatchStartDateKey,
@@ -171,6 +179,7 @@ const EXPENSE_KEY = CLOUD_STORAGE_KEYS.expense;
 const INCOME_KEY = CLOUD_STORAGE_KEYS.income;
 const LOADED_ORDER_KEY = "football-simulator-loaded-order-v1";
 const MATCH_CACHE_KEY = CLOUD_STORAGE_KEYS.matches;
+const MATCH_START_REMINDERS_KEY = CLOUD_STORAGE_KEYS.matchStartReminders;
 const LEGACY_MATCH_RESULTS_KEY = "football-simulator-match-results-v1";
 const ORDER_LIST_BATCH_SIZE = 10;
 const RESPONSIVE_DATE_PICKER_CLASS_NAMES = { popup: { root: "responsive-date-picker-popup" } };
@@ -261,12 +270,8 @@ const savedSlipDateKey = (savedAt: string) => {
 const createSlipId = () => String(Date.now());
 
 const parseMatchDateTime = (match: Pick<MatchItem, "date" | "time">) => {
-  if (!match.time) return null;
-  const source = /^\d{1,2}:\d{2}$/.test(match.time)
-    ? `${match.date}T${match.time}:00`
-    : match.time.replace(" ", "T");
-  const parsed = dayjs(source);
-  return parsed.isValid() ? parsed : null;
+  const kickoffAt = getMatchKickoffAt(match);
+  return kickoffAt === null ? null : dayjs(kickoffAt);
 };
 
 const formatMatchCardTime = (match: MatchItem) => parseMatchDateTime(match)?.format("MM-DD HH:mm") ?? match.time;
@@ -277,6 +282,18 @@ const compareMatchDisplayOrder = (left: MatchItem, right: MatchItem) => (
 );
 
 const sortMatchesForDisplay = (items: MatchItem[]) => [...items].sort(compareMatchDisplayOrder);
+
+const mergeStartReminderItems = (...batches: MatchStartReminderItem[][]) => {
+  const itemsById = new Map<string, MatchStartReminderItem>();
+  batches.flat().forEach((item) => {
+    itemsById.set(normalizeSportteryMatchId(item.match.id), item);
+  });
+  return [...itemsById.values()].sort((left, right) => (
+    left.kickoffAt - right.kickoffAt
+    || left.match.code.localeCompare(right.match.code, "zh-CN", { numeric: true, sensitivity: "base" })
+    || left.match.id.localeCompare(right.match.id, "zh-CN", { numeric: true, sensitivity: "base" })
+  ));
+};
 
 const countSelectedOptions = (items: MatchItem[]) => items.reduce((total, match) => total + selectedOptions(match).length, 0);
 
@@ -801,6 +818,7 @@ function MatchCard({
 }) {
   const picked = selectedOptions(match).length;
   const saleState = getMatchSaleState(match, now);
+  const startingSoon = isMatchStartingSoon(match, now);
   const selectable = saleState !== "stopped";
   const spf = match.markets.find((market) => market.type === "spf")!;
   const rqspf = match.markets.find((market) => market.type === "rqspf")!;
@@ -809,7 +827,7 @@ function MatchCard({
   const fullScoreTone = fullScore ? scoreResultTone(fullScore) : "";
   const halfScoreTone = halfScore ? scoreResultTone(halfScore) : "";
   return (
-    <article className={`match-card ${picked ? "has-selection" : ""} ${saleState}`}>
+    <article className={`match-card ${picked ? "has-selection" : ""} ${startingSoon ? "starting-soon" : ""} ${saleState}`}>
       <div className="match-meta">
         <div>
           <span className="match-code">{match.weekday}{match.code}</span>
@@ -1085,6 +1103,7 @@ function InnerFootballApp({
   onCloudMatchesChange,
   onCloudMatchesUpdate,
   onCloudMatchesRefresh,
+  startReminderBlocked,
   onRequireAccount,
   onLogout,
 }: {
@@ -1103,6 +1122,7 @@ function InnerFootballApp({
   onCloudMatchesChange: (matches: MatchItem[]) => void;
   onCloudMatchesUpdate: (matches: MatchItem[]) => Promise<MatchItem[]>;
   onCloudMatchesRefresh: (manual: boolean) => Promise<SportteryMatchSnapshot>;
+  startReminderBlocked: boolean;
   onRequireAccount: (view?: AppView) => void;
   onLogout: () => Promise<void>;
 }) {
@@ -1309,6 +1329,10 @@ function InnerFootballApp({
   const [sportteryLastUpdateTime, setSportteryLastUpdateTime] = useState("");
   const [sportteryFetchMode, setSportteryFetchMode] = useState<SportteryMatchFetchMode>(() => getSportteryRefreshPolicy().mode);
   const [saleClock, setSaleClock] = useState(() => Date.now());
+  const [startReminderItems, setStartReminderItems] = useState<MatchStartReminderItem[]>([]);
+  const startReminderItemsRef = useRef<MatchStartReminderItem[]>([]);
+  const pendingStartReminderItemsRef = useRef<MatchStartReminderItem[]>([]);
+  const startReminderClosingRef = useRef(false);
   const [, setMatchDates] = useState<SportteryMatchDate[]>(() => cachedMatchDates(matches));
   const [leagueOptions, setLeagueOptions] = useState<SportteryLeague[]>(() => cachedLeagueOptions(matches));
   const [selectedMatchDate, setSelectedMatchDate] = useState<string | null>(null);
@@ -1331,6 +1355,35 @@ function InnerFootballApp({
   const [leagueAddName, setLeagueAddName] = useState("");
   const [importStrategy, setImportStrategy] = useState<ImportStrategy>("merge");
   const saleNow = useMemo(() => new Date(saleClock), [saleClock]);
+  const closeStartReminder = useCallback(() => {
+    if (startReminderItemsRef.current.length === 0 || startReminderClosingRef.current) return;
+    startReminderItemsRef.current = [];
+    startReminderClosingRef.current = true;
+    setStartReminderItems([]);
+  }, []);
+  const queueStartReminderItems = useCallback((items: MatchStartReminderItem[]) => {
+    if (items.length === 0) return;
+    if (startReminderItemsRef.current.length > 0 || startReminderClosingRef.current) {
+      pendingStartReminderItemsRef.current = mergeStartReminderItems(pendingStartReminderItemsRef.current, items);
+      closeStartReminder();
+      return;
+    }
+    const nextItems = mergeStartReminderItems(items);
+    startReminderItemsRef.current = nextItems;
+    setStartReminderItems(nextItems);
+  }, [closeStartReminder]);
+  const handleStartReminderAfterClose = useCallback(() => {
+    startReminderClosingRef.current = false;
+    if (startReminderBlocked) {
+      pendingStartReminderItemsRef.current = [];
+      return;
+    }
+    const nextItems = pendingStartReminderItemsRef.current;
+    pendingStartReminderItemsRef.current = [];
+    if (nextItems.length === 0) return;
+    startReminderItemsRef.current = nextItems;
+    setStartReminderItems(nextItems);
+  }, [startReminderBlocked]);
   const filteredTeamNameGroups = useMemo(() => {
     const query = normalizeTeamName(teamNameQuery);
     if (!query) return teamNameGroups;
@@ -1507,7 +1560,33 @@ function InnerFootballApp({
   }, [matches]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
+    if (!startReminderBlocked) return;
+    pendingStartReminderItemsRef.current = [];
+    closeStartReminder();
+  }, [closeStartReminder, startReminderBlocked]);
+
+  useEffect(() => {
+    if (startReminderBlocked) return;
+    const rawRecord = localCache.getItem(MATCH_START_REMINDERS_KEY);
+    const reminded = parseMatchStartReminderRecord(rawRecord, saleNow);
+    const { reminders, nextRecord } = collectMatchStartReminders(matches, reminded, saleNow);
+    const serializedRecord = JSON.stringify(nextRecord);
+    if (Object.keys(nextRecord).length === 0) {
+      if (rawRecord !== null) localCache.removeItem(MATCH_START_REMINDERS_KEY);
+    } else if (serializedRecord !== rawRecord) {
+      localCache.setItem(MATCH_START_REMINDERS_KEY, serializedRecord);
+    }
+    if (reminders.length > 0) queueStartReminderItems(reminders);
+  }, [matches, queueStartReminderItems, saleNow, startReminderBlocked]);
+
+  useEffect(() => () => {
+    startReminderItemsRef.current = [];
+    pendingStartReminderItemsRef.current = [];
+    startReminderClosingRef.current = false;
+  }, []);
+
+  useEffect(() => {
+    const tick = () => {
       const now = new Date();
       setSaleClock(now.getTime());
       if (temporaryOrder) return;
@@ -1527,8 +1606,16 @@ function InnerFootballApp({
         });
         return changed ? next : current;
       });
-    }, 30 * 1000);
-    return () => window.clearInterval(timer);
+    };
+    const timer = window.setInterval(tick, 30 * 1000);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, [temporaryOrder]);
 
   useEffect(() => {
@@ -4736,6 +4823,32 @@ function InnerFootballApp({
         </main>
       )}
 
+      <Modal
+        open={startReminderItems.length > 0}
+        zIndex={1200}
+        width={560}
+        className="match-start-reminder-modal"
+        title={<Space size="small"><ClockCircleOutlined /><span>开赛提醒</span></Space>}
+        footer={<Button type="primary" onClick={closeStartReminder}>知道了</Button>}
+        onCancel={closeStartReminder}
+        afterClose={handleStartReminderAfterClose}
+        destroyOnHidden
+      >
+        <p className="match-start-reminder-intro">以下 {startReminderItems.length} 场比赛将在 30 分钟内开赛</p>
+        <div className="match-start-reminder-list" aria-live="assertive">
+          {startReminderItems.map((item) => (
+            <section className="match-start-reminder-item" key={`${normalizeSportteryMatchId(item.match.id)}-${item.kickoffAt}`}>
+              <div className="match-start-reminder-meta">
+                <span><b>{item.match.weekday}{item.match.code}</b><Tag color="blue">{item.match.league || "未分类"}</Tag></span>
+                <time dateTime={new Date(item.kickoffAt).toISOString()}>{dayjs(item.kickoffAt).format("YYYY-MM-DD HH:mm")}</time>
+              </div>
+              <strong><span>{item.match.home}</span><i>VS</i><span>{item.match.away}</span></strong>
+              <small>约 {item.minutesUntil} 分钟后开赛</small>
+            </section>
+          ))}
+        </div>
+      </Modal>
+
       <FinanceTrendModal
         open={financeTrendOpen}
         onClose={() => setFinanceTrendOpen(false)}
@@ -5260,6 +5373,7 @@ export default function FootballApp({
   onCloudMatchesChange = ignoreCloudMatchesChange,
   onCloudMatchesUpdate = ignoreCloudMatchesUpdate,
   onCloudMatchesRefresh = ignoreCloudMatchesRefresh,
+  startReminderBlocked = false,
   onRequireAccount = () => undefined,
   onLogout = async () => undefined,
 }: {
@@ -5278,6 +5392,7 @@ export default function FootballApp({
   onCloudMatchesChange?: (matches: MatchItem[]) => void;
   onCloudMatchesUpdate?: (matches: MatchItem[]) => Promise<MatchItem[]>;
   onCloudMatchesRefresh?: (manual: boolean) => Promise<SportteryMatchSnapshot>;
+  startReminderBlocked?: boolean;
   onRequireAccount?: (view?: AppView) => void;
   onLogout?: () => Promise<void>;
 }) {
@@ -5318,6 +5433,7 @@ export default function FootballApp({
           onCloudMatchesChange={onCloudMatchesChange}
           onCloudMatchesUpdate={onCloudMatchesUpdate}
           onCloudMatchesRefresh={onCloudMatchesRefresh}
+          startReminderBlocked={startReminderBlocked}
           onRequireAccount={onRequireAccount}
           onLogout={onLogout}
         />

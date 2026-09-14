@@ -541,6 +541,7 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
         onCloudMatchesChange={syncMatches}
         onCloudMatchesUpdate={syncMatchUpdates}
         onCloudMatchesRefresh={loadCloudMatches}
+        startReminderBlocked={Boolean(latestVersion || (accountDialogOpen && !account))}
         onRequireAccount={openAccountDialog}
         onLogout={logout}
       />
