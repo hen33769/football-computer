@@ -336,6 +336,14 @@ button, input, textarea { font: inherit; }
 .match-card.stopped { border-color: #d7dddc; background: #f5f7f6; }
 .match-card.stopped .match-team-name, .match-card.stopped .match-time { color: #829095; }
 .match-card.stopped .odds-option:disabled { color: #718086; background: #edf1f0; opacity: .85; }
+.match-card.cancelled { border-color: #cfd6d5; background: #eef1f0; box-shadow: none; }
+.match-card.cancelled::before { background: #aeb8b6; }
+.match-card.cancelled .match-team-name,
+.match-card.cancelled .match-time,
+.match-card.cancelled .match-code,
+.match-card.cancelled .market-label { color: #7d8988; }
+.match-card.cancelled .odds-option:disabled { color: #7b8584; background: #e5e9e8; opacity: .78; }
+.match-card.cancelled:hover { box-shadow: 0 8px 24px rgba(50, 66, 65, .07); }
 .match-card:hover { transform: translateY(-1px); box-shadow: 0 13px 36px rgba(22, 54, 58, .09); }
 .match-card.starting-soon,
 .match-card.starting-soon:hover {
@@ -355,6 +363,13 @@ button, input, textarea { font: inherit; }
 .league-color-popover .ant-color-picker-trigger { width: 100%; justify-content: flex-start; }
 .league-color-popover-actions { display: flex; justify-content: flex-end; gap: 7px; padding-top: 3px; border-top: 1px solid var(--line); }
 .match-time { font-variant-numeric: tabular-nums; }
+.match-time-group { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; }
+.match-remark-button { display: inline-grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; color: #567774; background: transparent; cursor: help; }
+.match-remark-button:hover, .match-remark-button:focus-visible { color: var(--accent); background: rgba(240, 78, 85, .08); outline: none; }
+.cancelled-payment-warning p { margin: 0 0 10px; color: #5f6968; line-height: 1.55; }
+.cancelled-payment-warning ul { display: grid; gap: 6px; max-height: 220px; margin: 0; padding: 0; overflow-y: auto; list-style: none; }
+.cancelled-payment-warning li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; padding: 7px 9px; border-radius: 8px; color: #596462; background: #f0f2f1; }
+.cancelled-payment-warning li span { min-width: 0; overflow-wrap: anywhere; }
 .teams-row {
   display: grid;
   grid-template-columns: minmax(0, 5fr) minmax(0, 1fr) minmax(0, .5fr) minmax(0, 1fr) minmax(0, 5fr);

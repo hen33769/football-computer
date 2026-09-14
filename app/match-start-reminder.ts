@@ -33,10 +33,11 @@ export function parseMatchStartReminderRecord(raw: string | null, now = new Date
 }
 
 export function isMatchStartingSoon(
-  match: Pick<MatchItem, "date" | "time">,
+  match: Pick<MatchItem, "date" | "time" | "saleStatus">,
   now = new Date(),
   windowMs = MATCH_START_REMINDER_WINDOW_MS,
 ) {
+  if (match.saleStatus === "cancelled") return false;
   const kickoffAt = getMatchKickoffAt(match);
   const remainingMs = kickoffAt === null ? Number.NaN : kickoffAt - now.getTime();
   return remainingMs > 0 && remainingMs <= windowMs;
@@ -57,6 +58,7 @@ export function collectCurrentMatchStartItems(
   const uniqueMatches = new Map<string, { match: MatchItem; kickoffAt: number }>();
 
   matches.forEach((match) => {
+    if (match.saleStatus === "cancelled") return;
     const matchId = normalizeSportteryMatchId(match.id.trim());
     const kickoffAt = getMatchKickoffAt(match);
     if (!matchId || kickoffAt === null) return;

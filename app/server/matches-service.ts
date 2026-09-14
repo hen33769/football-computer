@@ -8,7 +8,7 @@ import {
   retainedSportteryMatchDateCutoff,
   type SportteryMatchFetchMode,
 } from "../sporttery";
-import { isMatchResult } from "../results";
+import { applyTrustedMatchUpdate, parseTrustedMatchUpdate } from "../match-updates";
 import type { MatchItem } from "../types";
 import { httpError } from "./errors";
 
@@ -71,6 +71,8 @@ function isMatch(value: unknown): value is MatchItem {
     && typeof match.date === "string"
     && typeof match.home === "string"
     && typeof match.away === "string"
+    && (typeof match.saleStatus === "undefined" || ["pending", "selling", "stopped", "cancelled"].includes(match.saleStatus))
+    && (typeof match.remark === "undefined" || typeof match.remark === "string")
     && Array.isArray(match.markets);
 }
 
@@ -166,6 +168,7 @@ async function saveMatches(
     mode: SportteryMatchFetchMode;
     lastUpdateTime?: string;
     fixedBonusFailureCount?: number;
+    authoritativeMatchIds?: string[];
   },
   now = new Date(),
 ) {
@@ -181,7 +184,11 @@ async function saveMatches(
   })).values()];
   const nowIso = now.toISOString();
   const existing = await loadStoredMatches(d1);
-  const merged = mergeSportteryMatchCache(existing, normalized, now);
+  const merged = mergeSportteryMatchCache(existing, normalized, now, {
+    ...(source === "official" && metadata.authoritativeMatchIds
+      ? { authoritativeMatchIds: metadata.authoritativeMatchIds }
+      : {}),
+  });
   await cleanupOldMatches(d1, now);
   const statements = merged.map((match) => d1.prepare(`
     INSERT INTO shared_matches (match_id, business_date, data_json, updated_by, updated_at)
@@ -266,6 +273,7 @@ export async function refreshMatchesFromOfficial(
       mode: snapshot.mode,
       lastUpdateTime: snapshot.lastUpdateTime,
       fixedBonusFailureCount: snapshot.fixedBonusFailureCount,
+      authoritativeMatchIds: snapshot.authoritativeMatchIds,
     }, new Date());
     const nextState = await getRefreshState(d1);
     return { matches: saved, metadata: stateMetadata(nextState, false, now) };
@@ -301,7 +309,7 @@ export async function getMatchesByIds(d1: D1Database, ids: string[]) {
   };
 }
 
-/** 仅按比赛 ID 合并可信的赛果字段，不允许局部更新覆盖共享赔率或比赛元数据。 */
+/** 仅按比赛 ID 合并可信赛果或取消终态，不允许局部更新覆盖共享赔率或比赛元数据。 */
 export async function updateMatchesById(d1: D1Database, rawMatches: unknown, now = new Date()) {
   if (!Array.isArray(rawMatches) || rawMatches.length === 0) {
     throw httpError("请传入需要更新的比赛数组", 400);
@@ -310,11 +318,8 @@ export async function updateMatchesById(d1: D1Database, rawMatches: unknown, now
     throw httpError(`单次最多更新 ${MAX_MATCH_UPDATES} 场比赛`, 400);
   }
   const updates = rawMatches.flatMap((value) => {
-    if (!value || typeof value !== "object") return [];
-    const match = value as Partial<MatchItem>;
-    const id = typeof match.id === "string" ? normalizeSportteryMatchId(match.id) : "";
-    if (!id || !isMatchResult(match.result) || match.result.source !== "api" || normalizeSportteryMatchId(match.result.matchId) !== id) return [];
-    return [{ id, result: structuredClone(match.result) }];
+    const update = parseTrustedMatchUpdate(value);
+    return update ? [update] : [];
   });
   if (updates.length !== rawMatches.length || new Set(updates.map((item) => item.id)).size !== updates.length) {
     throw httpError("比赛更新数据无效或包含重复 ID", 400);
@@ -325,7 +330,7 @@ export async function updateMatchesById(d1: D1Database, rawMatches: unknown, now
   if (missingIds.length > 0) throw httpError(`找不到比赛：${missingIds.join("、")}`, 404);
 
   const updatedAt = now.toISOString();
-  const matches = updates.map((item) => ({ ...existingById.get(item.id)!, result: item.result }));
+  const matches = updates.map((item) => applyTrustedMatchUpdate(existingById.get(item.id)!, item));
   await d1.batch(matches.map((match) => d1.prepare(`
     UPDATE shared_matches
     SET data_json = ?1, updated_at = ?2

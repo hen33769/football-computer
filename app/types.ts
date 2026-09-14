@@ -25,7 +25,7 @@ export type Market = {
 
 export type MatchItem = {
   id: string;
-  saleStatus?: "pending" | "selling" | "stopped";
+  saleStatus?: "pending" | "selling" | "stopped" | "cancelled";
   date: string;
   weekday: string;
   code: string;
@@ -33,6 +33,7 @@ export type MatchItem = {
   time: string;
   home: string;
   away: string;
+  remark?: string;
   markets: Market[];
   result?: MatchResult;
 };

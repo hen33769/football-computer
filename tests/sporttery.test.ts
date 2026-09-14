@@ -15,6 +15,8 @@ import {
   fetchSportteryUniformMatchResultPage,
   fetchSportteryMatchById,
   fetchSportteryMatchSnapshot,
+  isAutoResultEligible,
+  isSportteryFixedBonusCancelled,
   getNextSportteryAutoRefreshDelay,
   getMatchSaleState,
   getSportteryRefreshPolicy,
@@ -30,15 +32,19 @@ import {
   parseSportteryMatchScore,
   parseSportteryMatchScoreDetails,
   parseSportteryUniformMatchResult,
+  parseSportteryUniformMatchOutcome,
   parseSportteryMatchHandicap,
   parseSportteryFixedBonus,
   refreshSelectedOdds,
   replaceSportteryMatches,
   selectAvailableOrderBets,
+  shouldFetchSportteryFixedBonus,
   splitSportteryMatchResultDateRanges,
+  SPORTTERY_UNIFORM_MATCH_RESULT_PAGE_SIZE,
   unionSportteryMatchCache,
   type SportteryMatchCalculatorResponse,
   type SportteryMatchListResponse,
+  type SportteryMatch,
 } from "../app/sporttery";
 
 const beforeKickoff = new Date("2026-07-23T00:30:00");
@@ -114,6 +120,7 @@ test("批量赛果 URL 使用确认的日期、分页和页面参数", () => {
   assert.equal(url.searchParams.get("isFix"), "0");
   assert.equal(url.searchParams.get("matchPage"), "1");
   assert.equal(url.searchParams.get("pcOrWap"), "1");
+  assert.equal(SPORTTERY_UNIFORM_MATCH_RESULT_PAGE_SIZE, 100);
 });
 
 test("批量赛果日期按实际开赛日期拆分为最多 30 天的闭区间", () => {
@@ -146,6 +153,25 @@ test("批量赛果记录复用常规时间解析并使用接口让球值", () =>
   assert.deepEqual(parsed.halfScore, { home: 1, away: 0 });
   assert.equal(parsed.rqspfHandicap, 1);
   assert.ok(parsed.values.rqspf);
+});
+
+test("批量赛果将取消识别为无比分终态", () => {
+  const [match] = convertSportteryMatches(payload, beforeKickoff);
+  assert.deepEqual(parseSportteryUniformMatchOutcome({
+    matchId: match.id,
+    sectionsNo1: "",
+    sectionsNo999: "取消",
+    matchResultStatus: "0",
+  }, match), { status: "cancelled" });
+  assert.equal(parseSportteryUniformMatchOutcome({
+    matchId: match.id,
+    sectionsNo999: "",
+  }, match).status, "unfinished");
+  assert.equal(parseSportteryUniformMatchOutcome({
+    matchId: match.id,
+    sectionsNo1: "1:0",
+    sectionsNo999: "2:1",
+  }, match).status, "completed");
 });
 
 test("批量赛果接口校验成功 JSON 并返回分页数据", async () => {
@@ -196,6 +222,23 @@ test("体彩接口五类玩法完整转换为投注页比赛结构", () => {
   assert.equal(market(match, "halfFull").options.find((item) => item.id === "LL")?.odds, 4);
 });
 
+test("官方 remark 去除首尾空白并保留非空值", () => {
+  const withRemark = structuredClone(payload);
+  withRemark.value!.matchInfoList![0].subMatchList[0].remark = "  比赛将在日本-岐阜举行  ";
+  assert.equal(convertSportteryMatches(withRemark, beforeKickoff)[0].remark, "比赛将在日本-岐阜举行");
+
+  withRemark.value!.matchInfoList![0].subMatchList[0].remark = "   ";
+  assert.equal(convertSportteryMatches(withRemark, beforeKickoff)[0].remark, undefined);
+});
+
+test("比赛列表的明确取消信号直接转换为 cancelled", () => {
+  const cancelledPayload = structuredClone(payload);
+  cancelledPayload.value!.matchInfoList![0].subMatchList[0].isCancel = 1;
+  const [match] = convertSportteryMatches(cancelledPayload, beforeKickoff);
+  assert.equal(match.saleStatus, "cancelled");
+  assert.equal(getMatchSaleState(match, new Date("2026-08-01T00:00:00")), "cancelled");
+});
+
 test("让球数据缺失时不显示默认的零让球数", () => {
   const missingHandicapPayload = structuredClone(payload);
   delete missingHandicapPayload.value!.matchInfoList![0].subMatchList[0].hhad!.goalLine;
@@ -231,6 +274,19 @@ test("开赛时间是停售边界，开赛前非可售比赛均为待开售", ()
   assert.equal(isMatchSelectable(stopped, new Date("2026-07-22T10:00:00")), true);
   assert.equal(getMatchSaleState(stopped, new Date("2026-07-31T20:00:00")), "stopped");
   assert.equal(isMatchSelectable(stopped, new Date("2026-07-31T20:00:00")), false);
+
+  const cancelled = { ...pending, saleStatus: "cancelled" as const };
+  assert.equal(getMatchSaleState(cancelled, new Date("2026-07-22T10:00:00")), "cancelled");
+  assert.equal(getMatchSaleState(cancelled, new Date("2026-08-01T10:00:00")), "cancelled");
+  assert.equal(isMatchSelectable(cancelled, new Date("2026-07-22T10:00:00")), false);
+});
+
+test("自动赛果在计划开赛 120 分钟后才进入候选", () => {
+  const [match] = convertSportteryMatches(payload, beforeKickoff);
+  assert.equal(isAutoResultEligible(match, new Date("2026-07-23T01:30:00")), false);
+  assert.equal(isAutoResultEligible(match, new Date("2026-07-23T03:29:59")), false);
+  assert.equal(isAutoResultEligible(match, new Date("2026-07-23T03:30:00")), true);
+  assert.equal(isAutoResultEligible({ ...match, saleStatus: "cancelled" }, new Date("2026-07-23T03:30:00")), false);
 });
 
 test("载入和复制订单只恢复当前仍可选择的投注项", () => {
@@ -317,6 +373,58 @@ test("比赛缓存覆盖最新数据、停售旧比赛并清除七天前数据",
   assert.equal(cached[2].id, "2040002");
   assert.equal(cached[2].saleStatus, "pending");
   assert.equal(market(cached[2], "spf").options[0].selected, true);
+});
+
+test("只在完整官方列表确认开赛前缺失时标记取消", () => {
+  const future = { ...createEmptyMatch(4), id: "2041458", date: "2026-09-14", time: "2026-09-15 03:00", saleStatus: "selling" as const };
+  market(future, "spf").options[0].selected = true;
+
+  const [withoutAuthority] = mergeSportteryMatchCache([cloneMatches([future])[0]], [], new Date("2026-09-14T12:00:00"));
+  assert.equal(withoutAuthority.saleStatus, "pending");
+  assert.equal(market(withoutAuthority, "spf").options[0].selected, true);
+
+  const [stillObserved] = mergeSportteryMatchCache([cloneMatches([future])[0]], [], new Date("2026-09-14T12:00:00"), {
+    authoritativeMatchIds: ["2041458"],
+  });
+  assert.equal(stillObserved.saleStatus, "pending");
+
+  const [cancelled] = mergeSportteryMatchCache([cloneMatches([future])[0]], [], new Date("2026-09-14T12:00:00"), {
+    authoritativeMatchIds: [],
+  });
+  assert.equal(cancelled.saleStatus, "cancelled");
+  assert.equal(market(cancelled, "spf").options[0].selected, false);
+
+  const [afterKickoff] = mergeSportteryMatchCache([cloneMatches([future])[0]], [], new Date("2026-09-15T03:00:00"), {
+    authoritativeMatchIds: [],
+  });
+  assert.equal(afterKickoff.saleStatus, "stopped");
+
+  const [preservedCancelled] = mergeSportteryMatchCache([cancelled], [], new Date("2026-09-15T03:00:00"));
+  assert.equal(preservedCancelled.saleStatus, "cancelled");
+});
+
+test("fixed-bonus 批量候选保留赛前有效 pool 或赔率，跳过空 Define 比赛", () => {
+  const source = structuredClone(payload.value!.matchInfoList![0].subMatchList[0]) as SportteryMatch;
+  const emptyDefine = {
+    ...structuredClone(source),
+    matchId: 2041512,
+    matchStatus: "Define",
+    poolList: [],
+    oddsList: [],
+    had: {},
+    hhad: {},
+    crs: {},
+    ttg: {},
+    hafu: {},
+  };
+  assert.equal(shouldFetchSportteryFixedBonus(emptyDefine), false);
+
+  const oddsIn = { ...structuredClone(emptyDefine), poolList: [{ poolCode: "HAD", poolStatus: "OddsIn" }] };
+  assert.equal(shouldFetchSportteryFixedBonus(oddsIn), true);
+
+  const withOdds = { ...structuredClone(emptyDefine), had: { h: "2.10" } };
+  assert.equal(shouldFetchSportteryFixedBonus(withOdds), true);
+  assert.equal(shouldFetchSportteryFixedBonus(source), true);
 });
 
 test("新增导入比赛以新值更新同场数据，并由现有数据补齐缺项", () => {
@@ -723,6 +831,18 @@ test("当前倍率缺失时使用趋势最后一条倍率", () => {
   assert.equal(option?.oddsHistory?.length, 2);
 });
 
+test("fixed-bonus 明确取消信号会清除选择并保留比赛主体", () => {
+  const [baseMatch] = convertSportteryMatches(payload, beforeKickoff);
+  market(baseMatch, "spf").options[0].selected = true;
+  const cancelledPayload = { success: true, value: { isCancel: 1, oddsHistory: {}, matchResultList: [] } };
+  assert.equal(isSportteryFixedBonusCancelled(cancelledPayload), true);
+
+  const enriched = enrichSportteryMatchOddsHistory(baseMatch, cancelledPayload);
+  assert.equal(enriched.saleStatus, "cancelled");
+  assert.equal(enriched.home, baseMatch.home);
+  assert.equal(enriched.markets.some((item) => item.options.some((option) => option.selected)), false);
+});
+
 test("比赛缓存同步不会用空倍率覆盖旧有效倍率", () => {
   const [previous] = cloneMatches(convertSportteryMatches(payload, beforeKickoff));
   const previousSpf = market(previous, "spf");
@@ -845,6 +965,7 @@ test("常规模式以完整列表为主并用 calculator 覆盖同场详细赔�
     assert.equal(snapshot.mode, "standard");
     assert.deepEqual(fixedBonusMatchIds.sort(), ["2040585", "2040999"]);
     assert.deepEqual(snapshot.matches.map((match) => match.id), ["2040585", "2040999"]);
+    assert.deepEqual(snapshot.authoritativeMatchIds, ["2040585", "2040999", "2040998"]);
     const detailed = snapshot.matches.find((match) => match.id === "2040585")!;
     assert.equal(detailed.saleStatus, "selling");
     assert.equal(getMatchSaleState(detailed, now), "selling");
@@ -853,6 +974,27 @@ test("常规模式以完整列表为主并用 calculator 覆盖同场详细赔�
     assert.equal(supplemented.saleStatus, "pending");
     assert.equal(market(supplemented, "spf").options.find((option) => option.id === "win")?.odds, 2.25);
     assert.equal(market(supplemented, "rqspf").handicap, -1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("常规模式仅 calculator 成功时不提供完整列表权威 ID", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/getMatchListV1.qry")) throw new Error("完整列表暂不可用");
+    if (url.pathname.endsWith("/getMatchCalculatorV1.qry")) return Response.json(payload);
+    if (url.pathname.endsWith("/getFixedBonusV1.qry")) {
+      return Response.json({ success: true, value: { oddsHistory: {} } });
+    }
+    throw new Error(`未处理的测试请求：${url}`);
+  };
+
+  try {
+    const snapshot = await fetchSportteryMatchSnapshot("standard", beforeKickoff);
+    assert.equal(snapshot.matches.length, 1);
+    assert.equal(snapshot.authoritativeMatchIds, undefined);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -929,6 +1071,7 @@ test("常规模式在 calculator 暂无比赛列表时使用完整列表补充�
     assert.deepEqual(snapshot.leagues.map((league) => league.leagueNameAbbr), ["巴西杯", "欧冠"]);
     assert.equal(snapshot.lastUpdateTime, "2026-08-04 08:26:11");
     assert.deepEqual(fixedBonusMatchIds.sort(), ["2040716", "2040727"]);
+    assert.deepEqual(snapshot.authoritativeMatchIds, ["2040716", "2040727"]);
     assert.equal(getMatchSaleState(snapshot.matches[0], now), "pending");
     assert.equal(getMatchSaleState(snapshot.matches[1], now), "pending");
   } finally {

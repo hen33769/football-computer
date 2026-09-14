@@ -12,6 +12,7 @@ export const SPORTTERY_MATCH_SCORE_URL =
   "https://webapi.sporttery.cn/gateway/uniform/fb/getMatchScoreV1.qry";
 export const SPORTTERY_UNIFORM_MATCH_RESULT_URL =
   "https://webapi.sporttery.cn/gateway/uniform/football/getUniformMatchResultV1.qry";
+export const SPORTTERY_UNIFORM_MATCH_RESULT_PAGE_SIZE = 100;
 
 const LEGACY_SPORTTERY_MATCH_ID_PREFIX = "sporttery-";
 export const SPORTTERY_MATCH_CACHE_DAYS = 7;
@@ -43,6 +44,7 @@ export type SportteryMatch = {
   leagueAbbName: string;
   matchStatus: string;
   isHide?: number;
+  isCancel?: string | number;
   had?: SportteryOdds;
   hhad?: SportteryOdds;
   hafu?: SportteryOdds;
@@ -51,6 +53,7 @@ export type SportteryMatch = {
   poolList?: SportteryPool[];
   oddsList?: Array<SportteryOdds & { poolCode?: string }>;
   sellStatus?: string;
+  remark?: string;
   [key: string]: unknown;
 };
 
@@ -103,6 +106,8 @@ export type SportteryMatchSnapshot = {
   leagues: SportteryLeague[];
   lastUpdateTime: string;
   fixedBonusFailureCount: number;
+  /** 仅在完整 getMatchListV1 成功时存在，用于安全推断开赛前消失的比赛。 */
+  authoritativeMatchIds?: string[];
   fromCache?: boolean;
   refreshError?: string;
 };
@@ -166,6 +171,10 @@ const toOddsTrend = (value: unknown): -1 | 0 | 1 => {
   const trend = Number.parseInt(String(value ?? "0"), 10);
   return trend > 0 ? 1 : trend < 0 ? -1 : 0;
 };
+
+export const normalizeSportteryRemark = (value: unknown) => (
+  typeof value === "string" && value.trim() ? value.trim() : undefined
+);
 
 const compareOdds = (current: number, previous: number): -1 | 0 | 1 => (
   current > previous ? 1 : current < previous ? -1 : 0
@@ -326,7 +335,16 @@ export const hasMatchStarted = (match: Pick<MatchItem, "date" | "time">, now = n
   return kickoffAt !== null && now.getTime() >= kickoffAt;
 };
 
-export type MatchSaleState = "pending" | "selling" | "stopped";
+export const AUTO_RESULT_ELIGIBLE_DELAY_MS = 120 * 60 * 1000;
+
+/** 常规球赛不在刚开赛时请求赛果，给比赛与官方数据入库留出时间。 */
+export const isAutoResultEligible = (match: MatchItem, now = new Date()) => {
+  if (match.saleStatus === "cancelled") return false;
+  const kickoffAt = getMatchKickoffAt(match);
+  return kickoffAt !== null && now.getTime() >= kickoffAt + AUTO_RESULT_ELIGIBLE_DELAY_MS;
+};
+
+export type MatchSaleState = "pending" | "selling" | "stopped" | "cancelled";
 
 const beijingPartsFormatter = new Intl.DateTimeFormat("en-US", {
   timeZone: "Asia/Shanghai",
@@ -356,6 +374,7 @@ const beijingHour = (date: Date) => beijingDateParts(date).hour;
 
 /** 开赛时间是停售边界；开赛前无法正常销售的比赛统一视为待开售。 */
 export const getMatchSaleState = (match: MatchItem, now = new Date()): MatchSaleState => {
+  if (match.saleStatus === "cancelled") return "cancelled";
   if (hasMatchStarted(match, now)) return "stopped";
   const hasOdds = match.markets.some((market) => market.options.some((option) => option.odds > 0));
   const sourceSelling = match.saleStatus !== "pending" && match.saleStatus !== "stopped";
@@ -363,7 +382,7 @@ export const getMatchSaleState = (match: MatchItem, now = new Date()): MatchSale
 };
 
 export const isMatchSellable = (match: MatchItem, now = new Date()) => getMatchSaleState(match, now) === "selling";
-export const isMatchSelectable = (match: MatchItem, now = new Date()) => getMatchSaleState(match, now) !== "stopped";
+export const isMatchSelectable = (match: MatchItem, now = new Date()) => !["stopped", "cancelled"].includes(getMatchSaleState(match, now));
 
 /** 将订单选择映射到当前比赛，只保留仍可选择且倍率有效的投注项。 */
 export function selectAvailableOrderBets(
@@ -431,6 +450,7 @@ export function convertSportteryMatches(payload: SportteryMatchCalculatorRespons
     const { weekday, code } = parseMatchNumber(match);
     const businessDate = match.businessDate || groupBusinessDate;
     const kickoff = [match.matchDate, match.matchTime?.slice(0, 5)].filter(Boolean).join(" ");
+    const remark = normalizeSportteryRemark(match.remark);
 
     const converted: MatchItem = {
       id: String(match.matchId),
@@ -442,13 +462,16 @@ export function convertSportteryMatches(payload: SportteryMatchCalculatorRespons
       time: kickoff,
       home: match.homeTeamAbbName ?? "",
       away: match.awayTeamAbbName ?? "",
+      ...(remark ? { remark } : {}),
       markets,
     };
-    converted.saleStatus = matchSelling
-      && !hasMatchStarted(converted, now)
-      && markets.some((market) => market.options.some((option) => option.odds > 0))
-      ? "selling"
-      : "stopped";
+    converted.saleStatus = Number(match.isCancel) === 1
+      ? "cancelled"
+      : matchSelling
+        && !hasMatchStarted(converted, now)
+        && markets.some((market) => market.options.some((option) => option.odds > 0))
+        ? "selling"
+        : "stopped";
     return converted;
     });
 }
@@ -510,6 +533,7 @@ export const mergeSportteryMatchOdds = (incoming: MatchItem, previous?: MatchIte
 const preserveSelections = (incoming: MatchItem, previous?: MatchItem): MatchItem => {
   const resolved = mergeSportteryMatchOdds(incoming, previous);
   if (!previous) return resolved;
+  const canPreserveSelections = resolved.saleStatus !== "cancelled";
   const selected = new Set(previous.markets.flatMap((market) => market.options
     .filter((option) => option.selected)
     .map((option) => `${market.type}:${option.id}`)));
@@ -519,7 +543,7 @@ const preserveSelections = (incoming: MatchItem, previous?: MatchItem): MatchIte
       ...market,
       options: market.options.map((option) => ({
         ...option,
-        selected: option.odds > 0 && selected.has(`${market.type}:${option.id}`),
+        selected: canPreserveSelections && option.odds > 0 && selected.has(`${market.type}:${option.id}`),
       })),
     })),
   };
@@ -557,10 +581,14 @@ export function mergeSportteryMatchCache(
   current: MatchItem[],
   incoming: MatchItem[],
   referenceTime: string | Date,
+  options: { authoritativeMatchIds?: Iterable<string> } = {},
 ): MatchItem[] {
   const now = referenceTime instanceof Date ? referenceTime : new Date(`${referenceTime}T12:00:00`);
   const today = referenceTime instanceof Date ? localDateKey(referenceTime) : referenceTime;
   const cutoff = retainedSportteryMatchDateCutoff(today);
+  const authoritativeMatchIds = options.authoritativeMatchIds
+    ? new Set([...options.authoritativeMatchIds].map(normalizeSportteryMatchId))
+    : null;
   const retained = current.filter((match) => match.date >= cutoff);
   const mergedIncoming = incoming.filter((match) => match.date >= cutoff).map((match) => {
     const normalized = { ...match, id: normalizeSportteryMatchId(match.id) };
@@ -569,9 +597,18 @@ export function mergeSportteryMatchCache(
   });
   const stale = retained
     .filter((match) => !mergedIncoming.some((incomingMatch) => sameMatch(match, incomingMatch)))
-    .map((match) => hasMatchStarted(match, now)
-      ? { ...clearSelections(match), saleStatus: "stopped" as const }
-      : { ...match, id: normalizeSportteryMatchId(match.id), saleStatus: "pending" as const });
+    .map((match) => {
+      const normalizedId = normalizeSportteryMatchId(match.id);
+      if (match.saleStatus === "cancelled") {
+        return { ...clearSelections(match), id: normalizedId, saleStatus: "cancelled" as const };
+      }
+      if (!hasMatchStarted(match, now) && authoritativeMatchIds && !authoritativeMatchIds.has(normalizedId)) {
+        return { ...clearSelections(match), id: normalizedId, saleStatus: "cancelled" as const };
+      }
+      return hasMatchStarted(match, now)
+        ? { ...clearSelections(match), id: normalizedId, saleStatus: "stopped" as const }
+        : { ...match, id: normalizedId, saleStatus: "pending" as const };
+    });
 
   return [...mergedIncoming, ...stale].sort((left, right) => (
     left.date.localeCompare(right.date)
@@ -816,9 +853,50 @@ const listedSportteryMatches = (payload: SportteryMatchListResponse) => (
   (payload.value?.matchInfoList ?? []).flatMap((group) => group.subMatchList ?? [])
 );
 
+const listedSportteryMatchIds = (payload: SportteryMatchListResponse) => (
+  [...new Set(listedSportteryMatches(payload)
+    .map((match) => normalizeSportteryMatchId(String(match.matchId ?? "")))
+    .filter(Boolean))]
+);
+
+const ACTIVE_FIXED_BONUS_POOL_STATUSES = new Set(["SELLING", "ODDSIN"]);
+const MARKET_BY_POOL = new Map(Object.entries(POOL_BY_MARKET).map(([marketType, poolCode]) => (
+  [poolCode, marketType as MarketType] as const
+)));
+const OPTION_IDS_BY_MARKET = new Map(createMarkets(0, 0).map((market) => (
+  [market.type, market.options.map((option) => option.id)] as const
+)));
+
+const hasSportteryMarketOdds = (source: SportteryOdds | undefined, marketType: MarketType) => (
+  Boolean(source) && (OPTION_IDS_BY_MARKET.get(marketType) ?? [])
+    .some((optionId) => toOdds(source?.[optionApiKey(marketType, optionId)]) > 0)
+);
+
+/** 只对已进入赔率录入/销售阶段的比赛批量补充 fixed-bonus。 */
+export function shouldFetchSportteryFixedBonus(match: SportteryMatch) {
+  if ((match.poolList ?? []).some((pool) => ACTIVE_FIXED_BONUS_POOL_STATUSES.has(String(pool.poolStatus ?? "").toUpperCase()))) {
+    return true;
+  }
+  if ((Object.keys(SOURCE_BY_MARKET) as MarketType[]).some((marketType) => (
+    hasSportteryMarketOdds(match[SOURCE_BY_MARKET[marketType]] as SportteryOdds | undefined, marketType)
+  ))) {
+    return true;
+  }
+  return (match.oddsList ?? []).some((row) => {
+    const marketType = MARKET_BY_POOL.get(String(row.poolCode ?? "").toUpperCase());
+    return Boolean(marketType && hasSportteryMarketOdds(row, marketType));
+  });
+}
+
 const fetchSportteryFixedBonusPayloadMap = async (matches: SportteryMatch[]) => {
   let fixedBonusFailureCount = 0;
-  const matchIds = [...new Set(matches.map((match) => String(match.matchId)).filter(Boolean))];
+  const candidates = matches.filter(shouldFetchSportteryFixedBonus);
+  const matchIds = [...new Set(candidates.map((match) => String(match.matchId)).filter(Boolean))];
+  console.info("[体彩接口] fixed-bonus 批量候选", {
+    listedCount: matches.length,
+    candidateCount: matchIds.length,
+    skippedCount: matches.length - candidates.length,
+  });
   const fixedPayloadEntries = await mapWithConcurrency(matchIds, 6, async (matchId) => {
     try {
       return [matchId, await fetchSportteryFixedBonusPayload(matchId)] as const;
@@ -879,6 +957,13 @@ const fixedBonusOddsHistory = (payload: Record<string, unknown> | null) => {
   return history && typeof history === "object" ? history as Record<string, unknown> : null;
 };
 
+export function isSportteryFixedBonusCancelled(payload: unknown) {
+  if (!payload || typeof payload !== "object") return false;
+  const value = (payload as Record<string, unknown>).value;
+  if (!value || typeof value !== "object") return false;
+  return Number((value as Record<string, unknown>).isCancel) === 1;
+}
+
 const HISTORY_LIST_BY_MARKET: Record<MarketType, string> = {
   spf: "hadList",
   rqspf: "hhadList",
@@ -912,6 +997,9 @@ export function enrichSportteryMatchOddsHistory(
   match: MatchItem,
   payload: Record<string, unknown>,
 ): MatchItem {
+  if (isSportteryFixedBonusCancelled(payload)) {
+    return { ...clearSelections(match), saleStatus: "cancelled" };
+  }
   return {
     ...match,
     markets: match.markets.map((market) => ({
@@ -1159,6 +1247,7 @@ export async function fetchSportteryMatchSnapshot(
       leagues: matchListPayload.value?.leagueList ?? calculatorPayload?.value?.leagueList ?? [],
       lastUpdateTime: matchListPayload.value?.lastUpdateTime || calculatorPayload?.value?.lastUpdateTime || "",
       fixedBonusFailureCount: listMatches.fixedBonusFailureCount + calculatorDetails.fixedBonusFailureCount,
+      authoritativeMatchIds: listedSportteryMatchIds(matchListPayload),
     };
   }
 
@@ -1171,6 +1260,7 @@ export async function fetchSportteryMatchSnapshot(
     leagues: payload.value?.leagueList ?? [],
     lastUpdateTime: payload.value?.lastUpdateTime ?? "",
     fixedBonusFailureCount: morning.fixedBonusFailureCount,
+    authoritativeMatchIds: listedSportteryMatchIds(payload),
   };
 }
 
@@ -1295,6 +1385,22 @@ export function parseSportteryUniformMatchResult(
     ...parsed,
     ...(typeof rqspfHandicap === "number" && Number.isFinite(rqspfHandicap) ? { rqspfHandicap } : {}),
   };
+}
+
+export type SportteryUniformMatchOutcome =
+  | { status: "completed"; parsed: ReturnType<typeof parseSportteryUniformMatchResult> }
+  | { status: "cancelled" }
+  | { status: "unfinished" };
+
+/** 批量赛果的取消是终态，但不应伪造任何比分。 */
+export function parseSportteryUniformMatchOutcome(
+  record: SportteryUniformMatchResult,
+  match: MatchItem,
+): SportteryUniformMatchOutcome {
+  if (String(record.sectionsNo999 ?? "").trim().includes("取消")) return { status: "cancelled" };
+  const parsed = parseSportteryUniformMatchResult(record, match);
+  if (parsed.fullScore && Object.keys(parsed.values).length > 0) return { status: "completed", parsed };
+  return { status: "unfinished" };
 }
 
 const findPoolResult = (payload: unknown, poolCode: string): unknown => {

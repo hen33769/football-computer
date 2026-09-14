@@ -41,6 +41,7 @@ test("准备开赛窗口包含恰好 30 分钟但不包含开赛时刻", () => {
   assert.equal(isMatchStartingSoon(match("2", "2026-09-14 12:30:01"), now), false);
   assert.equal(isMatchStartingSoon(match("3", "2026-09-14 12:00"), now), false);
   assert.equal(isMatchStartingSoon(match("4", "2026-09-14 11:59"), now), false);
+  assert.equal(isMatchStartingSoon({ ...match("5", "2026-09-14 12:20"), saleStatus: "cancelled" }, now), false);
   assert.equal(MATCH_START_REMINDER_WINDOW_MS, 30 * 60 * 1000);
 });
 
@@ -88,6 +89,7 @@ test("当前临近比赛列表不受已提醒记录影响，并按开赛时间�
     match("100", "2026-09-14 12:10", "100"),
     match("sporttery-100", "2026-09-14 12:12", "100"),
     match("300", "2026-09-14 12:31", "300"),
+    { ...match("400", "2026-09-14 12:15", "400"), saleStatus: "cancelled" },
   ], now);
 
   assert.deepEqual(items.map((item) => item.match.id), ["100", "sporttery-200"]);

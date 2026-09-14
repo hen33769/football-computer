@@ -107,6 +107,7 @@ import { buildFinanceTrendFromOrders, shanghaiDateKey } from "./finance-trend";
 import { getFinanceTrend } from "./api-client/finance";
 import { orderFilterIncomeTotal, orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "./imports";
 import { getOrderWithdrawalType, isOrderPaid, withdrawOrderState } from "./order-model";
+import { collectCancelledOrderPaymentRisk } from "./order-payment";
 import { CLOUD_APP_URL, UPDATE_LOG_URL } from "./links";
 import { formatManualMatchText, formatManualOrderText } from "./manual-order-format";
 import { formatMatchCopyLine } from "./match-format";
@@ -132,18 +133,19 @@ import {
   getMatchKickoffAt,
   getNextSportteryAutoRefreshDelay,
   getSportteryRefreshPolicy,
-  getSportteryMatchStartDateKey,
   hasMatchStarted,
   getSportteryMatchPhaseTc,
   isSportteryRegularTimeFinished,
   isMatchSelectable,
+  isAutoResultEligible,
   mergeSportteryMatchCache,
   normalizeSportteryMatchId,
-  parseSportteryUniformMatchResult,
+  parseSportteryUniformMatchOutcome,
   parseSportteryMatchScoreDetails,
   refreshSelectedOdds,
   selectAvailableOrderBets,
   splitSportteryMatchResultDateRanges,
+  SPORTTERY_UNIFORM_MATCH_RESULT_PAGE_SIZE,
   unionSportteryMatchCache,
   type SportteryLeague,
   type SportteryMatchFetchMode,
@@ -203,13 +205,14 @@ type CloudOrderQueryResult = {
   total: number;
   unsettledCount: number;
 };
-type MatchSaleFilter = "all" | "non-stopped" | "stopped" | "selling" | "pending";
+type MatchSaleFilter = "all" | "non-stopped" | "stopped" | "selling" | "pending" | "cancelled";
 const MATCH_SALE_FILTER_OPTIONS: Array<{ value: MatchSaleFilter; label: string }> = [
   { value: "all", label: "不限" },
   { value: "non-stopped", label: "非停售" },
   { value: "stopped", label: "已停售" },
   { value: "selling", label: "可售" },
   { value: "pending", label: "待开售" },
+  { value: "cancelled", label: "已取消" },
 ];
 const MATCH_PHASE_ROWS = [
   [1, "上半场"],
@@ -301,7 +304,7 @@ const countSelectedOptions = (items: MatchItem[]) => items.reduce((total, match)
 const matchesSaleFilter = (match: MatchItem, filter: MatchSaleFilter, now: Date) => {
   const state = getMatchSaleState(match, now);
   if (filter === "all") return true;
-  if (filter === "non-stopped") return state !== "stopped";
+  if (filter === "non-stopped") return state !== "stopped" && state !== "cancelled";
   return state === filter;
 };
 
@@ -353,7 +356,9 @@ function ManualMatchOptionLabel({ match, now }: { match: MatchItem; now: Date })
         ? <Tag color="success">在售</Tag>
         : saleState === "pending"
           ? <Tag color="orange">待开售</Tag>
-          : <Tag color="error">已停售</Tag>}
+          : saleState === "cancelled"
+            ? <Tag color="default">已取消</Tag>
+            : <Tag color="error">已停售</Tag>}
     </span>
   );
 }
@@ -518,7 +523,8 @@ const isExportedMatch = (value: unknown): value is MatchItem => {
   if (!value || typeof value !== "object") return false;
   const match = value as Partial<MatchItem>;
   if (![match.id, match.date, match.weekday, match.code, match.league, match.time, match.home, match.away].every((item) => typeof item === "string")) return false;
-  if (typeof match.saleStatus !== "undefined" && !["pending", "selling", "stopped"].includes(match.saleStatus)) return false;
+  if (typeof match.saleStatus !== "undefined" && !["pending", "selling", "stopped", "cancelled"].includes(match.saleStatus)) return false;
+  if (typeof match.remark !== "undefined" && typeof match.remark !== "string") return false;
   if (typeof match.result !== "undefined" && !isMatchResult(match.result)) return false;
   if (!Array.isArray(match.markets)) return false;
   return match.markets.every((market) => (
@@ -820,7 +826,8 @@ function MatchCard({
   const picked = selectedOptions(match).length;
   const saleState = getMatchSaleState(match, now);
   const startingSoon = isMatchStartingSoon(match, now);
-  const selectable = saleState !== "stopped";
+  const selectable = isMatchSelectable(match, now);
+  const remark = match.remark?.trim();
   const spf = match.markets.find((market) => market.type === "spf")!;
   const rqspf = match.markets.find((market) => market.type === "rqspf")!;
   const fullScore = match.result?.fullScore;
@@ -835,8 +842,18 @@ function MatchCard({
           <EditableLeagueTag league={match.league} color={leagueColor} onSave={onLeagueColorSave} />
           {saleState === "pending" && <Tag color="warning">待开售</Tag>}
           {saleState === "stopped" && <Tag color="default">已停售</Tag>}
+          {saleState === "cancelled" && <Tag color="default">已取消</Tag>}
         </div>
-        <div className="match-time">{formatMatchCardTime(match)}</div>
+        <div className="match-time-group">
+          {remark && (
+            <Tooltip title={remark} trigger={["hover", "focus", "click"]}>
+              <button type="button" className="match-remark-button" aria-label={`比赛备注：${remark}`}>
+                <InfoCircleOutlined aria-hidden="true" />
+              </button>
+            </Tooltip>
+          )}
+          <div className="match-time">{formatMatchCardTime(match)}</div>
+        </div>
       </div>
       <div className="teams-row">
         <div className="match-team-side match-home-side">
@@ -848,7 +865,7 @@ function MatchCard({
             <span className={`match-final-score match-score-separator ${fullScoreTone}`}>:</span>
             <span className={`match-final-score match-away-score ${fullScoreTone}`}>{fullScore.away}</span>
           </>
-        ) : resultLoading ? (
+        ) : resultLoading && saleState !== "cancelled" ? (
           <span className="match-result-loading" title="正在获取赛果" aria-label="正在获取赛果"><LoadingOutlined spin /></span>
         ) : <span className="match-versus">VS</span>}
         <div className="match-team-side match-away-side">
@@ -1405,7 +1422,7 @@ function InnerFootballApp({
   const manualMatchOptions = useMemo(() => sortMatchesForManualOrder(manualMatchSources).map((match) => {
     const value = normalizeSportteryMatchId(match.id);
     const saleState = getMatchSaleState(match, saleNow);
-    const statusText = saleState === "selling" ? "在售" : saleState === "pending" ? "待开售" : "已停售";
+    const statusText = saleState === "selling" ? "在售" : saleState === "pending" ? "待开售" : saleState === "cancelled" ? "已取消" : "已停售";
     const displayText = `${match.date} · ${match.weekday}${match.code} · ${match.home} VS ${match.away}`;
     return {
       value,
@@ -1483,7 +1500,9 @@ function InnerFootballApp({
   const applySportterySnapshot = useCallback((snapshot: SportteryMatchSnapshot, saveToCloud = true) => {
     const updateVisibleMatches = activeView === "betting" && !temporaryOrder;
     const currentCache = updateVisibleMatches ? matchesRef.current : loadCachedMatches();
-    const mergedMatches = mergeSportteryMatchCache(currentCache, snapshot.matches, new Date());
+    const mergedMatches = mergeSportteryMatchCache(currentCache, snapshot.matches, new Date(), {
+      ...(snapshot.authoritativeMatchIds ? { authoritativeMatchIds: snapshot.authoritativeMatchIds } : {}),
+    });
     saveCachedMatches(mergedMatches);
     if (saveToCloud) onCloudMatchesChange(mergedMatches);
     if (updateVisibleMatches) {
@@ -1504,7 +1523,9 @@ function InnerFootballApp({
   const loadSportterySnapshot = useCallback(async (manual: boolean) => {
     try {
       const snapshot = await onCloudMatchesRefresh(manual);
-      if (snapshot.fromCache && snapshot.refreshError) throw new Error(snapshot.refreshError);
+      if (snapshot.fromCache && snapshot.refreshError) {
+        return { snapshot, source: "cloud-cache-error" as const };
+      }
       return { snapshot, source: "cloud" as const };
     } catch (cloudError) {
       const mode = getSportteryRefreshPolicy(new Date()).mode;
@@ -1598,7 +1619,7 @@ function InnerFootballApp({
       setMatches((current) => {
         let changed = false;
         const next = current.map((match) => {
-          if (!hasMatchStarted(match, now) || match.saleStatus === "stopped") return match;
+          if (!hasMatchStarted(match, now) || match.saleStatus === "stopped" || match.saleStatus === "cancelled") return match;
           changed = true;
           return {
             ...match,
@@ -1626,7 +1647,7 @@ function InnerFootballApp({
   useEffect(() => {
     if (temporaryOrder) return;
     const dateAvailability = new Map<string, boolean>();
-    matches.forEach((match) => dateAvailability.set(match.date, (dateAvailability.get(match.date) ?? false) || getMatchSaleState(match, saleNow) !== "stopped"));
+    matches.forEach((match) => dateAvailability.set(match.date, (dateAvailability.get(match.date) ?? false) || isMatchSelectable(match, saleNow)));
     const newlyUnavailableDates: string[] = [];
     const newlySellableDates: string[] = [];
     dateAvailability.forEach((hasSellableMatch, date) => {
@@ -1654,7 +1675,8 @@ function InnerFootballApp({
         .then(({ snapshot, source }) => {
           if (!active) return;
           applySportterySnapshot(snapshot, source === "official-fallback");
-          console.log("[体彩接口] 进入投注页获取比赛", { source, mode: snapshot.mode, totalCount: snapshot.matches.length, fixedBonusFailureCount: snapshot.fixedBonusFailureCount });
+          const log = source === "cloud-cache-error" ? console.warn : console.log;
+          log("[体彩接口] 进入投注页获取比赛", { source, mode: snapshot.mode, totalCount: snapshot.matches.length, fixedBonusFailureCount: snapshot.fixedBonusFailureCount, refreshError: snapshot.refreshError });
         })
         .catch((error: unknown) => {
           if (!active) return;
@@ -1704,9 +1726,10 @@ function InnerFootballApp({
     try {
       const { snapshot, source } = await loadSportterySnapshot(true);
       applySportterySnapshot(snapshot, source === "official-fallback");
-      notification.success({
-        title: "比赛数据已刷新",
-        description: `${snapshot.mode === "morning" ? "早间逐场最新赔率" : "常规接口 + 缺失比赛补充"} · ${source === "cloud" ? "云端缓存/刷新" : "前端官方兜底"} · 共 ${snapshot.matches.length} 场${snapshot.fixedBonusFailureCount ? ` · ${snapshot.fixedBonusFailureCount} 场投注情况获取失败` : ""}${snapshot.lastUpdateTime ? ` · 接口更新 ${snapshot.lastUpdateTime}` : ""}`,
+      const notifyRefresh = source === "cloud-cache-error" ? notification.warning : notification.success;
+      notifyRefresh({
+        title: source === "cloud-cache-error" ? "官方刷新失败，已保留云端缓存" : "比赛数据已刷新",
+        description: `${snapshot.mode === "morning" ? "早间逐场最新赔率" : "常规接口 + 缺失比赛补充"} · ${source === "cloud" ? "云端缓存/刷新" : source === "cloud-cache-error" ? "云端旧快照" : "前端官方兜底"} · 共 ${snapshot.matches.length} 场${snapshot.fixedBonusFailureCount ? ` · ${snapshot.fixedBonusFailureCount} 场投注情况获取失败` : ""}${snapshot.lastUpdateTime ? ` · 接口更新 ${snapshot.lastUpdateTime}` : ""}${snapshot.refreshError ? ` · ${snapshot.refreshError}` : ""}`,
         placement: "bottomRight",
       });
     } catch (error) {
@@ -2862,6 +2885,7 @@ function InnerFootballApp({
       const matchId = normalizeSportteryMatchId(match.id);
       const retryState = autoResultRetryAtRef.current.get(matchId);
       return getMatchSaleState(match, saleNow) === "stopped"
+        && isAutoResultEligible(match, saleNow)
         && !hasCompleteMatchResult(match)
         && (!retryState || retryState.nextAttemptAt <= saleNow.getTime());
     });
@@ -2876,10 +2900,10 @@ function InnerFootballApp({
     if (dateRanges.length === 0) return;
     autoResultFetchingRef.current = true;
     void (async () => {
-      const resultUpdates: MatchItem[] = [];
-      const applyLocalResults = (updates: MatchItem[]) => {
+      const terminalUpdates: MatchItem[] = [];
+      const applyLocalUpdates = (updates: MatchItem[]) => {
         if (updates.length === 0) return;
-        const resultById = new Map(updates.map((match) => [normalizeSportteryMatchId(match.id), match.result]));
+        const updateById = new Map(updates.map((match) => [normalizeSportteryMatchId(match.id), match]));
         setMatchResults((current) => {
           const next = { ...current };
           updates.forEach((match) => {
@@ -2889,8 +2913,12 @@ function InnerFootballApp({
           return next;
         });
         const localMatches = matchesRef.current.map((match) => {
-          const result = resultById.get(normalizeSportteryMatchId(match.id));
-          return result ? { ...match, result } : match;
+          const update = updateById.get(normalizeSportteryMatchId(match.id));
+          if (!update) return match;
+          if (update.saleStatus === "cancelled") {
+            return { ...matchWithClearedSelections(match), saleStatus: "cancelled" as const };
+          }
+          return update.result ? { ...match, result: update.result } : match;
         });
         matchesRef.current = localMatches;
         setMatches(localMatches);
@@ -2914,11 +2942,7 @@ function InnerFootballApp({
         const rangeMatchIds = new Set(rangeEntries.map(({ matchId }) => matchId));
         const unresolvedIds = new Set(rangeMatchIds);
         setBettingResultFetchingMatchIds([...unresolvedIds]);
-        const dateMatchesCount = filteredMatches.filter((match) => {
-          const dateKey = getSportteryMatchStartDateKey(match);
-          return Boolean(dateKey && dateKey >= dateRange.matchBeginDate && dateKey <= dateRange.matchEndDate);
-        }).length;
-        const pageSize = Math.max(1, dateMatchesCount || rangeEntries.length);
+        const pageSize = SPORTTERY_UNIFORM_MATCH_RESULT_PAGE_SIZE;
         let pageNo = 1;
         let totalPages = 1;
         let rangeError: unknown;
@@ -2948,8 +2972,17 @@ function InnerFootballApp({
               if (!unresolvedIds.has(matchId)) return;
               const match = candidateById.get(matchId);
               if (!match) return;
-              const parsedResult = parseSportteryUniformMatchResult(record, match);
-              if (!parsedResult.fullScore || Object.keys(parsedResult.values).length === 0) return;
+              const outcome = parseSportteryUniformMatchOutcome(record, match);
+              if (outcome.status === "unfinished") return;
+              unresolvedIds.delete(matchId);
+              autoResultRetryAtRef.current.delete(matchId);
+              if (outcome.status === "cancelled") {
+                const cancelledMatch = { ...matchWithClearedSelections(match), saleStatus: "cancelled" as const };
+                terminalUpdates.push(cancelledMatch);
+                pageUpdates.push(cancelledMatch);
+                return;
+              }
+              const parsedResult = outcome.parsed;
               const nextResult = {
                 matchId,
                 updatedAt: new Date().toISOString(),
@@ -2959,14 +2992,14 @@ function InnerFootballApp({
                 fullScore: parsedResult.fullScore,
                 halfScore: parsedResult.halfScore,
               };
-              unresolvedIds.delete(matchId);
-              autoResultRetryAtRef.current.delete(matchId);
               const updatedMatch = { ...match, result: nextResult };
-              resultUpdates.push(updatedMatch);
+              terminalUpdates.push(updatedMatch);
               pageUpdates.push(updatedMatch);
             });
-            applyLocalResults(pageUpdates);
+            applyLocalUpdates(pageUpdates);
             setBettingResultFetchingMatchIds([...unresolvedIds]);
+
+            if (unresolvedIds.size === 0) break;
 
             const reportedPages = Number(payload.value?.pages);
             const reportedTotal = Number(payload.value?.total);
@@ -2995,13 +3028,17 @@ function InnerFootballApp({
         });
         setBettingResultFetchingMatchIds([]);
       }
-      if (resultUpdates.length === 0) return;
+      if (terminalUpdates.length === 0) return;
       try {
-        const saved = await onCloudMatchesUpdate(resultUpdates);
-        const savedResultById = new Map(saved.map((match) => [normalizeSportteryMatchId(match.id), match.result]));
+        const saved = await onCloudMatchesUpdate(terminalUpdates);
+        const savedById = new Map(saved.map((match) => [normalizeSportteryMatchId(match.id), match]));
         const persistedMatches = matchesRef.current.map((match) => {
-          const result = savedResultById.get(normalizeSportteryMatchId(match.id));
-          return result ? { ...match, result } : match;
+          const savedMatch = savedById.get(normalizeSportteryMatchId(match.id));
+          if (!savedMatch) return match;
+          if (savedMatch.saleStatus === "cancelled") {
+            return { ...matchWithClearedSelections(match), saleStatus: "cancelled" as const };
+          }
+          return savedMatch.result ? { ...match, result: savedMatch.result } : match;
         });
         matchesRef.current = persistedMatches;
         setMatches(persistedMatches);
@@ -3021,7 +3058,6 @@ function InnerFootballApp({
   }, [
     activeView,
     collapsedMatchDates,
-    filteredMatches,
     groupedMatches,
     notification,
     onCloudMatchesUpdate,
@@ -3185,6 +3221,36 @@ function InnerFootballApp({
     } finally {
       setPayingOrderIds((current) => current.filter((key) => !payableKeys.includes(key)));
     }
+  };
+
+  const requestPayOrders = (targets: SavedSlip[]) => {
+    const payableTargets = targets.filter((target) => savedSlips.includes(target) && !target.settledAt && !isOrderPaid(target));
+    if (payableTargets.length === 0) return;
+    const risk = collectCancelledOrderPaymentRisk(payableTargets, matchesRef.current);
+    if (risk.cancelledMatches.length === 0) {
+      void payOrders(payableTargets);
+      return;
+    }
+    modal.confirm({
+      title: "订单包含已取消比赛，仍要支付吗？",
+      content: (
+        <div className="cancelled-payment-warning">
+          <p>共影响 {risk.affectedOrders.length} 个订单、{risk.cancelledMatches.length} 场比赛。本操作不会自动调整订单结算方式。</p>
+          <ul>
+            {risk.cancelledMatches.map((match) => (
+              <li key={normalizeSportteryMatchId(match.id)}>
+                <b>{match.weekday}{match.code}</b>
+                <span>{match.home} VS {match.away}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ),
+      okText: "仍然支付",
+      cancelText: "取消",
+      okButtonProps: { danger: true },
+      onOk: () => payOrders(payableTargets),
+    });
   };
 
   const settleOrders = async (targets: SavedSlip[]) => {
@@ -3816,7 +3882,7 @@ function InnerFootballApp({
       <small>支付前会更新倍率；无法取得最新有效倍率的投注项保留原值。支付后投注内容与倍率全部冻结。</small>
       <Space>
         <Button size="small" onClick={() => setBulkPayPopoverOpen(false)}>取消</Button>
-        <Button size="small" type="primary" loading={payingOrderIds.length > 0} onClick={() => { void payOrders(filteredPayableOrders); }}>确认支付</Button>
+        <Button size="small" type="primary" loading={payingOrderIds.length > 0} onClick={() => { requestPayOrders(filteredPayableOrders); }}>确认支付</Button>
       </Space>
     </div>
   );
@@ -4699,7 +4765,7 @@ function InnerFootballApp({
 	                              okText="确认支付"
 	                              cancelText="取消"
 	                              okButtonProps={{ loading: orderPaying, disabled: orderPaying }}
-	                              onConfirm={() => { void payOrders([slip]); }}
+	                              onConfirm={() => { requestPayOrders([slip]); }}
 	                            >
 	                              <Button icon={<DollarOutlined />} loading={orderPaying} disabled={orderBusy || cloudOrdersLoading}>支付</Button>
 	                            </Popconfirm>
@@ -4943,7 +5009,7 @@ function InnerFootballApp({
         onCancel={() => setMoreMatchId(null)}
         footer={<Button type="primary" onClick={() => setMoreMatchId(null)}>完成选择</Button>}
         width={980}
-        title={moreMatch ? <Space><span>{moreMatch.weekday}{moreMatch.code} · </span><MatchTeamsLabel match={moreMatch} teamNameIndex={teamNameIndex} />{getMatchSaleState(moreMatch, saleNow) === "pending" && <Tag color="warning">待开售</Tag>}{getMatchSaleState(moreMatch, saleNow) === "stopped" && <Tag color="default">已停售 · 仅供查看</Tag>}</Space> : "更多玩法"}
+        title={moreMatch ? <Space><span>{moreMatch.weekday}{moreMatch.code} · </span><MatchTeamsLabel match={moreMatch} teamNameIndex={teamNameIndex} />{getMatchSaleState(moreMatch, saleNow) === "pending" && <Tag color="warning">待开售</Tag>}{getMatchSaleState(moreMatch, saleNow) === "stopped" && <Tag color="default">已停售 · 仅供查看</Tag>}{getMatchSaleState(moreMatch, saleNow) === "cancelled" && <Tag color="default">已取消 · 仅供查看</Tag>}</Space> : "更多玩法"}
         className="more-modal"
       >
         {moreMatch?.markets.map((market) => (
