@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { compactOrderToSavedSlip, savedSlipToCompactOrder, type CompactOrder } from "../app/order-model";
+import {
+  compactOrderToSavedSlip,
+  isOrderPendingSettlement,
+  isOrderUnpaidHopeful,
+  savedSlipToCompactOrder,
+  type CompactOrder,
+} from "../app/order-model";
 import { bulkUpdateOrders, createOrder, financePreviewForOrders, getOrder, listOrders } from "../app/server/orders-service";
 import { getOrderFinanceCents } from "../app/server/finance-service";
 import { SqliteD1 } from "./helpers/sqlite-d1";
@@ -28,6 +34,18 @@ const order = (id: string, paymentStatus: "unpaid" | "paid" = "unpaid"): Compact
     optionLabel: "主胜",
     odds: 2,
   }],
+});
+
+test("待结账状态要求订单已支付且尚未结账", () => {
+  assert.equal(isOrderPendingSettlement(order("unpaid")), false);
+  assert.equal(isOrderPendingSettlement(order("paid", "paid")), true);
+  assert.equal(isOrderPendingSettlement({ ...order("settled", "paid"), settledAt: "2026-09-14T10:00:00.000Z" }), false);
+});
+
+test("未支付且有希望状态排除已支付和已有中奖结果的订单", () => {
+  assert.equal(isOrderUnpaidHopeful(order("hopeful")), true);
+  assert.equal(isOrderUnpaidHopeful(order("paid", "paid")), false);
+  assert.equal(isOrderUnpaidHopeful({ ...order("success"), hits: { "2040001": { spf: "win" } } }), false);
 });
 
 class FakeD1 {
@@ -350,4 +368,57 @@ test("订单列表的订单进度支持筛选已支付并与订单状态按 AND 
 
   assert.match(preparedSql[0], /WHERE user_id = \? AND payment_status = 'paid' AND status IN \(SELECT value FROM json_each\(\?\)\)/);
   assert.deepEqual(boundArgs[0], ["user", JSON.stringify(["success"]), 10, 0]);
+});
+
+test("订单列表的待结账进度只筛选已支付且未结账订单", async () => {
+  const preparedSql: string[] = [];
+  const boundArgs: unknown[][] = [];
+  const d1 = {
+    prepare: (sql: string) => {
+      preparedSql.push(sql);
+      const statement = {
+        bind: (...args: unknown[]) => {
+          boundArgs.push(args);
+          return statement;
+        },
+        all: async () => ({ results: [] }),
+        first: async () => ({ total: 0 }),
+      };
+      return statement;
+    },
+  };
+
+  await listOrders(d1 as unknown as D1Database, "user", {
+    progress: "pending-settlement",
+    statuses: ["success"],
+    limit: 10,
+  });
+
+  assert.match(preparedSql[0], /WHERE user_id = \? AND payment_status = 'paid' AND settled_at IS NULL AND status IN \(SELECT value FROM json_each\(\?\)\)/);
+  assert.deepEqual(boundArgs[0], ["user", JSON.stringify(["success"]), 10, 0]);
+});
+
+test("订单列表响应独立统计未支付有希望和待结账订单", async () => {
+  const preparedSql: string[] = [];
+  const d1 = {
+    prepare: (sql: string) => {
+      preparedSql.push(sql);
+      const statement = {
+        bind: () => statement,
+        all: async () => ({ results: [] }),
+        first: async () => sql.includes("AS unpaidHopefulCount")
+          ? { unsettledCount: 4, unpaidHopefulCount: 3, pendingSettlementCount: 2 }
+          : { total: 0 },
+      };
+      return statement;
+    },
+  };
+
+  const result = await listOrders(d1 as unknown as D1Database, "user", { limit: 10 });
+
+  assert.equal(result.unsettledCount, 4);
+  assert.equal(result.unpaidHopefulCount, 3);
+  assert.equal(result.pendingSettlementCount, 2);
+  assert.match(preparedSql[2], /payment_status = 'unpaid' AND status = 'hopeful'/);
+  assert.match(preparedSql[2], /payment_status = 'paid' AND settled_at IS NULL/);
 });

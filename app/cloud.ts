@@ -29,6 +29,8 @@ export type CloudPersonalData = {
   orders: SavedSlip[];
   orderTotal?: number;
   unsettledOrderCount?: number;
+  unpaidHopefulCount?: number;
+  pendingSettlementCount?: number;
   finance: {
     expenseTotal: number;
     incomeTotal: number;

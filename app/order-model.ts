@@ -53,8 +53,20 @@ export type OrderSummary = {
 
 export type BulkOrderOperation = "update" | "judge" | "refresh-odds" | "lock-odds" | "pay" | "settle" | "withdraw";
 
+export const ORDER_PROGRESS_FILTER_VALUES = ["settled", "unsettled", "pending-settlement", "unpaid", "paid"] as const;
+export type OrderProgressFilterValue = typeof ORDER_PROGRESS_FILTER_VALUES[number];
+export type OrderProgressFilter = OrderProgressFilterValue | null;
+
+export const isOrderProgressFilterValue = (value: unknown): value is OrderProgressFilterValue => (
+  ORDER_PROGRESS_FILTER_VALUES.includes(value as OrderProgressFilterValue)
+);
+
 export const isOrderPaid = (order: Pick<CompactOrder | SavedSlip, "paymentStatus">) => (
   order.paymentStatus === "paid"
+);
+
+export const isOrderPendingSettlement = (order: Pick<CompactOrder | SavedSlip, "paymentStatus" | "settledAt">) => (
+  isOrderPaid(order) && !order.settledAt
 );
 
 type OrderPaymentState = Pick<SavedSlip,
@@ -245,6 +257,12 @@ export function compactOrderSummary(order: CompactOrder): OrderSummary {
     status: getOrderStatus(slip),
     progress: order.settledAt ? "settled" : "unsettled",
   };
+}
+
+export function isOrderUnpaidHopeful(order: CompactOrder | SavedSlip) {
+  if (isOrderPaid(order)) return false;
+  const slip = "selections" in order ? compactOrderToSavedSlip(order) : order;
+  return getOrderStatus(slip) === "hopeful";
 }
 
 const isMarketType = (value: unknown): value is MarketType => (

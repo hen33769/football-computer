@@ -224,7 +224,8 @@ button, input, textarea { font: inherit; }
 .hero-actions .ant-btn { color: #fff; border-color: rgba(255,255,255,.25); background: rgba(255,255,255,.1); backdrop-filter: blur(8px); }
 .hero-actions .ant-btn:hover { color: #fff !important; border-color: rgba(255,255,255,.6) !important; background: rgba(255,255,255,.18) !important; }
 .hero-actions .view-toggle.active { border-color: rgba(255,255,255,.72); background: rgba(255,255,255,.23); }
-.order-navigation-badge .ant-badge-count { cursor: pointer; }
+.header-start-reminder-badge .ant-badge-count { padding-inline: 5px; font-size: 10px; font-variant-numeric: tabular-nums; }
+.order-navigation-badge .ant-badge-count { padding-inline: 5px; font-size: 10px; cursor: pointer; }
 .header-button-label { display: inline-block; max-width: var(--header-label-width, 84px); overflow: hidden; opacity: var(--header-note-opacity, 1); white-space: nowrap; vertical-align: middle; will-change: max-width, opacity; }
 .cloud-account-button { border-color: rgba(255,220,128,.55) !important; color: #ffdc80 !important; }
 .cloud-account-menu { width: 240px; display: flex; flex-direction: column; gap: 12px; }
@@ -233,7 +234,7 @@ button, input, textarea { font: inherit; }
 .cloud-account-menu > div .ant-tag { flex: 0 0 auto; margin: 0; }
 .cloud-account-menu > span { color: var(--muted); font-size: 12px; }
 .cloud-account-menu > span.error { color: var(--accent-dark); }
-.header-start-reminder-popover { width: min(360px, calc(100vw - 32px)); display: grid; gap: 10px; }
+.header-start-reminder-popover { width: min(360px, calc(100vw - 58px)); display: grid; gap: 10px; }
 .header-start-reminder-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 5px 8px 9px; border-bottom: 1px solid var(--line); }
 .header-start-reminder-heading b { color: var(--ink); font-size: 14px; }
 .header-start-reminder-heading span { color: var(--muted); font-size: 11px; }

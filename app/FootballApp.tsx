@@ -106,10 +106,18 @@ import { buildLeagueAccuracyStats, formatLeagueHitRate, summarizeOrderHitRate } 
 import { buildFinanceTrendFromOrders, shanghaiDateKey } from "./finance-trend";
 import { getFinanceTrend } from "./api-client/finance";
 import { orderFilterIncomeTotal, orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "./imports";
-import { getOrderWithdrawalType, isOrderPaid, withdrawOrderState } from "./order-model";
+import {
+  getOrderWithdrawalType,
+  isOrderPaid,
+  isOrderPendingSettlement,
+  isOrderProgressFilterValue,
+  isOrderUnpaidHopeful,
+  withdrawOrderState,
+  type OrderProgressFilter,
+} from "./order-model";
 import { collectCancelledOrderPaymentRisk } from "./order-payment";
 import { CLOUD_APP_URL, UPDATE_LOG_URL } from "./links";
-import { formatManualMatchText, formatManualOrderText } from "./manual-order-format";
+import { formatManualMatchText, formatManualOrderText, formatOrderOptionLabel } from "./manual-order-format";
 import { formatMatchCopyLine } from "./match-format";
 import {
   collectCurrentMatchStartItems,
@@ -124,6 +132,7 @@ import { parseRecognizedText } from "./ocr";
 import {
   convertSportteryMatches,
   fetchSportteryUniformMatchResultPage,
+  fetchSportteryUniformMatchResults,
   fetchSportteryMatchCalculator,
   fetchSportteryMatchById,
   fetchSportteryMatchHandicap,
@@ -190,7 +199,6 @@ const RESPONSIVE_DATE_PICKER_CLASS_NAMES = { popup: { root: "responsive-date-pic
 export type AppView = "betting" | "orders" | "settings";
 type DataTransferMode = "orders" | "settings" | "matches" | "full";
 type ImportStrategy = "merge" | "replace";
-type OrderProgressFilter = "settled" | "unsettled" | "unpaid" | "paid" | null;
 type OrderStatusFilter = "success" | "hopeful" | "failed";
 type CloudOrderQuery = {
   from?: string | null;
@@ -204,6 +212,8 @@ type CloudOrderQueryResult = {
   orders: SavedSlip[];
   total: number;
   unsettledCount: number;
+  unpaidHopefulCount: number;
+  pendingSettlementCount: number;
 };
 type MatchSaleFilter = "all" | "non-stopped" | "stopped" | "selling" | "pending" | "cancelled";
 const MATCH_SALE_FILTER_OPTIONS: Array<{ value: MatchSaleFilter; label: string }> = [
@@ -313,12 +323,6 @@ const isOrderOddsLocked = (slip: Pick<SavedSlip, "oddsLocked" | "settledAt" | "p
 );
 
 const formatHandicap = (handicap: number) => `${handicap > 0 ? "+" : ""}${handicap}`;
-
-const formatOrderOptionLabel = (market: Market, option: OddsOption) => {
-  if (market.type !== "rqspf" || typeof market.handicap !== "number") return option.label;
-  const resultLabel = option.label === "主胜" ? "胜" : option.label === "主负" ? "负" : option.label;
-  return `(${formatHandicap(market.handicap)})${resultLabel}`;
-};
 
 const HALF_FULL_RESULT_LABELS: Record<string, string> = {
   WW: "胜胜",
@@ -1245,8 +1249,11 @@ function InnerFootballApp({
   const [cloudOrderTotal, setCloudOrderTotal] = useState(() => (
     isCloudMode && cloudPersonal ? cloudPersonal.orderTotal ?? initialSavedSlipLoad.orders.length : initialSavedSlipLoad.orders.length
   ));
-  const [cloudUnsettledOrderCount, setCloudUnsettledOrderCount] = useState(() => (
-    isCloudMode && cloudPersonal ? cloudPersonal.unsettledOrderCount ?? initialSavedSlipLoad.orders.filter((slip) => !slip.settledAt).length : initialSavedSlipLoad.orders.filter((slip) => !slip.settledAt).length
+  const [cloudUnpaidHopefulCount, setCloudUnpaidHopefulCount] = useState(() => (
+    isCloudMode && cloudPersonal ? cloudPersonal.unpaidHopefulCount ?? initialSavedSlipLoad.orders.filter(isOrderUnpaidHopeful).length : initialSavedSlipLoad.orders.filter(isOrderUnpaidHopeful).length
+  ));
+  const [cloudPendingSettlementCount, setCloudPendingSettlementCount] = useState(() => (
+    isCloudMode && cloudPersonal ? cloudPersonal.pendingSettlementCount ?? initialSavedSlipLoad.orders.filter(isOrderPendingSettlement).length : initialSavedSlipLoad.orders.filter(isOrderPendingSettlement).length
   ));
   const [cloudOrdersLoading, setCloudOrdersLoading] = useState(false);
   const [saveSlipLoading, setSaveSlipLoading] = useState(false);
@@ -1276,7 +1283,7 @@ function InnerFootballApp({
   });
   const [bulkPayPopoverOpen, setBulkPayPopoverOpen] = useState(false);
   const [bulkSettlePopoverOpen, setBulkSettlePopoverOpen] = useState(false);
-  const [orderProgressFilter, setOrderProgressFilter] = useState<OrderProgressFilter>("unsettled");
+  const [orderProgressFilter, setOrderProgressFilter] = useState<OrderProgressFilter>("pending-settlement");
   const [orderStatusFilters, setOrderStatusFilters] = useState<OrderStatusFilter[]>([]);
   const [orderShortPassFilters, setOrderShortPassFilters] = useState<number[]>([]);
   const [orderShortPassDropdownOpen, setOrderShortPassDropdownOpen] = useState(false);
@@ -1470,15 +1477,18 @@ function InnerFootballApp({
           const queried = await onCloudOrdersQueryChange(currentCloudOrderQuery());
           nextOrders = ensureOrderIds(queried.orders);
           setCloudOrderTotal(queried.total);
-          setCloudUnsettledOrderCount(queried.unsettledCount);
+          setCloudUnpaidHopefulCount(queried.unpaidHopefulCount);
+          setCloudPendingSettlementCount(queried.pendingSettlementCount);
         } catch (queryError) {
           console.error("[云端订单] 写入后重新加载筛选订单失败", queryError);
           setCloudOrderTotal(result.orders.length);
-          setCloudUnsettledOrderCount(result.orders.filter((slip) => !slip.settledAt).length);
+          setCloudUnpaidHopefulCount(result.orders.filter(isOrderUnpaidHopeful).length);
+          setCloudPendingSettlementCount(result.orders.filter(isOrderPendingSettlement).length);
         }
       } else {
         setCloudOrderTotal(result.orders.length);
-        setCloudUnsettledOrderCount(result.orders.filter((slip) => !slip.settledAt).length);
+        setCloudUnpaidHopefulCount(result.orders.filter(isOrderUnpaidHopeful).length);
+        setCloudPendingSettlementCount(result.orders.filter(isOrderPendingSettlement).length);
       }
       setSavedSlips(nextOrders);
       if (result.finance) applyCloudFinance(result.finance);
@@ -1936,7 +1946,8 @@ function InnerFootballApp({
           if (cancelled) return;
           setSavedSlips(ensureOrderIds(result.orders));
           setCloudOrderTotal(result.total);
-          setCloudUnsettledOrderCount(result.unsettledCount);
+          setCloudUnpaidHopefulCount(result.unpaidHopefulCount);
+          setCloudPendingSettlementCount(result.pendingSettlementCount);
           setRenderedOrderCount(ORDER_LIST_BATCH_SIZE);
         })
         .catch((error) => {
@@ -1956,7 +1967,9 @@ function InnerFootballApp({
     .filter((slip) => {
       if (orderProgressFilter === "settled" && !slip.settledAt) return false;
       if (orderProgressFilter === "unsettled" && slip.settledAt) return false;
+      if (orderProgressFilter === "pending-settlement" && !isOrderPendingSettlement(slip)) return false;
       if (orderProgressFilter === "unpaid" && isOrderPaid(slip)) return false;
+      if (orderProgressFilter === "paid" && !isOrderPaid(slip)) return false;
       if (orderStatusFilters.length > 0 && !orderStatusFilters.includes(getOrderStatus(slip))) return false;
       if (orderShortPassFilters.length > 0 && !orderShortPassFilters.some((pass) => getOrderShortPasses(slip).includes(pass))) return false;
       if (!orderPassesMatchCountFilter(slip, selectedOrderMatchCountSet)) return false;
@@ -1977,9 +1990,14 @@ function InnerFootballApp({
       selectedOrderMatchCountSet,
     ]);
   const orderTotalCount = isCloudMode ? cloudOrderTotal : savedSlips.length;
-  const unsettledOrderCount = useMemo(() => (
-    isCloudMode ? cloudUnsettledOrderCount : savedSlips.filter((slip) => !slip.settledAt).length
-  ), [cloudUnsettledOrderCount, isCloudMode, savedSlips]);
+  const orderBadgeCounts = useMemo(() => (
+    isCloudMode
+      ? { unpaidHopeful: cloudUnpaidHopefulCount, pendingSettlement: cloudPendingSettlementCount }
+      : {
+          unpaidHopeful: savedSlips.filter(isOrderUnpaidHopeful).length,
+          pendingSettlement: savedSlips.filter(isOrderPendingSettlement).length,
+        }
+  ), [cloudPendingSettlementCount, cloudUnpaidHopefulCount, isCloudMode, savedSlips]);
   const visibleUnlockedOrderCount = useMemo(
     () => filteredSavedSlips.filter((slip) => !isOrderPaid(slip) && !isOrderOddsLocked(slip)).length,
     [filteredSavedSlips],
@@ -2846,26 +2864,53 @@ function InnerFootballApp({
       return;
     }
     setAllResultsFetching(true);
+    setResultFetchingMatchIds(resultMatches.map((match) => normalizeSportteryMatchId(match.id)));
     let successCount = 0;
     let unfinishedCount = 0;
+    let cancelledCount = 0;
     let failedCount = 0;
     let firstError = "";
     try {
+      const fetched = await fetchSportteryUniformMatchResults(resultMatches, {
+        requestIntervalMs: AUTO_RESULT_REQUEST_INTERVAL_MS,
+      });
+      const fetchedResults: MatchResults = {};
       for (const match of resultMatches) {
-        try {
-          const outcome = await requestMatchResult(match);
-          if (outcome.status === "success") successCount += 1;
-          else unfinishedCount += 1;
-        } catch (error) {
-          failedCount += 1;
-          if (!firstError) firstError = error instanceof Error ? error.message : "无法读取赛果接口";
+        const matchId = normalizeSportteryMatchId(match.id);
+        const record = fetched.resultByMatchId.get(matchId);
+        if (!record) continue;
+        const outcome = parseSportteryUniformMatchOutcome(record, match);
+        if (outcome.status === "cancelled") {
+          cancelledCount += 1;
+          continue;
         }
+        if (outcome.status === "unfinished") {
+          unfinishedCount += 1;
+          continue;
+        }
+        const parsedResult = outcome.parsed;
+        fetchedResults[matchId] = {
+          matchId,
+          updatedAt: new Date().toISOString(),
+          source: "api",
+          values: parsedResult.values,
+          ...(typeof parsedResult.rqspfHandicap === "number" ? { rqspfHandicap: parsedResult.rqspfHandicap } : {}),
+          fullScore: parsedResult.fullScore,
+          halfScore: parsedResult.halfScore,
+        };
+        successCount += 1;
       }
-      const description = `共 ${resultMatches.length} 场：成功 ${successCount} 场，可能未结束 ${unfinishedCount} 场，请求失败 ${failedCount} 场${firstError ? `；首个错误：${firstError}` : ""}`;
-      if (successCount > 0) notification.success({ message: "全部赛果获取完成", description, placement: "bottomRight" });
-      else notification.warning({ message: "暂未获取到可用赛果", description, placement: "bottomRight" });
+      if (successCount > 0) setMatchResults((current) => ({ ...current, ...fetchedResults }));
+      unfinishedCount += fetched.unavailableMatchIds.length;
+      failedCount = fetched.failedMatchIds.length;
+      const firstFailure = fetched.failures[0]?.error;
+      firstError = firstFailure instanceof Error ? firstFailure.message : firstFailure ? String(firstFailure) : "";
+      const description = `共 ${resultMatches.length} 场：成功 ${successCount} 场，未结束或暂无赛果 ${unfinishedCount} 场，已取消 ${cancelledCount} 场，请求失败 ${failedCount} 场${firstError ? `；首个错误：${firstError}` : ""}`;
+      if (successCount > 0) notification.success({ title: "全部赛果获取完成", description, placement: "bottomRight" });
+      else notification.warning({ title: "暂未获取到可用赛果", description, placement: "bottomRight" });
     } finally {
       setAllResultsFetching(false);
+      setResultFetchingMatchIds([]);
     }
   };
 
@@ -3905,7 +3950,7 @@ function InnerFootballApp({
         headerRef={headerRef}
         isGuestMode={isGuestMode}
         startReminderMatches={currentStartReminderItems}
-        unsettledOrderCount={unsettledOrderCount}
+        orderBadgeCounts={orderBadgeCounts}
         onLogout={onLogout}
         onNavigate={navigateToView}
         onRequireAccount={() => onRequireAccount()}
@@ -4204,15 +4249,16 @@ function InnerFootballApp({
                       disabled={cloudOrdersLoading}
                       options={[
                         { value: "all", label: "不限" },
-                        { value: "settled", label: "已结账" },
                         { value: "unsettled", label: "未结账" },
+                        { value: "pending-settlement", label: "待结账" },
+                        { value: "settled", label: "已结账" },
                         { value: "paid", label: "已支付" },
                         { value: "unpaid", label: "未支付" },
                       ]}
                       onChange={(value) => {
                         setRenderedOrderCount(ORDER_LIST_BATCH_SIZE);
                         const nextValue = String(value);
-                        setOrderProgressFilter(nextValue === "settled" || nextValue === "unsettled" || nextValue === "unpaid" || nextValue === "paid" ? nextValue : null);
+                        setOrderProgressFilter(isOrderProgressFilterValue(nextValue) ? nextValue : null);
                       }}
                     />
                   </label>
@@ -5485,6 +5531,8 @@ const ignoreCloudOrdersQueryChange = async (): Promise<CloudOrderQueryResult> =>
   orders: [],
   total: 0,
   unsettledCount: 0,
+  unpaidHopefulCount: 0,
+  pendingSettlementCount: 0,
 });
 const ignoreCloudMatchesChange = () => undefined;
 const ignoreCloudMatchesUpdate = async (matches: MatchItem[]) => matches;

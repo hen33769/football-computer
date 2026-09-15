@@ -26,7 +26,10 @@ type AppShellHeaderProps = {
   headerRef: RefObject<HTMLElement | null>;
   isGuestMode: boolean;
   startReminderMatches: MatchStartReminderItem[];
-  unsettledOrderCount: number;
+  orderBadgeCounts: {
+    unpaidHopeful: number;
+    pendingSettlement: number;
+  };
   onLogout: () => Promise<void>;
   onNavigate: (view: AppView) => void;
   onRequireAccount: () => void;
@@ -39,11 +42,14 @@ export function AppShellHeader({
   headerRef,
   isGuestMode,
   startReminderMatches,
-  unsettledOrderCount,
+  orderBadgeCounts,
   onLogout,
   onNavigate,
   onRequireAccount,
 }: AppShellHeaderProps) {
+  const nearestStartReminder = startReminderMatches[0];
+  const orderBadgeCount = orderBadgeCounts.unpaidHopeful + orderBadgeCounts.pendingSettlement;
+  const orderBadgeTitle = `未支付且有希望 ${orderBadgeCounts.unpaidHopeful} 单 + 待结账 ${orderBadgeCounts.pendingSettlement} 单`;
   const syncLabel = isGuestMode
     ? "游客数据仅保存在当前浏览器"
     : cloudSyncStatus === "saving"
@@ -99,17 +105,19 @@ export function AppShellHeader({
           </div>
           <div className="hero-actions">
             {startReminderMatches.length > 0 && (
-              <Tooltip title={`准备开赛（${startReminderMatches.length} 场）`}>
-                <Popover content={startReminderPopover} trigger="click" placement="bottomRight">
-                  <Button aria-label={`准备开赛，${startReminderMatches.length} 场`} icon={<BellOutlined />} />
-                </Popover>
+              <Tooltip title={`准备开赛，最近一场还有 ${nearestStartReminder.minutesUntil} 分钟（共 ${startReminderMatches.length} 场）`}>
+                <Badge className="header-start-reminder-badge" count={`${nearestStartReminder.minutesUntil}`} size="small" offset={[-5, 3]} color="#1677ff">
+                  <Popover content={startReminderPopover} trigger="click" placement="bottomRight">
+                    <Button aria-label={`准备开赛，最近一场还有 ${nearestStartReminder.minutesUntil} 分钟，共 ${startReminderMatches.length} 场`} icon={<BellOutlined />} />
+                  </Popover>
+                </Badge>
               </Tooltip>
             )}
             <Button className={activeView === "betting" ? "view-toggle active" : "view-toggle"} icon={<HomeOutlined />} onClick={() => onNavigate("betting")}>
               <span className="header-button-label">投注</span>
             </Button>
-            <Badge className="order-navigation-badge" count={unsettledOrderCount} size="small" offset={[-12, 4]} onClick={() => onNavigate("orders")}>
-              <Button className={activeView === "orders" ? "view-toggle active" : "view-toggle"} icon={<FileTextOutlined />}>
+            <Badge className="order-navigation-badge" count={orderBadgeCount} title={orderBadgeTitle} size="small" offset={[-12, 4]} onClick={() => onNavigate("orders")}>
+              <Button aria-label={`订单，${orderBadgeTitle}`} className={activeView === "orders" ? "view-toggle active" : "view-toggle"} icon={<FileTextOutlined />}>
                 <span className="header-button-label">订单</span>
               </Button>
             </Badge>

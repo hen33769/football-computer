@@ -1,4 +1,5 @@
 import { getD1 } from "../../../db";
+import { isOrderProgressFilterValue } from "../../order-model";
 import { requireAuthenticatedCloudAccount, routeError } from "../../cloud-server";
 import { createOrder, listOrders, type OrderProgressQuery } from "../../server/orders-service";
 
@@ -10,7 +11,7 @@ const parseStatuses = (value: string | null) => (value ?? "")
   .filter(Boolean);
 
 const parseProgress = (value: string | null): OrderProgressQuery => (
-  value === "settled" || value === "unsettled" || value === "unpaid" || value === "paid" ? value : null
+  isOrderProgressFilterValue(value) ? value : null
 );
 
 export async function GET(request: Request) {

@@ -9,6 +9,7 @@ import {
   withdrawOrderState,
   type BulkOrderOperation,
   type CompactOrder,
+  type OrderProgressFilter,
 } from "../order-model";
 import type { SavedSlip } from "../types";
 import { refreshSelectedOdds } from "../sporttery";
@@ -16,7 +17,7 @@ import type { MatchItem } from "../types";
 import { httpError, orderConflict } from "./errors";
 import { fromCents, toCents } from "./money";
 
-export type OrderProgressQuery = "settled" | "unsettled" | "unpaid" | "paid" | null;
+export type OrderProgressQuery = OrderProgressFilter;
 export type OrdersQuery = {
   from?: string | null;
   to?: string | null;
@@ -35,6 +36,8 @@ export type OrdersListResponse = {
   orders: CompactOrder[];
   total: number;
   unsettledCount: number;
+  unpaidHopefulCount: number;
+  pendingSettlementCount: number;
 };
 
 type OrderRow = {
@@ -45,6 +48,12 @@ type OrderRow = {
 
 type CountRow = {
   total: number;
+};
+
+type OrderStatsCountRow = {
+  unsettledCount: number;
+  unpaidHopefulCount: number;
+  pendingSettlementCount: number;
 };
 
 const MAX_ORDER_BYTES = 1_500_000;
@@ -255,6 +264,7 @@ function ordersWhereClause(query: OrdersQuery) {
   }
   if (query.progress === "settled") conditions.push("settled_at IS NOT NULL");
   if (query.progress === "unsettled") conditions.push("settled_at IS NULL");
+  if (query.progress === "pending-settlement") conditions.push("payment_status = 'paid' AND settled_at IS NULL");
   if (query.progress === "unpaid") conditions.push("payment_status = 'unpaid'");
   if (query.progress === "paid") conditions.push("payment_status = 'paid'");
   const requestedStatuses = unique(query.statuses ?? []);
@@ -285,18 +295,23 @@ export async function listOrders(d1: D1Database, userId: string, query: OrdersQu
     FROM user_orders
     WHERE ${where.clause}
   `).bind(userId, ...where.params).first<CountRow>();
-  const unsettled = await d1.prepare(`
-    SELECT COUNT(*) AS total
+  const orderStats = await d1.prepare(`
+    SELECT
+      COUNT(CASE WHEN settled_at IS NULL THEN 1 END) AS unsettledCount,
+      COUNT(CASE WHEN payment_status = 'unpaid' AND status = 'hopeful' THEN 1 END) AS unpaidHopefulCount,
+      COUNT(CASE WHEN payment_status = 'paid' AND settled_at IS NULL THEN 1 END) AS pendingSettlementCount
     FROM user_orders
-    WHERE user_id = ?1 AND settled_at IS NULL
-  `).bind(userId).first<CountRow>();
+    WHERE user_id = ?1
+  `).bind(userId).first<OrderStatsCountRow>();
   return {
     orders: (rows.results ?? []).flatMap((row) => {
       const order = parseOrderJson(row.data_json);
       return order ? [{ ...order, id: order.id || row.order_id, updatedAt: row.updated_at }] : [];
     }),
     total: Number(total?.total ?? 0),
-    unsettledCount: Number(unsettled?.total ?? 0),
+    unsettledCount: Number(orderStats?.unsettledCount ?? 0),
+    unpaidHopefulCount: Number(orderStats?.unpaidHopefulCount ?? 0),
+    pendingSettlementCount: Number(orderStats?.pendingSettlementCount ?? 0),
   };
 }
 

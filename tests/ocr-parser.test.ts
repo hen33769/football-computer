@@ -1,8 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { formatManualOrderText } from "../app/manual-order-format";
+import { formatManualOrderText, formatOrderOptionLabel } from "../app/manual-order-format";
 import { parseRecognizedText } from "../app/ocr";
-import type { MatchItem } from "../app/types";
+import type { Market, MatchItem, OddsOption } from "../app/types";
+
+test("订单让球胜平负选项显示让球数和完整赛果标签", () => {
+  const option = (id: string, label: string): OddsOption => ({ id, label, odds: 2, selected: true });
+  const rqspf = (handicap: number): Market => ({ type: "rqspf", handicap, options: [] });
+
+  assert.equal(formatOrderOptionLabel(rqspf(-2), option("win", "主胜")), "(-2)主胜");
+  assert.equal(formatOrderOptionLabel(rqspf(1), option("lose", "主负")), "(+1)主负");
+  assert.equal(formatOrderOptionLabel(rqspf(-1), option("draw", "平")), "(-1)平");
+  assert.equal(formatOrderOptionLabel({ type: "spf", options: [] }, option("win", "主胜")), "主胜");
+});
 
 test("订单导出为手动添加格式并保留让球选项标签", () => {
   const matches: MatchItem[] = [{

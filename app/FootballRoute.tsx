@@ -28,6 +28,7 @@ import { getUserSettings, updateUserSettings } from "./api-client/settings";
 import { deleteTeamNameGroup, getTeamNameGroups, saveTeamNameGroup } from "./api-client/team-aliases";
 import { getFinance, updateFinanceCorrections, type FinanceResponse } from "./api-client/finance";
 import { bulkUpdateOrders, createOrder, deleteOrder, fetchOrders, type OrderQuery, type OrdersResponse } from "./api-client/orders";
+import { isOrderPendingSettlement, isOrderUnpaidHopeful } from "./order-model";
 import {
   getCurrentMatches as getCloudCurrentMatches,
   refreshCurrentMatches as refreshCloudCurrentMatches,
@@ -151,6 +152,8 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
         orders: ensureOrderIds(ordersResult.orders),
         orderTotal: ordersResult.total,
         unsettledOrderCount: ordersResult.unsettledCount,
+        unpaidHopefulCount: ordersResult.unpaidHopefulCount,
+        pendingSettlementCount: ordersResult.pendingSettlementCount,
         finance: cloudFinanceFromResponse(financeResult),
         settings: settingsResult.settings,
         settingsRevision: settingsResult.revision,
@@ -411,11 +414,20 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
     let orderTotal = latestPersonal.orderTotal ?? latestPersonal.orders.length;
     let unsettledOrderCount = latestPersonal.unsettledOrderCount
       ?? latestPersonal.orders.filter((order) => !order.settledAt).length;
+    let unpaidHopefulCount = latestPersonal.unpaidHopefulCount
+      ?? latestPersonal.orders.filter(isOrderUnpaidHopeful).length;
+    let pendingSettlementCount = latestPersonal.pendingSettlementCount
+      ?? latestPersonal.orders.filter(isOrderPendingSettlement).length;
+    const updateBadgeCounts = (order: SavedSlip, direction: 1 | -1) => {
+      if (isOrderUnpaidHopeful(order)) unpaidHopefulCount = Math.max(0, unpaidHopefulCount + direction);
+      if (isOrderPendingSettlement(order)) pendingSettlementCount = Math.max(0, pendingSettlementCount + direction);
+    };
     mutationResult.deletedOrderIds.forEach((id) => {
       const deleted = latestOrdersById.get(id) ?? currentOrdersById.get(id);
       if (!deleted) return;
       orderTotal = Math.max(0, orderTotal - 1);
       if (!deleted.settledAt) unsettledOrderCount = Math.max(0, unsettledOrderCount - 1);
+      updateBadgeCounts(deleted, -1);
       latestOrdersById.delete(id);
     });
     mutationResult.upsertedOrders.forEach((order) => {
@@ -426,6 +438,8 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
       } else if (Boolean(current.settledAt) !== Boolean(order.settledAt)) {
         unsettledOrderCount += order.settledAt ? -1 : 1;
       }
+      if (current) updateBadgeCounts(current, -1);
+      updateBadgeCounts(order, 1);
       if (order.id) latestOrdersById.set(order.id, order);
     });
     const nextPersonal: CloudPersonalData = {
@@ -436,6 +450,8 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
       }),
       orderTotal,
       unsettledOrderCount,
+      unpaidHopefulCount,
+      pendingSettlementCount,
       finance: cloudFinanceFromResponse(mutationResult.finance),
     };
     clientPersonalRef.current = nextPersonal;
@@ -463,6 +479,8 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
       orders: [...mergedOrders.values()],
       orderTotal: result.total,
       unsettledOrderCount: result.unsettledCount,
+      unpaidHopefulCount: result.unpaidHopefulCount,
+      pendingSettlementCount: result.pendingSettlementCount,
     };
     clientPersonalRef.current = nextPersonal;
     setCloudPersonal(nextPersonal);

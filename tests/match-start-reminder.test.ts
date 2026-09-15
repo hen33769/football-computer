@@ -94,6 +94,7 @@ test("当前临近比赛列表不受已提醒记录影响，并按开赛时间�
 
   assert.deepEqual(items.map((item) => item.match.id), ["100", "sporttery-200"]);
   assert.deepEqual(items.map((item) => item.minutesUntil), [10, 20]);
+  assert.equal(items[0]?.minutesUntil, 10, "header Badge 使用排序后第一场的剩余分钟数");
 });
 
 test("原提醒时间过期后，延期比赛可在新窗口再次提醒", () => {

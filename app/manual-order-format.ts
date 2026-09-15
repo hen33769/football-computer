@@ -4,7 +4,7 @@ import type { Market, MatchItem, OddsOption } from "./types";
 
 const formatHandicap = (handicap: number) => `${handicap > 0 ? "+" : ""}${handicap}`;
 
-const formatManualOptionLabel = (market: Market, option: OddsOption) => (
+export const formatOrderOptionLabel = (market: Market, option: OddsOption) => (
   market.type === "rqspf" && typeof market.handicap === "number"
     ? `(${formatHandicap(market.handicap)})${option.label}`
     : option.label
@@ -15,7 +15,7 @@ export const formatManualMatchText = (match: MatchItem) => {
     const selected = market.options.filter((option) => option.selected);
     if (selected.length === 0) return [];
     const marketLabel = `${MARKET_LABELS[market.type]}${market.type === "rqspf" && typeof market.handicap === "number" ? `（${formatHandicap(market.handicap)}）` : ""}`;
-    return [`${marketLabel} ${selected.map((option) => `${formatManualOptionLabel(market, option)} @${option.odds.toFixed(2)}`).join(" | ")}`];
+    return [`${marketLabel} ${selected.map((option) => `${formatOrderOptionLabel(market, option)} @${option.odds.toFixed(2)}`).join(" | ")}`];
   });
   return [
     `比赛 ID：${normalizeSportteryMatchId(match.id)}`,

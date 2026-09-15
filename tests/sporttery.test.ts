@@ -13,6 +13,7 @@ import {
   buildSportteryUniformMatchResultUrl,
   enrichSportteryMatchOddsHistory,
   fetchSportteryUniformMatchResultPage,
+  fetchSportteryUniformMatchResults,
   fetchSportteryMatchById,
   fetchSportteryMatchSnapshot,
   isAutoResultEligible,
@@ -193,6 +194,64 @@ test("批量赛果接口校验成功 JSON 并返回分页数据", async () => {
     });
     assert.equal(response.value?.pages, 2);
     assert.equal(response.value?.matchResult?.[0].matchId, 2040585);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("批量赛果聚合会翻页并且只保留目标比赛 ID", async () => {
+  const [baseMatch] = convertSportteryMatches(payload, beforeKickoff);
+  const matches = [
+    { ...baseMatch, id: "target-1" },
+    { ...baseMatch, id: "target-2" },
+  ];
+  const requestedPages: number[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input) => {
+    const pageNo = Number(new URL(String(input)).searchParams.get("pageNo"));
+    requestedPages.push(pageNo);
+    const matchResult = pageNo === 1
+      ? [{ matchId: "not-requested", sectionsNo999: "1:0" }]
+      : [{ matchId: `target-${pageNo - 1}`, sectionsNo1: "0:0", sectionsNo999: "1:0" }];
+    return new Response(JSON.stringify({
+      success: true,
+      value: { total: 3, pages: 3, pageNo, pageSize: 1, matchResult },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const result = await fetchSportteryUniformMatchResults(matches, { pageSize: 1 });
+    assert.deepEqual(requestedPages, [1, 2, 3]);
+    assert.deepEqual([...result.resultByMatchId.keys()], ["target-1", "target-2"]);
+    assert.deepEqual(result.unavailableMatchIds, []);
+    assert.deepEqual(result.failedMatchIds, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("批量赛果聚合保留成功日期并汇总失败范围", async () => {
+  const [baseMatch] = convertSportteryMatches(payload, beforeKickoff);
+  const matches = [
+    { ...baseMatch, id: "target-1", date: "2026-01-01", time: "2026-01-01 12:00" },
+    { ...baseMatch, id: "target-2", date: "2026-01-31", time: "2026-01-31 12:00" },
+  ];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input) => {
+    const url = new URL(String(input));
+    if (url.searchParams.get("matchBeginDate") === "2026-01-31") {
+      return new Response("unavailable", { status: 503 });
+    }
+    return new Response(JSON.stringify({
+      success: true,
+      value: { total: 1, pages: 1, pageNo: 1, pageSize: 100, matchResult: [{ matchId: "target-1", sectionsNo1: "0:0", sectionsNo999: "1:0" }] },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const result = await fetchSportteryUniformMatchResults(matches);
+    assert.deepEqual([...result.resultByMatchId.keys()], ["target-1"]);
+    assert.deepEqual(result.unavailableMatchIds, []);
+    assert.deepEqual(result.failedMatchIds, ["target-2"]);
+    assert.equal(result.failures[0]?.matchBeginDate, "2026-01-31");
   } finally {
     globalThis.fetch = originalFetch;
   }

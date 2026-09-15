@@ -307,6 +307,100 @@ export async function fetchSportteryUniformMatchResultPage(params: SportteryUnif
   return payload;
 }
 
+export type SportteryUniformMatchResultFetchFailure = {
+  matchBeginDate: string;
+  matchEndDate: string;
+  matchIds: string[];
+  error: unknown;
+};
+
+export type SportteryUniformMatchResultsFetch = {
+  resultByMatchId: Map<string, SportteryUniformMatchResult>;
+  unavailableMatchIds: string[];
+  failedMatchIds: string[];
+  failures: SportteryUniformMatchResultFetchFailure[];
+};
+
+/** 按比赛实际日期批量分页读取赛果，只保留调用方指定的比赛 ID。 */
+export async function fetchSportteryUniformMatchResults(
+  matches: MatchItem[],
+  options: { requestIntervalMs?: number; pageSize?: number } = {},
+): Promise<SportteryUniformMatchResultsFetch> {
+  const pageSize = options.pageSize ?? SPORTTERY_UNIFORM_MATCH_RESULT_PAGE_SIZE;
+  if (!Number.isInteger(pageSize) || pageSize < 1) throw new Error("赛果批量 pageSize 必须为正整数");
+  const requestIntervalMs = Math.max(0, Number(options.requestIntervalMs ?? 0));
+  const uniqueMatches = new Map<string, MatchItem>();
+  matches.forEach((match) => {
+    const matchId = normalizeSportteryMatchId(match.id);
+    if (matchId && !uniqueMatches.has(matchId)) uniqueMatches.set(matchId, match);
+  });
+  const resultByMatchId = new Map<string, SportteryUniformMatchResult>();
+  const failures: SportteryUniformMatchResultFetchFailure[] = [];
+  const failedMatchIds = new Set<string>();
+  let lastRequestAt = 0;
+
+  for (const dateRange of splitSportteryMatchResultDateRanges([...uniqueMatches.values()])) {
+    const rangeMatchIds = new Set(dateRange.matches.map((match) => normalizeSportteryMatchId(match.id)));
+    const unresolvedIds = new Set([...rangeMatchIds].filter((matchId) => !resultByMatchId.has(matchId)));
+    let pageNo = 1;
+    let totalPages = 1;
+    try {
+      while (pageNo <= totalPages && unresolvedIds.size > 0) {
+        const waitMs = Math.max(0, requestIntervalMs - (Date.now() - lastRequestAt));
+        if (waitMs > 0) await new Promise((resolve) => globalThis.setTimeout(resolve, waitMs));
+        lastRequestAt = Date.now();
+        const payload = await fetchSportteryUniformMatchResultPage({
+          matchBeginDate: dateRange.matchBeginDate,
+          matchEndDate: dateRange.matchEndDate,
+          pageSize,
+          pageNo,
+          leagueId: "",
+          isFix: 0,
+          matchPage: 1,
+          pcOrWap: 1,
+        });
+        const pageResults = payload.value?.matchResult ?? [];
+        pageResults.forEach((record) => {
+          const matchId = normalizeSportteryMatchId(String(record.matchId ?? ""));
+          if (!rangeMatchIds.has(matchId)) return;
+          resultByMatchId.set(matchId, record);
+          unresolvedIds.delete(matchId);
+        });
+        if (unresolvedIds.size === 0) break;
+
+        const reportedPages = Number(payload.value?.pages);
+        const reportedTotal = Number(payload.value?.total);
+        const reportedPageSize = Number(payload.value?.pageSize);
+        const effectivePageSize = Number.isInteger(reportedPageSize) && reportedPageSize > 0 ? reportedPageSize : pageSize;
+        totalPages = Number.isInteger(reportedPages) && reportedPages > 0
+          ? reportedPages
+          : Number.isInteger(reportedTotal) && reportedTotal > 0
+            ? Math.ceil(reportedTotal / effectivePageSize)
+            : pageResults.length >= effectivePageSize ? pageNo + 1 : pageNo;
+        if (totalPages > 1000) throw new Error("赛果批量接口分页数量异常");
+        pageNo += 1;
+      }
+    } catch (error) {
+      const matchIds = [...unresolvedIds];
+      matchIds.forEach((matchId) => failedMatchIds.add(matchId));
+      failures.push({
+        matchBeginDate: dateRange.matchBeginDate,
+        matchEndDate: dateRange.matchEndDate,
+        matchIds,
+        error,
+      });
+    }
+  }
+
+  const missingMatchIds = [...uniqueMatches.keys()].filter((matchId) => !resultByMatchId.has(matchId));
+  return {
+    resultByMatchId,
+    unavailableMatchIds: missingMatchIds.filter((matchId) => !failedMatchIds.has(matchId)),
+    failedMatchIds: [...failedMatchIds],
+    failures,
+  };
+}
+
 const matchIdentityKey = (match: MatchItem) => [
   identityPart(match.weekday),
   identityPart(match.code),

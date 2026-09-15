@@ -2,6 +2,7 @@
 
 import {
   compactOrderToSavedSlip,
+  type OrderProgressFilter,
   savedSlipToCompactOrder,
   type CompactOrder,
   type BulkOrderOperation,
@@ -9,7 +10,6 @@ import {
 import type { CurrentHits, SavedSlip } from "../types";
 import { requestJson } from "./http";
 
-export type OrderProgressFilter = "settled" | "unsettled" | "unpaid" | "paid" | null;
 export type OrderStatusFilter = "success" | "hopeful" | "failed";
 
 export type OrderQuery = {
@@ -25,6 +25,8 @@ export type OrdersResponse = {
   orders: SavedSlip[];
   total: number;
   unsettledCount: number;
+  unpaidHopefulCount: number;
+  pendingSettlementCount: number;
 };
 
 export type OrderRef = {
@@ -48,7 +50,13 @@ const queryString = (query: OrderQuery = {}) => {
 };
 
 export async function fetchOrders(query: OrderQuery = {}): Promise<OrdersResponse> {
-  const response = await requestJson<{ orders: CompactOrder[]; total: number; unsettledCount: number }>(`/api/orders${queryString(query)}`);
+  const response = await requestJson<{
+    orders: CompactOrder[];
+    total: number;
+    unsettledCount: number;
+    unpaidHopefulCount: number;
+    pendingSettlementCount: number;
+  }>(`/api/orders${queryString(query)}`);
   return {
     ...response,
     orders: response.orders.map(asSaved),
