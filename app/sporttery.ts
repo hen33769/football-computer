@@ -1608,3 +1608,116 @@ export async function fetchSportteryMatchScore(matchId: string) {
   if (payload.success === false) throw new Error(String(payload.errorMessage || payload.errorCode || "完赛状态接口返回失败"));
   return payload;
 }
+
+export type SportteryResolvedMatchResult = ReturnType<typeof parseSportteryUniformMatchResult>;
+
+export type SportteryMatchResultResolutionFailure = {
+  matchIds: string[];
+  error: unknown;
+};
+
+export type SportteryMatchResultsWithFallback = {
+  resultByMatchId: Map<string, SportteryResolvedMatchResult>;
+  fallbackResultMatchIds: string[];
+  cancelledMatchIds: string[];
+  unfinishedMatchIds: string[];
+  failedMatchIds: string[];
+  failures: SportteryMatchResultResolutionFailure[];
+};
+
+/**
+ * 优先读取按日期批量赛果；仅对批量未出比分且已超过合理完赛时间的比赛串行查询单场比分。
+ * 批量请求失败保留为失败，不额外放大为逐场请求。
+ */
+export async function fetchSportteryMatchResultsWithFallback(
+  matches: MatchItem[],
+  options: { now?: Date; requestIntervalMs?: number; pageSize?: number } = {},
+): Promise<SportteryMatchResultsWithFallback> {
+  const now = options.now ?? new Date();
+  const requestIntervalMs = Math.max(0, Number(options.requestIntervalMs ?? 0));
+  const uniqueMatches = new Map<string, MatchItem>();
+  matches.forEach((match) => {
+    const matchId = normalizeSportteryMatchId(match.id);
+    if (matchId && !uniqueMatches.has(matchId)) uniqueMatches.set(matchId, match);
+  });
+
+  const fetched = await fetchSportteryUniformMatchResults([...uniqueMatches.values()], {
+    requestIntervalMs,
+    pageSize: options.pageSize,
+  });
+  const resultByMatchId = new Map<string, SportteryResolvedMatchResult>();
+  const fallbackResultMatchIds: string[] = [];
+  const cancelledMatchIds = new Set<string>();
+  const unfinishedMatchIds = new Set<string>();
+  const failedMatchIds = new Set(fetched.failedMatchIds);
+  const failures: SportteryMatchResultResolutionFailure[] = fetched.failures.map(({ matchIds, error }) => ({ matchIds, error }));
+  const fallbackMatches: MatchItem[] = [];
+
+  uniqueMatches.forEach((match, matchId) => {
+    if (failedMatchIds.has(matchId)) return;
+    const record = fetched.resultByMatchId.get(matchId);
+    if (record) {
+      const outcome = parseSportteryUniformMatchOutcome(record, match);
+      if (outcome.status === "completed") {
+        resultByMatchId.set(matchId, outcome.parsed);
+        return;
+      }
+      if (outcome.status === "cancelled") {
+        cancelledMatchIds.add(matchId);
+        return;
+      }
+    }
+    if (isAutoResultEligible(match, now)) fallbackMatches.push(match);
+    else unfinishedMatchIds.add(matchId);
+  });
+
+  let lastRequestAt = 0;
+  for (const match of fallbackMatches) {
+    const matchId = normalizeSportteryMatchId(match.id);
+    const waitMs = Math.max(0, requestIntervalMs - (Date.now() - lastRequestAt));
+    if (waitMs > 0) await new Promise((resolve) => globalThis.setTimeout(resolve, waitMs));
+    lastRequestAt = Date.now();
+    try {
+      const [scorePayload, fetchedHandicap] = await Promise.all([
+        fetchSportteryMatchScore(matchId),
+        fetchSportteryMatchHandicap(matchId).catch(() => undefined),
+      ]);
+      if (!isSportteryRegularTimeFinished(scorePayload)) {
+        unfinishedMatchIds.add(matchId);
+        continue;
+      }
+
+      const batchGoalLine = Number.parseFloat(String(fetched.resultByMatchId.get(matchId)?.goalLine ?? ""));
+      const matchHandicap = match.markets.find((market) => market.type === "rqspf")?.handicap;
+      const rqspfHandicap = fetchedHandicap
+        ?? (Number.isFinite(batchGoalLine) ? batchGoalLine : matchHandicap);
+      const resultMatch = {
+        ...match,
+        markets: match.markets.map((market) => market.type === "rqspf"
+          ? { ...market, handicap: rqspfHandicap }
+          : market),
+      };
+      const parsed = parseSportteryMatchScoreDetails(scorePayload, resultMatch);
+      if (!parsed.fullScore || Object.keys(parsed.values).length === 0) {
+        throw new Error(`比赛 ${matchId} 常规时间已结束，但比分接口暂未返回可识别比分`);
+      }
+      resultByMatchId.set(matchId, {
+        ...parsed,
+        ...(typeof rqspfHandicap === "number" && Number.isFinite(rqspfHandicap) ? { rqspfHandicap } : {}),
+      });
+      fallbackResultMatchIds.push(matchId);
+    } catch (error) {
+      failedMatchIds.add(matchId);
+      failures.push({ matchIds: [matchId], error });
+    }
+  }
+
+  return {
+    resultByMatchId,
+    fallbackResultMatchIds,
+    cancelledMatchIds: [...cancelledMatchIds],
+    unfinishedMatchIds: [...unfinishedMatchIds],
+    failedMatchIds: [...failedMatchIds],
+    failures,
+  };
+}

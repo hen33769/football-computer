@@ -12,6 +12,7 @@ import {
   convertSportteryMatches,
   buildSportteryUniformMatchResultUrl,
   enrichSportteryMatchOddsHistory,
+  fetchSportteryMatchResultsWithFallback,
   fetchSportteryUniformMatchResultPage,
   fetchSportteryUniformMatchResults,
   fetchSportteryMatchById,
@@ -252,6 +253,128 @@ test("批量赛果聚合保留成功日期并汇总失败范围", async () => {
     assert.deepEqual(result.unavailableMatchIds, []);
     assert.deepEqual(result.failedMatchIds, ["target-2"]);
     assert.equal(result.failures[0]?.matchBeginDate, "2026-01-31");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("批量赛果未同步时使用单场比分兜底并保留 0:0", async () => {
+  const [match] = convertSportteryMatches(payload, beforeKickoff);
+  const requestedPaths: string[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input) => {
+    const url = new URL(String(input));
+    requestedPaths.push(url.pathname);
+    if (url.pathname.endsWith("getUniformMatchResultV1.qry")) {
+      return new Response(JSON.stringify({
+        success: true,
+        value: {
+          total: 1,
+          pages: 1,
+          pageNo: 1,
+          pageSize: 100,
+          matchResult: [{ matchId: match.id, goalLine: "+1", matchResultStatus: "1", sectionsNo1: "", sectionsNo999: "" }],
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.endsWith("getMatchScoreV1.qry")) {
+      return new Response(JSON.stringify({
+        success: true,
+        value: {
+          matchPhaseTc: "14",
+          sectionsNo999: "0:0",
+          sectionsNos: [
+            { sectionNo: 1, score: "0:0" },
+            { sectionNo: 2, score: "0:0" },
+          ],
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response(JSON.stringify({
+      success: true,
+      value: { matchResultList: [{ code: "HHAD", combination: "A", goalLine: "+1" }] },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const result = await fetchSportteryMatchResultsWithFallback([match], {
+      now: new Date("2026-07-23T03:30:00"),
+    });
+    const parsed = result.resultByMatchId.get(match.id);
+    assert.deepEqual(result.fallbackResultMatchIds, [match.id]);
+    assert.deepEqual(result.unfinishedMatchIds, []);
+    assert.deepEqual(result.failedMatchIds, []);
+    assert.deepEqual(parsed?.fullScore, { home: 0, away: 0 });
+    assert.deepEqual(parsed?.halfScore, { home: 0, away: 0 });
+    assert.deepEqual(parsed?.values, {
+      spf: "draw",
+      rqspf: "win",
+      score: "0:0",
+      goals: "0",
+      halfFull: "DD",
+    });
+    assert.deepEqual(requestedPaths, [
+      "/gateway/uniform/football/getUniformMatchResultV1.qry",
+      "/gateway/uniform/fb/getMatchScoreV1.qry",
+      "/gateway/uniform/football/getFixedBonusV1.qry",
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("批量赛果缺失且单场仍未结束时保持未结束", async () => {
+  const [match] = convertSportteryMatches(payload, beforeKickoff);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("getUniformMatchResultV1.qry")) {
+      return new Response(JSON.stringify({
+        success: true,
+        value: { total: 0, pages: 1, pageNo: 1, pageSize: 100, matchResult: [] },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.endsWith("getMatchScoreV1.qry")) {
+      return new Response(JSON.stringify({ success: true, value: { matchPhaseTc: "2" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({ success: true, value: { matchResultList: [] } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  try {
+    const result = await fetchSportteryMatchResultsWithFallback([match], {
+      now: new Date("2026-07-23T03:30:00"),
+    });
+    assert.equal(result.resultByMatchId.size, 0);
+    assert.deepEqual(result.fallbackResultMatchIds, []);
+    assert.deepEqual(result.unfinishedMatchIds, [match.id]);
+    assert.deepEqual(result.failedMatchIds, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("批量赛果未同步但开赛未满 120 分钟时不调用单场接口", async () => {
+  const [match] = convertSportteryMatches(payload, beforeKickoff);
+  let requestCount = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    requestCount += 1;
+    return new Response(JSON.stringify({
+      success: true,
+      value: { total: 1, pages: 1, pageNo: 1, pageSize: 100, matchResult: [{ matchId: match.id, sectionsNo999: "" }] },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const result = await fetchSportteryMatchResultsWithFallback([match], {
+      now: new Date("2026-07-23T03:29:59"),
+    });
+    assert.equal(requestCount, 1);
+    assert.equal(result.resultByMatchId.size, 0);
+    assert.deepEqual(result.unfinishedMatchIds, [match.id]);
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -132,7 +132,7 @@ import { parseRecognizedText } from "./ocr";
 import {
   convertSportteryMatches,
   fetchSportteryUniformMatchResultPage,
-  fetchSportteryUniformMatchResults,
+  fetchSportteryMatchResultsWithFallback,
   fetchSportteryMatchCalculator,
   fetchSportteryMatchById,
   fetchSportteryMatchHandicap,
@@ -2865,30 +2865,13 @@ function InnerFootballApp({
     }
     setAllResultsFetching(true);
     setResultFetchingMatchIds(resultMatches.map((match) => normalizeSportteryMatchId(match.id)));
-    let successCount = 0;
-    let unfinishedCount = 0;
-    let cancelledCount = 0;
-    let failedCount = 0;
-    let firstError = "";
     try {
-      const fetched = await fetchSportteryUniformMatchResults(resultMatches, {
+      const fetched = await fetchSportteryMatchResultsWithFallback(resultMatches, {
+        now: new Date(),
         requestIntervalMs: AUTO_RESULT_REQUEST_INTERVAL_MS,
       });
       const fetchedResults: MatchResults = {};
-      for (const match of resultMatches) {
-        const matchId = normalizeSportteryMatchId(match.id);
-        const record = fetched.resultByMatchId.get(matchId);
-        if (!record) continue;
-        const outcome = parseSportteryUniformMatchOutcome(record, match);
-        if (outcome.status === "cancelled") {
-          cancelledCount += 1;
-          continue;
-        }
-        if (outcome.status === "unfinished") {
-          unfinishedCount += 1;
-          continue;
-        }
-        const parsedResult = outcome.parsed;
+      fetched.resultByMatchId.forEach((parsedResult, matchId) => {
         fetchedResults[matchId] = {
           matchId,
           updatedAt: new Date().toISOString(),
@@ -2898,14 +2881,17 @@ function InnerFootballApp({
           fullScore: parsedResult.fullScore,
           halfScore: parsedResult.halfScore,
         };
-        successCount += 1;
-      }
+      });
+      const successCount = fetched.resultByMatchId.size;
+      const fallbackSuccessCount = fetched.fallbackResultMatchIds.length;
+      const unfinishedCount = fetched.unfinishedMatchIds.length;
+      const cancelledCount = fetched.cancelledMatchIds.length;
+      const failedCount = fetched.failedMatchIds.length;
       if (successCount > 0) setMatchResults((current) => ({ ...current, ...fetchedResults }));
-      unfinishedCount += fetched.unavailableMatchIds.length;
-      failedCount = fetched.failedMatchIds.length;
       const firstFailure = fetched.failures[0]?.error;
-      firstError = firstFailure instanceof Error ? firstFailure.message : firstFailure ? String(firstFailure) : "";
-      const description = `共 ${resultMatches.length} 场：成功 ${successCount} 场，未结束或暂无赛果 ${unfinishedCount} 场，已取消 ${cancelledCount} 场，请求失败 ${failedCount} 场${firstError ? `；首个错误：${firstError}` : ""}`;
+      const firstError = firstFailure instanceof Error ? firstFailure.message : firstFailure ? String(firstFailure) : "";
+      const fallbackDescription = fallbackSuccessCount > 0 ? `（其中批量未同步、单场兜底 ${fallbackSuccessCount} 场）` : "";
+      const description = `共 ${resultMatches.length} 场：成功 ${successCount} 场${fallbackDescription}，未结束或暂无赛果 ${unfinishedCount} 场，已取消 ${cancelledCount} 场，请求失败 ${failedCount} 场${firstError ? `；首个错误：${firstError}` : ""}`;
       if (successCount > 0) notification.success({ title: "全部赛果获取完成", description, placement: "bottomRight" });
       else notification.warning({ title: "暂未获取到可用赛果", description, placement: "bottomRight" });
     } finally {
