@@ -503,6 +503,8 @@ export async function saveOrderResults(
   payload: {
     hits?: CompactOrder["hits"];
     resultValues?: CompactOrder["resultValues"];
+    resultScores?: CompactOrder["resultScores"];
+    resultOdds?: CompactOrder["resultOdds"];
     failedMatchIds?: string[];
     expectedUpdatedAt?: string;
   },
@@ -514,6 +516,8 @@ export async function saveOrderResults(
     ...order,
     ...(payload.hits ? { hits: payload.hits } : {}),
     ...(payload.resultValues ? { resultValues: payload.resultValues } : {}),
+    ...(payload.resultScores ? { resultScores: payload.resultScores } : {}),
+    ...(payload.resultOdds ? { resultOdds: payload.resultOdds } : {}),
     failedMatchIds: [...new Set(payload.failedMatchIds ?? [])],
   };
   return writePreparedOrder(d1, userId, prepareStoredOrder(next));

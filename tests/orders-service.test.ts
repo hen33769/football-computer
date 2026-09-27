@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   compactOrderToSavedSlip,
+  isCompactOrder,
   isOrderPendingSettlement,
   isOrderUnpaidHopeful,
   savedSlipToCompactOrder,
@@ -40,6 +41,28 @@ test("待结账状态要求订单已支付且尚未结账", () => {
   assert.equal(isOrderPendingSettlement(order("unpaid")), false);
   assert.equal(isOrderPendingSettlement(order("paid", "paid")), true);
   assert.equal(isOrderPendingSettlement({ ...order("settled", "paid"), settledAt: "2026-09-14T10:00:00.000Z" }), false);
+});
+
+test("具体赛果比分和赔率经云端紧凑模型往返不丢失", () => {
+  const compact: CompactOrder = {
+    ...order("score-result"),
+    resultValues: { "2040001": { score: "winOther" } },
+    resultScores: { "2040001": { home: 6, away: 0 } },
+    resultOdds: { "2040001": { score: 250, halfFull: 16.5 } },
+  };
+
+  const roundTripped = savedSlipToCompactOrder(compactOrderToSavedSlip(compact));
+
+  assert.deepEqual(roundTripped.resultValues, compact.resultValues);
+  assert.deepEqual(roundTripped.resultScores, compact.resultScores);
+  assert.notEqual(roundTripped.resultScores, compact.resultScores);
+  assert.notEqual(roundTripped.resultScores?.["2040001"], compact.resultScores?.["2040001"]);
+  assert.deepEqual(roundTripped.resultOdds, compact.resultOdds);
+  assert.notEqual(roundTripped.resultOdds, compact.resultOdds);
+  assert.notEqual(roundTripped.resultOdds?.["2040001"], compact.resultOdds?.["2040001"]);
+  assert.equal(isCompactOrder(roundTripped), true);
+  assert.equal(isCompactOrder({ ...roundTripped, resultScores: { "2040001": { home: -1, away: 0 } } }), false);
+  assert.equal(isCompactOrder({ ...roundTripped, resultOdds: { "2040001": { score: 0 } } }), false);
 });
 
 test("未支付且有希望状态排除已支付和已有中奖结果的订单", () => {

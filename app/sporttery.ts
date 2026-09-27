@@ -1,6 +1,6 @@
 import { createMarkets } from "./data";
 import { winningOptionId } from "./calculator";
-import type { MarketType, MatchItem, OddsHistoryEntry, OddsOption } from "./types";
+import type { MarketType, MatchItem, OddsHistoryEntry, OddsOption, ResultOdds } from "./types";
 
 export const SPORTTERY_MATCH_CALCULATOR_URL =
   "https://webapi.sporttery.cn/gateway/uniform/football/getMatchCalculatorV1.qry";
@@ -1554,8 +1554,13 @@ const normalizeHalfFullResult = (value: unknown) => {
   return /^[WDL]{2}$/.test(api) ? api : undefined;
 };
 
-/** 将官方固定奖金接口的多种返回结构归一成页面玩法选项 ID。 */
-export function parseSportteryFixedBonus(payload: unknown, match: MatchItem): Partial<Record<MarketType, string>> {
+export type SportteryFixedBonusResultDetails = {
+  values: Partial<Record<MarketType, string>>;
+  odds: ResultOdds;
+};
+
+/** 将官方固定奖金接口的多种返回结构归一成页面玩法选项 ID 与赛果赔率。 */
+export function parseSportteryFixedBonusDetails(payload: unknown, match: MatchItem): SportteryFixedBonusResultDetails {
   const root = payload && typeof payload === "object" ? payload as Record<string, unknown> : null;
   const rootValue = root?.value && typeof root.value === "object" ? root.value as Record<string, unknown> : null;
   const matchResultList = Array.isArray(rootValue?.matchResultList) ? rootValue.matchResultList : [];
@@ -1585,12 +1590,62 @@ export function parseSportteryFixedBonus(payload: unknown, match: MatchItem): Pa
   if (directScore) values.score = directScore;
   if (directGoals) values.goals = directGoals;
   if (directHalfFull) values.halfFull = directHalfFull;
-  return values;
+  const odds: ResultOdds = {};
+  matchResultList.forEach((item) => {
+    if (!item || typeof item !== "object") return;
+    const record = item as Record<string, unknown>;
+    const poolCode = String(record.code ?? record.poolCode ?? "").toUpperCase();
+    const market = (Object.entries(POOL_BY_MARKET) as Array<[MarketType, string]>)
+      .find(([, code]) => code === poolCode)?.[0];
+    const resultOdds = toOdds(record.odds);
+    if (market && values[market] && resultOdds > 0) odds[market] = resultOdds;
+  });
+  return { values, odds };
+}
+
+/** 保留原有只返回玩法选项 ID 的兼容入口。 */
+export function parseSportteryFixedBonus(payload: unknown, match: MatchItem): Partial<Record<MarketType, string>> {
+  return parseSportteryFixedBonusDetails(payload, match).values;
 }
 
 export async function fetchSportteryFixedBonus(match: MatchItem) {
   const payload = await fetchSportteryFixedBonusPayload(match.id);
-  return { payload, values: parseSportteryFixedBonus(payload, match) };
+  return { payload, ...parseSportteryFixedBonusDetails(payload, match) };
+}
+
+export type SportteryFixedBonusResultsFetch = {
+  resultByMatchId: Map<string, SportteryFixedBonusResultDetails & { payload: Record<string, unknown> }>;
+  failedMatchIds: string[];
+};
+
+/** 以有界并发读取已完赛场次的官方赛果固定奖金。 */
+export async function fetchSportteryFixedBonusResults(
+  matches: MatchItem[],
+  concurrency = 6,
+): Promise<SportteryFixedBonusResultsFetch> {
+  const uniqueMatches = new Map<string, MatchItem>();
+  matches.forEach((match) => {
+    const matchId = normalizeSportteryMatchId(match.id);
+    if (matchId && !uniqueMatches.has(matchId)) uniqueMatches.set(matchId, match);
+  });
+  const failedMatchIds: string[] = [];
+  const entries = await mapWithConcurrency(
+    [...uniqueMatches.entries()],
+    Math.max(1, Math.floor(concurrency)),
+    async ([matchId, match]) => {
+      try {
+        const result = await fetchSportteryFixedBonus(match);
+        return [matchId, result] as const;
+      } catch {
+        failedMatchIds.push(matchId);
+        return null;
+      }
+    },
+  );
+  return {
+    resultByMatchId: new Map(entries.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))),
+    failedMatchIds,
+  };
 }
 
 export async function fetchSportteryMatchScore(matchId: string) {
@@ -1609,7 +1664,7 @@ export async function fetchSportteryMatchScore(matchId: string) {
   return payload;
 }
 
-export type SportteryResolvedMatchResult = ReturnType<typeof parseSportteryUniformMatchResult>;
+export type SportteryResolvedMatchResult = ReturnType<typeof parseSportteryUniformMatchResult> & { odds?: ResultOdds };
 
 export type SportteryMatchResultResolutionFailure = {
   matchIds: string[];
@@ -1622,6 +1677,7 @@ export type SportteryMatchResultsWithFallback = {
   cancelledMatchIds: string[];
   unfinishedMatchIds: string[];
   failedMatchIds: string[];
+  resultOddsFailedMatchIds: string[];
   failures: SportteryMatchResultResolutionFailure[];
 };
 
@@ -1678,10 +1734,7 @@ export async function fetchSportteryMatchResultsWithFallback(
     if (waitMs > 0) await new Promise((resolve) => globalThis.setTimeout(resolve, waitMs));
     lastRequestAt = Date.now();
     try {
-      const [scorePayload, fetchedHandicap] = await Promise.all([
-        fetchSportteryMatchScore(matchId),
-        fetchSportteryMatchHandicap(matchId).catch(() => undefined),
-      ]);
+      const scorePayload = await fetchSportteryMatchScore(matchId);
       if (!isSportteryRegularTimeFinished(scorePayload)) {
         unfinishedMatchIds.add(matchId);
         continue;
@@ -1689,8 +1742,7 @@ export async function fetchSportteryMatchResultsWithFallback(
 
       const batchGoalLine = Number.parseFloat(String(fetched.resultByMatchId.get(matchId)?.goalLine ?? ""));
       const matchHandicap = match.markets.find((market) => market.type === "rqspf")?.handicap;
-      const rqspfHandicap = fetchedHandicap
-        ?? (Number.isFinite(batchGoalLine) ? batchGoalLine : matchHandicap);
+      const rqspfHandicap = Number.isFinite(batchGoalLine) ? batchGoalLine : matchHandicap;
       const resultMatch = {
         ...match,
         markets: match.markets.map((market) => market.type === "rqspf"
@@ -1712,12 +1764,40 @@ export async function fetchSportteryMatchResultsWithFallback(
     }
   }
 
+  const completedMatches = [...resultByMatchId.keys()]
+    .map((matchId) => uniqueMatches.get(matchId))
+    .filter((match): match is MatchItem => Boolean(match));
+  const fixedBonusResults = await fetchSportteryFixedBonusResults(completedMatches);
+  fixedBonusResults.resultByMatchId.forEach((fixedBonus, matchId) => {
+    const current = resultByMatchId.get(matchId);
+    if (!current) return;
+    const fetchedHandicap = parseSportteryMatchHandicap(fixedBonus.payload);
+    const values = { ...current.values };
+    if (current.fullScore && typeof fetchedHandicap === "number") {
+      values.rqspf = winningOptionId(
+        "rqspf",
+        current.fullScore.home,
+        current.fullScore.away,
+        current.halfScore?.home ?? 0,
+        current.halfScore?.away ?? 0,
+        fetchedHandicap,
+      );
+    }
+    resultByMatchId.set(matchId, {
+      ...current,
+      values,
+      ...(typeof fetchedHandicap === "number" ? { rqspfHandicap: fetchedHandicap } : {}),
+      ...(Object.keys(fixedBonus.odds).length > 0 ? { odds: fixedBonus.odds } : {}),
+    });
+  });
+
   return {
     resultByMatchId,
     fallbackResultMatchIds,
     cancelledMatchIds: [...cancelledMatchIds],
     unfinishedMatchIds: [...unfinishedMatchIds],
     failedMatchIds: [...failedMatchIds],
+    resultOddsFailedMatchIds: fixedBonusResults.failedMatchIds,
     failures,
   };
 }

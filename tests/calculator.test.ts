@@ -22,7 +22,7 @@ import { cloneMatches, initialMatches } from "../app/data";
 import { orderFilterIncomeTotal, orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "../app/imports";
 import { matchPassesLeagueFilter, orderContainsTeam, orderPassesLeagueFilter, orderPassesMatchCountFilter, retainAvailableLeagueNames, splitTeamNameByQuery } from "../app/order-filters";
 import { appendOrderPassValue, inferOrderPasses, parseOrderPassValues } from "../app/order-passes";
-import { isOrderMatchJudged, isOrderMatchResultUnavailable, judgeLoadedOrdersWithResults, judgeSlipWithResults, repairSlipHandicapResults } from "../app/results";
+import { formatOrderResultLabel, formatOrderScoreResult, isOrderMatchJudged, isOrderMatchResultUnavailable, judgeLoadedOrdersWithResults, judgeSlipWithResults, repairSlipHandicapResults } from "../app/results";
 import { prioritizeLeagueNames, sortMatchesForManualOrder } from "../app/sorting";
 import { formatMatchCopyLine } from "../app/match-format";
 import type { MatchItem, SavedSlip } from "../app/types";
@@ -610,6 +610,47 @@ test("赛果判断写入命中；全部已选玩法均未中才标记比赛失�
   assert.deepEqual(judged.resultValues?.["2040595"], { spf: "lose", score: "0:1", halfFull: "DL" });
   assert.deepEqual(judged.failedMatches, ["2040595"]);
   assert.equal(isOrderFailed(judged), true);
+});
+
+test("其他比分保留玩法命中 ID 并独立保存具体全场比分", () => {
+  const matches = cloneMatches(initialMatches.slice(0, 1));
+  const match = matches[0];
+  match.id = "2040594";
+  match.markets.find((market) => market.type === "score")!
+    .options.find((option) => option.id === "winOther")!.selected = true;
+  const slip: SavedSlip = { name: "胜其他", savedAt: new Date(0).toISOString(), matches, passes: [1], multiple: 1 };
+  const results = {
+    [match.id]: {
+      matchId: match.id,
+      updatedAt: new Date(0).toISOString(),
+      source: "api" as const,
+      values: { score: "winOther" },
+      fullScore: { home: 6, away: 0 },
+      odds: { score: 250, halfFull: 16.5 },
+    },
+  };
+
+  const judged = judgeSlipWithResults(slip, results);
+
+  assert.equal(judged.hits?.[match.id]?.score, "winOther");
+  assert.equal(judged.resultValues?.[match.id]?.score, "winOther");
+  assert.deepEqual(judged.resultScores?.[match.id], { home: 6, away: 0 });
+  assert.deepEqual(judged.resultOdds?.[match.id], { score: 250, halfFull: 16.5 });
+  assert.deepEqual(judged.failedMatches, []);
+  assert.deepEqual(judgeLoadedOrdersWithResults([judged], results), []);
+});
+
+test("订单比分文案隐藏前缀并兼容新旧其他比分", () => {
+  assert.equal(formatOrderScoreResult("0:1"), "0:1");
+  assert.equal(formatOrderScoreResult("winOther", { home: 6, away: 0 }), "胜其他 6:0");
+  assert.equal(formatOrderScoreResult("drawOther", { home: 4, away: 4 }), "平其他 4:4");
+  assert.equal(formatOrderScoreResult("loseOther", { home: 0, away: 6 }), "负其他 0:6");
+  assert.equal(formatOrderScoreResult("winOther"), "胜其他");
+  assert.equal(formatOrderScoreResult("1:1", { home: 1, away: 1 }, 5.75), "1:1 @5.75");
+  assert.equal(formatOrderScoreResult("winOther", { home: 6, away: 0 }, 250), "胜其他 6:0 @250.00");
+  assert.equal(formatOrderResultLabel("负平", 16.5), "负平 @16.50");
+  assert.equal(formatOrderResultLabel("负平"), "负平");
+  assert.equal(formatOrderScoreResult(undefined), null);
 });
 
 test("一键判断只返回当前已渲染且确实会被赛果改变的订单，包含已结账订单", () => {

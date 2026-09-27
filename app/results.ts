@@ -1,11 +1,19 @@
 import { matchHasSelectedHit, winningOptionId } from "./calculator";
 import { normalizeSportteryMatchId } from "./sporttery";
-import type { CurrentHits, MatchItem, MatchResults, MarketType, SavedSlip } from "./types";
+import type { CurrentHits, MatchItem, MatchResultOdds, MatchResults, MatchScore, MatchScores, MarketType, ResultOdds, SavedSlip } from "./types";
 
 export const RESULT_MARKETS: MarketType[] = ["spf", "rqspf", "score", "goals", "halfFull"];
 
 const cloneHits = (hits: CurrentHits | undefined): CurrentHits => Object.fromEntries(
   Object.entries(hits ?? {}).map(([matchId, values]) => [matchId, { ...values }]),
+);
+
+const cloneScores = (scores: MatchScores | undefined): MatchScores => Object.fromEntries(
+  Object.entries(scores ?? {}).map(([matchId, score]) => [matchId, { ...score }]),
+);
+
+const cloneResultOdds = (odds: MatchResultOdds | undefined): MatchResultOdds => Object.fromEntries(
+  Object.entries(odds ?? {}).map(([matchId, values]) => [matchId, { ...values }]),
 );
 
 const sameHits = (left: CurrentHits | undefined, right: CurrentHits | undefined) => {
@@ -28,6 +36,50 @@ const sameStringSet = (left: string[] | undefined, right: string[] | undefined) 
   return leftSet.size === rightSet.size && [...leftSet].every((value) => rightSet.has(value));
 };
 
+const sameScores = (left: MatchScores | undefined, right: MatchScores | undefined) => {
+  const leftEntries = Object.entries(left ?? {});
+  const rightEntries = Object.entries(right ?? {});
+  return leftEntries.length === rightEntries.length
+    && leftEntries.every(([matchId, score]) => (
+      right?.[matchId]?.home === score.home && right[matchId]?.away === score.away
+    ));
+};
+
+const sameResultOdds = (left: MatchResultOdds | undefined, right: MatchResultOdds | undefined) => {
+  const leftEntries = Object.entries(left ?? {});
+  const rightEntries = Object.entries(right ?? {});
+  if (leftEntries.length !== rightEntries.length) return false;
+  return leftEntries.every(([matchId, values]) => {
+    if (!Object.prototype.hasOwnProperty.call(right ?? {}, matchId)) return false;
+    const otherValues = right?.[matchId] ?? {};
+    const markets = new Set([...Object.keys(values), ...Object.keys(otherValues)] as MarketType[]);
+    return markets.size === Object.keys(values).length
+      && markets.size === Object.keys(otherValues).length
+      && [...markets].every((market) => values[market] === otherValues[market]);
+  });
+};
+
+const SCORE_OTHER_LABELS: Record<string, string> = {
+  winOther: "胜其他",
+  drawOther: "平其他",
+  loseOther: "负其他",
+};
+
+export function formatOrderResultLabel(label?: string | null, odds?: number) {
+  if (!label) return null;
+  return typeof odds === "number" && Number.isFinite(odds) && odds > 0
+    ? `${label} @${odds.toFixed(2)}`
+    : label;
+}
+
+export function formatOrderScoreResult(optionId?: string, fullScore?: MatchScore, odds?: number) {
+  if (!optionId) return null;
+  const score = fullScore ? `${fullScore.home}:${fullScore.away}` : undefined;
+  const otherLabel = SCORE_OTHER_LABELS[optionId];
+  const label = otherLabel ? score ? `${otherLabel} ${score}` : otherLabel : score ?? optionId;
+  return formatOrderResultLabel(label, odds);
+}
+
 export function resultForMatch(results: MatchResults, matchId: string) {
   return results[normalizeSportteryMatchId(matchId)];
 }
@@ -35,6 +87,8 @@ export function resultForMatch(results: MatchResults, matchId: string) {
 export function judgeSlipWithResults(slip: SavedSlip, results: MatchResults): SavedSlip {
   const hits = cloneHits(slip.hits);
   const resultValues = cloneHits(slip.resultValues);
+  const resultScores = cloneScores(slip.resultScores);
+  const resultOdds = cloneResultOdds(slip.resultOdds);
   const failedMatches = new Set(slip.failedMatches ?? []);
   let matchesChanged = false;
   const matches = slip.matches.map((match) => {
@@ -66,6 +120,9 @@ export function judgeSlipWithResults(slip: SavedSlip, results: MatchResults): Sa
     const evaluatedMarkets = selectedMarkets.filter((market) => Boolean(values[market.type]));
     if (evaluatedMarkets.length === 0) return;
     resultValues[match.id] = { ...values };
+    if (result.fullScore) resultScores[match.id] = { ...result.fullScore };
+    if (result.odds && Object.keys(result.odds).length > 0) resultOdds[match.id] = { ...result.odds };
+    else delete resultOdds[match.id];
     const nextMatchHits = { ...(hits[match.id] ?? {}) };
     evaluatedMarkets.forEach((market) => {
       const resultOptionId = values[market.type];
@@ -87,6 +144,8 @@ export function judgeSlipWithResults(slip: SavedSlip, results: MatchResults): Sa
     ...(matchesChanged ? { matches } : {}),
     hits,
     resultValues,
+    resultScores,
+    resultOdds,
     failedMatches: [...failedMatches],
   };
 }
@@ -123,6 +182,8 @@ export function judgeLoadedOrdersWithResults(orders: SavedSlip[], results: Match
     const changed = judged.matches !== order.matches
       || !sameHits(judged.hits, order.hits)
       || !sameHits(judged.resultValues, order.resultValues)
+      || !sameScores(judged.resultScores, order.resultScores)
+      || !sameResultOdds(judged.resultOdds, order.resultOdds)
       || !sameStringSet(judged.failedMatches, order.failedMatches);
     return changed ? [judged] : [];
   });
@@ -178,6 +239,16 @@ export function isMatchResult(value: unknown): value is MatchResults[string] {
     RESULT_MARKETS.includes(market as MarketType) && (typeof optionId === "undefined" || typeof optionId === "string")
   ));
   if (!validValues) return false;
+  const isResultOdds = (odds: unknown): odds is ResultOdds => Boolean(odds)
+    && typeof odds === "object"
+    && !Array.isArray(odds)
+    && Object.entries(odds as Record<string, unknown>).every(([market, value]) => (
+      RESULT_MARKETS.includes(market as MarketType)
+      && typeof value === "number"
+      && Number.isFinite(value)
+      && value > 0
+    ));
+  if (typeof result.odds !== "undefined" && !isResultOdds(result.odds)) return false;
   if (typeof result.rqspfHandicap !== "undefined"
     && (typeof result.rqspfHandicap !== "number" || !Number.isFinite(result.rqspfHandicap))) return false;
   const isScore = (score: unknown): score is { home: number; away: number } => Boolean(score)

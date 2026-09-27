@@ -37,6 +37,7 @@ import {
   parseSportteryUniformMatchOutcome,
   parseSportteryMatchHandicap,
   parseSportteryFixedBonus,
+  parseSportteryFixedBonusDetails,
   refreshSelectedOdds,
   replaceSportteryMatches,
   selectAvailableOrderBets,
@@ -292,7 +293,11 @@ test("批量赛果未同步时使用单场比分兜底并保留 0:0", async () =
     }
     return new Response(JSON.stringify({
       success: true,
-      value: { matchResultList: [{ code: "HHAD", combination: "A", goalLine: "+1" }] },
+      value: { matchResultList: [
+        { code: "HHAD", combination: "A", goalLine: "+1", odds: "1.40" },
+        { code: "CRS", combination: "0:0", odds: "8.00" },
+        { code: "HAFU", combination: "D:D", odds: "3.90" },
+      ] },
     }), { status: 200, headers: { "content-type": "application/json" } });
   }) as typeof fetch;
   try {
@@ -312,6 +317,8 @@ test("批量赛果未同步时使用单场比分兜底并保留 0:0", async () =
       goals: "0",
       halfFull: "DD",
     });
+    assert.deepEqual(parsed?.odds, { rqspf: 1.4, score: 8, halfFull: 3.9 });
+    assert.deepEqual(result.resultOddsFailedMatchIds, []);
     assert.deepEqual(requestedPaths, [
       "/gateway/uniform/football/getUniformMatchResultV1.qry",
       "/gateway/uniform/fb/getMatchScoreV1.qry",
@@ -351,6 +358,36 @@ test("批量赛果缺失且单场仍未结束时保持未结束", async () => {
     assert.equal(result.resultByMatchId.size, 0);
     assert.deepEqual(result.fallbackResultMatchIds, []);
     assert.deepEqual(result.unfinishedMatchIds, [match.id]);
+    assert.deepEqual(result.failedMatchIds, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("赛果赔率请求失败时仍保留已取得的批量赛果", async () => {
+  const [match] = convertSportteryMatches(payload, beforeKickoff);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("getUniformMatchResultV1.qry")) {
+      return Response.json({
+        success: true,
+        value: {
+          total: 1,
+          pages: 1,
+          pageNo: 1,
+          pageSize: 100,
+          matchResult: [{ matchId: match.id, goalLine: "-1", sectionsNo1: "0:1", sectionsNo999: "1:1" }],
+        },
+      });
+    }
+    if (url.pathname.endsWith("getFixedBonusV1.qry")) return new Response("unavailable", { status: 503 });
+    throw new Error(`未处理的测试请求：${url}`);
+  }) as typeof fetch;
+  try {
+    const result = await fetchSportteryMatchResultsWithFallback([match], { now: new Date("2026-07-23T03:30:00") });
+    assert.deepEqual(result.resultByMatchId.get(match.id)?.fullScore, { home: 1, away: 1 });
+    assert.deepEqual(result.resultOddsFailedMatchIds, [match.id]);
     assert.deepEqual(result.failedMatchIds, []);
   } finally {
     globalThis.fetch = originalFetch;
@@ -686,6 +723,40 @@ test("固定奖金接口按真实 code 和 combination 结构解析已完赛赛�
     ],
   } }, match);
   assert.deepEqual(result, { spf: "lose", rqspf: "draw", score: "2:3", goals: "5", halfFull: "DL" });
+});
+
+test("固定奖金详细解析保留比分和半全场赛果赔率", () => {
+  const [match] = convertSportteryMatches(payload, beforeKickoff);
+  const result = parseSportteryFixedBonusDetails({ value: {
+    sectionsNo999: "1:1",
+    sectionsNo1: "0:1",
+    matchResultList: [
+      { code: "CRS", combination: "1:1", odds: "5.75" },
+      { code: "HAFU", combination: "A:D", odds: "16.50" },
+      { code: "HAD", combination: "D", odds: "2.75" },
+      { code: "TTG", combination: "2", odds: "0" },
+    ],
+  } }, match);
+
+  assert.equal(result.values.score, "1:1");
+  assert.equal(result.values.halfFull, "LD");
+  assert.deepEqual(result.odds, { score: 5.75, halfFull: 16.5, spf: 2.75 });
+});
+
+test("固定奖金详细解析支持三种其他比分赔率", () => {
+  const [match] = convertSportteryMatches(payload, beforeKickoff);
+  [
+    ["6:0", "胜其他", "winOther"],
+    ["4:4", "平其他", "drawOther"],
+    ["0:6", "负其他", "loseOther"],
+  ].forEach(([score, combination, expected]) => {
+    const result = parseSportteryFixedBonusDetails({ value: {
+      sectionsNo999: score,
+      matchResultList: [{ code: "CRS", combination, odds: "250.00" }],
+    } }, match);
+    assert.equal(result.values.score, expected);
+    assert.equal(result.odds.score, 250);
+  });
 });
 
 test("matchResultList 为空时仍可从全场和半场比分推导五类赛果", () => {

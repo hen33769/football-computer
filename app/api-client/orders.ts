@@ -7,7 +7,7 @@ import {
   type CompactOrder,
   type BulkOrderOperation,
 } from "../order-model";
-import type { CurrentHits, SavedSlip } from "../types";
+import type { CurrentHits, MatchResultOdds, MatchScores, SavedSlip } from "../types";
 import { requestJson } from "./http";
 
 export type OrderStatusFilter = "success" | "hopeful" | "failed";
@@ -110,6 +110,8 @@ export async function withdrawOrderSettlement(order: SavedSlip) {
 export async function saveOrderResults(order: SavedSlip, payload: {
   hits?: CurrentHits;
   resultValues?: CurrentHits;
+  resultScores?: MatchScores;
+  resultOdds?: MatchResultOdds;
   failedMatchIds?: string[];
 }) {
   if (!order.id) throw new Error("订单缺少 ID");

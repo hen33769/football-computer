@@ -131,11 +131,11 @@ import { TeamNameWithIcon } from "./components/TeamNameWithAlias";
 import { parseRecognizedText } from "./ocr";
 import {
   convertSportteryMatches,
+  fetchSportteryFixedBonus,
   fetchSportteryUniformMatchResultPage,
   fetchSportteryMatchResultsWithFallback,
   fetchSportteryMatchCalculator,
   fetchSportteryMatchById,
-  fetchSportteryMatchHandicap,
   fetchSportteryMatchScore,
   fetchSportteryMatchSnapshot,
   getMatchSaleState,
@@ -149,6 +149,7 @@ import {
   isAutoResultEligible,
   mergeSportteryMatchCache,
   normalizeSportteryMatchId,
+  parseSportteryMatchHandicap,
   parseSportteryUniformMatchOutcome,
   parseSportteryMatchScoreDetails,
   refreshSelectedOdds,
@@ -162,7 +163,7 @@ import {
   type SportteryMatchDate,
   type SportteryUniformMatchResult,
 } from "./sporttery";
-import { hasCompleteMatchResult, isMatchResult, isOrderMatchJudged, isOrderMatchResultUnavailable, judgeLoadedOrdersWithResults, repairSlipHandicapResults, RESULT_MARKETS, resultSelectOptions } from "./results";
+import { formatOrderResultLabel, formatOrderScoreResult, hasCompleteMatchResult, isMatchResult, isOrderMatchJudged, isOrderMatchResultUnavailable, judgeLoadedOrdersWithResults, repairSlipHandicapResults, RESULT_MARKETS, resultSelectOptions } from "./results";
 import {
   AUTO_RESULT_REQUEST_INTERVAL_MS,
   scheduleAutoResultRetry,
@@ -182,7 +183,7 @@ import {
   type AppSettings,
 } from "./settings";
 import { buildTeamNameIndex, normalizeTeamName, type TeamNameActiveSlot, type TeamNameGroup, type TeamNameGroupDraft } from "./team-aliases";
-import type { CurrentHits, Market, MarketType, MatchItem, MatchResults, OddsOption, PrizeRange, SavedSlip } from "./types";
+import type { CurrentHits, Market, MarketType, MatchItem, MatchResultOdds, MatchResults, MatchScores, OddsOption, PrizeRange, SavedSlip } from "./types";
 
 const SAVED_KEY = CLOUD_STORAGE_KEYS.orders;
 const LEGACY_DRAFT_KEY = "football-simulator-current-draft-v1";
@@ -567,6 +568,30 @@ const isExportedHits = (value: unknown): value is CurrentHits => Boolean(value)
       MARKET_TYPES.includes(market as MarketType) && (typeof optionId === "undefined" || typeof optionId === "string")
     )));
 
+const isExportedScores = (value: unknown): value is MatchScores => Boolean(value)
+  && typeof value === "object"
+  && !Array.isArray(value)
+  && Object.entries(value as Record<string, unknown>).every(([matchId, score]) => Boolean(matchId)
+    && Boolean(score)
+    && typeof score === "object"
+    && !Array.isArray(score)
+    && Number.isInteger((score as { home?: unknown }).home)
+    && Number((score as { home: number }).home) >= 0
+    && Number.isInteger((score as { away?: unknown }).away)
+    && Number((score as { away: number }).away) >= 0);
+
+const isExportedResultOdds = (value: unknown): value is MatchResultOdds => Boolean(value)
+  && typeof value === "object"
+  && !Array.isArray(value)
+  && Object.entries(value as Record<string, unknown>).every(([matchId, odds]) => Boolean(matchId)
+    && Boolean(odds)
+    && typeof odds === "object"
+    && !Array.isArray(odds)
+    && Object.entries(odds as Record<string, unknown>).every(([market, resultOdds]) => MARKET_TYPES.includes(market as MarketType)
+      && typeof resultOdds === "number"
+      && Number.isFinite(resultOdds)
+      && resultOdds > 0));
+
 const isExportedOrder = (value: unknown): value is SavedSlip => {
   if (!value || typeof value !== "object") return false;
   const order = value as Partial<SavedSlip>;
@@ -586,6 +611,8 @@ const isExportedOrder = (value: unknown): value is SavedSlip => {
     && (typeof order.oddsLocked === "undefined" || typeof order.oddsLocked === "boolean")
     && (typeof order.hits === "undefined" || isExportedHits(order.hits))
     && (typeof order.resultValues === "undefined" || isExportedHits(order.resultValues))
+    && (typeof order.resultScores === "undefined" || isExportedScores(order.resultScores))
+    && (typeof order.resultOdds === "undefined" || isExportedResultOdds(order.resultOdds))
     && (typeof order.failedMatches === "undefined" || (Array.isArray(order.failedMatches) && order.failedMatches.every((matchId) => typeof matchId === "string")))
     && (typeof order.settledAt === "undefined" || typeof order.settledAt === "string")
     && (typeof order.settledPrize === "undefined" || (typeof order.settledPrize === "number" && Number.isFinite(order.settledPrize)))
@@ -2462,6 +2489,12 @@ function InnerFootballApp({
       resultValues: previousOrder?.resultValues
         ? Object.fromEntries(Object.entries(previousOrder.resultValues).filter(([matchId]) => matches.some((match) => match.id === matchId)))
         : undefined,
+      resultScores: previousOrder?.resultScores
+        ? Object.fromEntries(Object.entries(previousOrder.resultScores).filter(([matchId]) => matches.some((match) => match.id === matchId)))
+        : undefined,
+      resultOdds: previousOrder?.resultOdds
+        ? Object.fromEntries(Object.entries(previousOrder.resultOdds).filter(([matchId]) => matches.some((match) => match.id === matchId)))
+        : undefined,
       failedMatches: previousOrder?.failedMatches?.filter((matchId) => matches.some((match) => match.id === matchId)) ?? [],
     };
     setSaveSlipLoading(true);
@@ -2803,10 +2836,11 @@ function InnerFootballApp({
 
   const requestMatchResult = async (match: MatchItem) => {
     const matchId = normalizeSportteryMatchId(match.id);
-    const [scorePayload, fetchedHandicap] = await Promise.all([
+    const [scorePayload, fixedBonus] = await Promise.all([
       fetchSportteryMatchScore(matchId),
-      fetchSportteryMatchHandicap(matchId).catch(() => undefined),
+      fetchSportteryFixedBonus(match).catch(() => null),
     ]);
+    const fetchedHandicap = fixedBonus ? parseSportteryMatchHandicap(fixedBonus.payload) : undefined;
     const phase = getSportteryMatchPhaseTc(scorePayload);
     console.log("[体彩接口] 比分与比赛阶段原始数据", scorePayload);
     if (!isSportteryRegularTimeFinished(scorePayload)) return { status: "unfinished" as const, phase };
@@ -2830,6 +2864,7 @@ function InnerFootballApp({
       ...(typeof rqspfHandicap === "number" ? { rqspfHandicap } : {}),
       fullScore: parsedResult.fullScore,
       halfScore: parsedResult.halfScore,
+      ...(fixedBonus && Object.keys(fixedBonus.odds).length > 0 ? { odds: fixedBonus.odds } : {}),
     };
     setMatchResults((current) => ({ ...current, [matchId]: nextResult }));
     return { status: "success" as const, valueCount: Object.keys(values).length, result: nextResult };
@@ -2880,6 +2915,7 @@ function InnerFootballApp({
           ...(typeof parsedResult.rqspfHandicap === "number" ? { rqspfHandicap: parsedResult.rqspfHandicap } : {}),
           fullScore: parsedResult.fullScore,
           halfScore: parsedResult.halfScore,
+          ...(parsedResult.odds ? { odds: parsedResult.odds } : {}),
         };
       });
       const successCount = fetched.resultByMatchId.size;
@@ -2887,11 +2923,12 @@ function InnerFootballApp({
       const unfinishedCount = fetched.unfinishedMatchIds.length;
       const cancelledCount = fetched.cancelledMatchIds.length;
       const failedCount = fetched.failedMatchIds.length;
+      const resultOddsFailedCount = fetched.resultOddsFailedMatchIds.length;
       if (successCount > 0) setMatchResults((current) => ({ ...current, ...fetchedResults }));
       const firstFailure = fetched.failures[0]?.error;
       const firstError = firstFailure instanceof Error ? firstFailure.message : firstFailure ? String(firstFailure) : "";
       const fallbackDescription = fallbackSuccessCount > 0 ? `（其中批量未同步、单场兜底 ${fallbackSuccessCount} 场）` : "";
-      const description = `共 ${resultMatches.length} 场：成功 ${successCount} 场${fallbackDescription}，未结束或暂无赛果 ${unfinishedCount} 场，已取消 ${cancelledCount} 场，请求失败 ${failedCount} 场${firstError ? `；首个错误：${firstError}` : ""}`;
+      const description = `共 ${resultMatches.length} 场：成功 ${successCount} 场${fallbackDescription}，未结束或暂无赛果 ${unfinishedCount} 场，已取消 ${cancelledCount} 场，请求失败 ${failedCount} 场${resultOddsFailedCount ? `，其中 ${resultOddsFailedCount} 场赛果赔率未取得` : ""}${firstError ? `；首个错误：${firstError}` : ""}`;
       if (successCount > 0) notification.success({ title: "全部赛果获取完成", description, placement: "bottomRight" });
       else notification.warning({ title: "暂未获取到可用赛果", description, placement: "bottomRight" });
     } finally {
@@ -4712,8 +4749,15 @@ function InnerFootballApp({
                         {orderMatches.map((match) => {
                           const matchFailed = (slip.failedMatches ?? []).includes(match.id);
                           const matchSuccessful = matchHasSelectedHit(match, slip.hits ?? {});
-                          const scoreResult = matchResultOptionLabel(match, "score", slip.resultValues?.[match.id]?.score);
-                          const halfFullResult = matchResultOptionLabel(match, "halfFull", slip.resultValues?.[match.id]?.halfFull);
+                          const scoreResult = formatOrderScoreResult(
+                            slip.resultValues?.[match.id]?.score,
+                            slip.resultScores?.[match.id],
+                            slip.resultOdds?.[match.id]?.score,
+                          );
+                          const halfFullResult = formatOrderResultLabel(
+                            matchResultOptionLabel(match, "halfFull", slip.resultValues?.[match.id]?.halfFull),
+                            slip.resultOdds?.[match.id]?.halfFull,
+                          );
                           const matchLeagueColor = getLeagueTagColor(appSettings, match.league);
                           return (
                           <section className={`order-match-entry ${matchFailed ? "failed" : ""}`} key={match.id}>
@@ -4735,8 +4779,8 @@ function InnerFootballApp({
                                 )}
                               </b>
                               <div className="order-match-result-tags">
-                                {scoreResult && <Tag color="blue">比分 {scoreResult}</Tag>}
-                                {halfFullResult && <Tag color="volcano">半全场 {halfFullResult}</Tag>}
+                                {scoreResult && <Tag color="blue">{scoreResult}</Tag>}
+                                {halfFullResult && <Tag color="volcano">{halfFullResult}</Tag>}
                                 {matchFailed && <Tag color="error">失败</Tag>}
                                 {matchSuccessful && <Tag color="success">成功</Tag>}
                               </div>
@@ -5257,16 +5301,23 @@ function InnerFootballApp({
             <p className="drawer-tip">{orderDetail.settledAt ? "该订单已结账，只能查看保存时的比赛结果与中奖金额。" : "点击已选项可标记玩法命中；勾选“失败”会清除该场命中并将投注项置灰。完成后点击底部保存。"}</p>
             {orderDetailMatches.map((match) => {
               const matchFailed = orderFailedMatches.includes(match.id);
-              const scoreResult = matchResultOptionLabel(match, "score", orderDetail.resultValues?.[match.id]?.score);
-              const halfFullResult = matchResultOptionLabel(match, "halfFull", orderDetail.resultValues?.[match.id]?.halfFull);
+              const scoreResult = formatOrderScoreResult(
+                orderDetail.resultValues?.[match.id]?.score,
+                orderDetail.resultScores?.[match.id],
+                orderDetail.resultOdds?.[match.id]?.score,
+              );
+              const halfFullResult = formatOrderResultLabel(
+                matchResultOptionLabel(match, "halfFull", orderDetail.resultValues?.[match.id]?.halfFull),
+                orderDetail.resultOdds?.[match.id]?.halfFull,
+              );
               return (
               <section className={`detail-match ${matchFailed ? "failed" : ""}`} key={match.id}>
                 <div className="detail-match-title">
                   <span>{match.weekday}{match.code}</span>
                   <b>{match.home} VS {match.away}</b>
                   <div className="detail-match-result-tags">
-                    {scoreResult && <Tag color="blue">比分 {scoreResult}</Tag>}
-                    {halfFullResult && <Tag color="volcano">半全场 {halfFullResult}</Tag>}
+                    {scoreResult && <Tag color="blue">{scoreResult}</Tag>}
+                    {halfFullResult && <Tag color="volcano">{halfFullResult}</Tag>}
                   </div>
                   <Checkbox checked={matchFailed} disabled={Boolean(orderDetail.settledAt) || orderHitsSaving} onChange={(event) => toggleOrderMatchFailure(match.id, event.target.checked)}>失败</Checkbox>
                 </div>

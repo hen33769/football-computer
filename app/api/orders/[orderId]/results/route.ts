@@ -12,6 +12,8 @@ export async function PUT(request: Request, context: RouteContext) {
     const payload = await request.json() as {
       hits?: unknown;
       resultValues?: unknown;
+      resultScores?: unknown;
+      resultOdds?: unknown;
       failedMatchIds?: unknown;
       expectedUpdatedAt?: unknown;
     };
@@ -19,6 +21,8 @@ export async function PUT(request: Request, context: RouteContext) {
       order: await saveOrderResults(getD1(), authenticated.value.account.id, decodeURIComponent(params.orderId), {
         hits: payload.hits as Parameters<typeof saveOrderResults>[3]["hits"],
         resultValues: payload.resultValues as Parameters<typeof saveOrderResults>[3]["resultValues"],
+        resultScores: payload.resultScores as Parameters<typeof saveOrderResults>[3]["resultScores"],
+        resultOdds: payload.resultOdds as Parameters<typeof saveOrderResults>[3]["resultOdds"],
         failedMatchIds: Array.isArray(payload.failedMatchIds) ? payload.failedMatchIds.filter((id): id is string => typeof id === "string") : [],
         expectedUpdatedAt: typeof payload.expectedUpdatedAt === "string" ? payload.expectedUpdatedAt : undefined,
       }),

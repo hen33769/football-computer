@@ -5,7 +5,7 @@ import {
   selectedOptions,
   type OrderStatus,
 } from "./calculator";
-import type { CurrentHits, Market, MarketType, MatchItem, OddsOption, SavedSlip } from "./types";
+import type { CurrentHits, Market, MarketType, MatchItem, MatchResultOdds, MatchScores, OddsOption, SavedSlip } from "./types";
 
 export type CompactOrderSelection = {
   matchId: string;
@@ -36,6 +36,8 @@ export type CompactOrder = {
   oddsLocked?: boolean;
   hits?: CurrentHits;
   resultValues?: CurrentHits;
+  resultScores?: MatchScores;
+  resultOdds?: MatchResultOdds;
   failedMatchIds?: string[];
   settledAt?: string;
   settledPrize?: number;
@@ -111,6 +113,14 @@ const cloneHits = (hits: CurrentHits | undefined): CurrentHits | undefined => (
   hits ? Object.fromEntries(Object.entries(hits).map(([matchId, values]) => [matchId, { ...values }])) : undefined
 );
 
+const cloneScores = (scores: MatchScores | undefined): MatchScores | undefined => (
+  scores ? Object.fromEntries(Object.entries(scores).map(([matchId, score]) => [matchId, { ...score }])) : undefined
+);
+
+const cloneResultOdds = (odds: MatchResultOdds | undefined): MatchResultOdds | undefined => (
+  odds ? Object.fromEntries(Object.entries(odds).map(([matchId, values]) => [matchId, { ...values }])) : undefined
+);
+
 const createCompactOption = (selection: CompactOrderSelection): OddsOption => ({
   id: selection.optionId,
   label: selection.optionLabel,
@@ -133,6 +143,8 @@ export function savedSlipToCompactOrder(slip: SavedSlip): CompactOrder {
     ...(slip.oddsLocked !== undefined ? { oddsLocked: slip.oddsLocked } : {}),
     ...(slip.hits ? { hits: cloneHits(slip.hits) } : {}),
     ...(slip.resultValues ? { resultValues: cloneHits(slip.resultValues) } : {}),
+    ...(slip.resultScores ? { resultScores: cloneScores(slip.resultScores) } : {}),
+    ...(slip.resultOdds ? { resultOdds: cloneResultOdds(slip.resultOdds) } : {}),
     ...(slip.failedMatches ? { failedMatchIds: [...slip.failedMatches] } : {}),
     ...(slip.settledAt ? { settledAt: slip.settledAt } : {}),
     ...(typeof slip.settledPrize === "number" ? { settledPrize: slip.settledPrize } : {}),
@@ -224,6 +236,8 @@ export function compactOrderToSavedSlip(order: CompactOrder): SavedSlip {
     ...(order.oddsLocked !== undefined ? { oddsLocked: order.oddsLocked } : {}),
     ...(order.hits ? { hits: cloneHits(order.hits) } : {}),
     ...(order.resultValues ? { resultValues: cloneHits(order.resultValues) } : {}),
+    ...(order.resultScores ? { resultScores: cloneScores(order.resultScores) } : {}),
+    ...(order.resultOdds ? { resultOdds: cloneResultOdds(order.resultOdds) } : {}),
     ...(order.failedMatchIds ? { failedMatches: [...order.failedMatchIds] } : {}),
     ...(order.settledAt ? { settledAt: order.settledAt } : {}),
     ...(typeof order.settledPrize === "number" ? { settledPrize: order.settledPrize } : {}),
@@ -244,6 +258,8 @@ export function normalizeCompactOrder(input: CompactOrder | SavedSlip): CompactO
     selections: input.selections.map((selection) => ({ ...selection })),
     ...(input.hits ? { hits: cloneHits(input.hits) } : {}),
     ...(input.resultValues ? { resultValues: cloneHits(input.resultValues) } : {}),
+    ...(input.resultScores ? { resultScores: cloneScores(input.resultScores) } : {}),
+    ...(input.resultOdds ? { resultOdds: cloneResultOdds(input.resultOdds) } : {}),
     ...(input.failedMatchIds ? { failedMatchIds: [...input.failedMatchIds] } : {}),
   };
   return savedSlipToCompactOrder(input as SavedSlip);
@@ -272,6 +288,22 @@ const isMarketType = (value: unknown): value is MarketType => (
 const isRecord = (value: unknown): value is Record<string, unknown> => (
   Boolean(value) && typeof value === "object" && !Array.isArray(value)
 );
+
+const isMatchScores = (value: unknown): value is MatchScores => isRecord(value)
+  && Object.entries(value).every(([matchId, score]) => matchId.length > 0
+    && isRecord(score)
+    && Number.isInteger(score.home)
+    && Number(score.home) >= 0
+    && Number.isInteger(score.away)
+    && Number(score.away) >= 0);
+
+const isMatchResultOdds = (value: unknown): value is MatchResultOdds => isRecord(value)
+  && Object.entries(value).every(([matchId, odds]) => matchId.length > 0
+    && isRecord(odds)
+    && Object.entries(odds).every(([market, resultOdds]) => isMarketType(market)
+      && typeof resultOdds === "number"
+      && Number.isFinite(resultOdds)
+      && resultOdds > 0));
 
 export function isCompactOrder(value: unknown): value is CompactOrder {
   if (!isRecord(value)) return false;
@@ -304,6 +336,8 @@ export function isCompactOrder(value: unknown): value is CompactOrder {
         && Number.isFinite(selection.odds);
     })
     && (value.updatedAt === undefined || typeof value.updatedAt === "string")
+    && (value.resultScores === undefined || isMatchScores(value.resultScores))
+    && (value.resultOdds === undefined || isMatchResultOdds(value.resultOdds))
     && (value.settledAt === undefined || typeof value.settledAt === "string")
     && (value.settledPrize === undefined || (typeof value.settledPrize === "number" && Number.isFinite(value.settledPrize)))
     && (value.oddsLockedBeforePayment === undefined || typeof value.oddsLockedBeforePayment === "boolean")

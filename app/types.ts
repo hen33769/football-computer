@@ -40,20 +40,26 @@ export type MatchItem = {
 
 export type CurrentHits = Record<string, Partial<Record<MarketType, string>>>;
 
+export type MatchScore = {
+  home: number;
+  away: number;
+};
+
+export type MatchScores = Record<string, MatchScore>;
+
+export type ResultOdds = Partial<Record<MarketType, number>>;
+
+export type MatchResultOdds = Record<string, ResultOdds>;
+
 export type MatchResult = {
   matchId: string;
   updatedAt: string;
   source: "manual" | "api";
   values: Partial<Record<MarketType, string>>;
   rqspfHandicap?: number;
-  fullScore?: {
-    home: number;
-    away: number;
-  };
-  halfScore?: {
-    home: number;
-    away: number;
-  };
+  fullScore?: MatchScore;
+  halfScore?: MatchScore;
+  odds?: ResultOdds;
 };
 
 export type MatchResults = Record<string, MatchResult>;
@@ -70,6 +76,8 @@ export type SavedSlip = {
   oddsLocked?: boolean;
   hits?: CurrentHits;
   resultValues?: CurrentHits;
+  resultScores?: MatchScores;
+  resultOdds?: MatchResultOdds;
   failedMatches?: string[];
   settledAt?: string;
   settledPrize?: number;
