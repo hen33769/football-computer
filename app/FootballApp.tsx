@@ -85,6 +85,7 @@ import {
 } from "./calculator";
 import { appendOrderPassValue, formatOrderPassValue, inferOrderPasses } from "./order-passes";
 import { matchPassesLeagueFilter, matchPassesTeamFilter, orderContainsTeam, orderPassesLeagueFilter, orderPassesMatchCountFilter, retainAvailableLeagueNames, splitTeamNameByQuery } from "./order-filters";
+import { splitOrderBatchIntoColumns } from "./order-layout";
 import { prioritizeLeagueNames, sortMatchesForManualOrder } from "./sorting";
 import {
   cloneMatches,
@@ -4683,7 +4684,9 @@ function InnerFootballApp({
                 <div className="orders-batches">
                   {renderedOrderBatches.map((orderBatch, batchIndex) => (
                     <div className="orders-grid" key={`order-batch-${batchIndex}`}>
-                      {orderBatch.map((slip, batchSlipIndex) => {
+                      {splitOrderBatchIntoColumns(orderBatch).map((orderColumn, columnIndex) => (
+                        <div className="orders-grid-column" key={`order-batch-${batchIndex}-column-${columnIndex}`}>
+                          {orderColumn.map(({ order: slip, batchIndex: batchSlipIndex }) => {
                   const slipIndex = batchIndex * ORDER_LIST_BATCH_SIZE + batchSlipIndex;
                   const orderMatches = sortMatchesForDisplay(selectedMatches(slip.matches));
                   const orderBets = countBets(slip.matches, slip.passes);
@@ -4709,7 +4712,7 @@ function InnerFootballApp({
 	                  const orderDeleting = deletingOrderIds.includes(actionKey);
 	                  const orderBusy = orderLoading || orderPaying || orderSettling || orderWithdrawing || orderDeleting;
 	                  return (
-                    <Card key={orderKey} className={`order-card ${orderStatus === "hopeful" ? "" : orderStatus}`}>
+                    <Card key={orderKey} className={`order-card ${orderStatus === "hopeful" ? "" : orderStatus}`} style={{ order: batchSlipIndex }}>
                       <div className="order-card-head">
                         <div className="order-card-meta-line">
                           <div className="order-card-tags">
@@ -4859,7 +4862,9 @@ function InnerFootballApp({
                       </div>
                     </Card>
                   );
-                      })}
+                            })}
+                        </div>
+                      ))}
                     </div>
                   ))}
                 </div>

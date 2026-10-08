@@ -836,7 +836,8 @@ button, input, textarea { font: inherit; }
 .match-result-fields label > span { color: var(--muted); font-size: 10px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .match-result-fields .ant-select { width: 100%; }
 .orders-empty { min-height: 330px; display: grid; place-items: center; border-radius: 20px; }
-.orders-grid { column-count: 2; column-fill: balance; column-gap: 16px; }
+.orders-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; column-gap: 16px; }
+.orders-grid-column { min-width: 0; display: flex; flex-direction: column; }
 .orders-load-more { min-height: 64px; display: flex; align-items: center; justify-content: center; gap: 8px; color: #789095; font-size: 11px; }
 .orders-load-more b { color: #47676d; font-variant-numeric: tabular-nums; }
 .order-card {
@@ -1096,7 +1097,8 @@ button, input, textarea { font: inherit; }
 }
 
 @media (max-width: 720px) {
-  .orders-grid { column-count: 1; }
+  .orders-grid { display: flex; flex-direction: column; }
+  .orders-grid-column { display: contents; }
 }
 
 @media (max-width: 560px) {
