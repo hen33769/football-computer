@@ -84,7 +84,7 @@ import {
   type PrizeRangeMetrics,
 } from "./calculator";
 import { appendOrderPassValue, formatOrderPassValue, inferOrderPasses } from "./order-passes";
-import { matchPassesLeagueFilter, orderContainsTeam, orderPassesLeagueFilter, orderPassesMatchCountFilter, retainAvailableLeagueNames, splitTeamNameByQuery } from "./order-filters";
+import { matchPassesLeagueFilter, matchPassesTeamFilter, orderContainsTeam, orderPassesLeagueFilter, orderPassesMatchCountFilter, retainAvailableLeagueNames, splitTeamNameByQuery } from "./order-filters";
 import { prioritizeLeagueNames, sortMatchesForManualOrder } from "./sorting";
 import {
   cloneMatches,
@@ -833,6 +833,7 @@ function MatchCard({
   match,
   now,
   teamNameIndex,
+  teamQuery,
   onToggle,
   onPreview,
   onMore,
@@ -845,6 +846,7 @@ function MatchCard({
   match: MatchItem;
   now: Date;
   teamNameIndex: ReturnType<typeof buildTeamNameIndex>;
+  teamQuery: string;
   onToggle: (matchId: string, type: MarketType, optionId: string) => void;
   onPreview: (matchId: string) => void;
   onMore: (matchId: string) => void;
@@ -888,7 +890,7 @@ function MatchCard({
       </div>
       <div className="teams-row">
         <div className="match-team-side match-home-side">
-          <b className="match-team-name match-home-team"><TeamNameWithIcon name={match.home} index={teamNameIndex} /></b>
+          <b className="match-team-name match-home-team"><TeamNameWithIcon name={match.home} index={teamNameIndex} highlightQuery={teamQuery} /></b>
         </div>
         {fullScore ? (
           <>
@@ -900,7 +902,7 @@ function MatchCard({
           <span className="match-result-loading" title="正在获取赛果" aria-label="正在获取赛果"><LoadingOutlined spin /></span>
         ) : <span className="match-versus">VS</span>}
         <div className="match-team-side match-away-side">
-          <b className="match-team-name match-away-team"><TeamNameWithIcon name={match.away} index={teamNameIndex} iconPosition="before" aliasPosition="after" /></b>
+          <b className="match-team-name match-away-team"><TeamNameWithIcon name={match.away} index={teamNameIndex} iconPosition="before" aliasPosition="after" highlightQuery={teamQuery} /></b>
         </div>
         {halfScore && (
           <>
@@ -1388,6 +1390,7 @@ function InnerFootballApp({
   const [leagueOptions, setLeagueOptions] = useState<SportteryLeague[]>(() => cachedLeagueOptions(matches));
   const [selectedMatchDate, setSelectedMatchDate] = useState<string | null>(null);
   const [matchSaleFilter, setMatchSaleFilter] = useState<MatchSaleFilter>("non-stopped");
+  const [matchTeamQuery, setMatchTeamQuery] = useState("");
   const [selectedLeagueNames, setSelectedLeagueNames] = useState<string[]>([]);
   const [collapsedMatchDates, setCollapsedMatchDates] = useState<string[]>([]);
   const initializedMatchDateCollapseRef = useRef(new Set<string>());
@@ -2126,8 +2129,9 @@ function InnerFootballApp({
     ...Object.keys(appSettings.appearance.leagueTagColors),
   ])], [appSettings.appearance.leagueTagColors, leagueOptions]);
   const filteredMatches = useMemo(() => dateAndSaleFilteredMatches
+    .filter((match) => matchPassesTeamFilter(match, matchTeamQuery, teamNameIndex))
     .filter((match) => matchPassesLeagueFilter(match, selectedLeagueSet))
-    .sort(compareMatchDisplayOrder), [dateAndSaleFilteredMatches, selectedLeagueSet]);
+    .sort(compareMatchDisplayOrder), [dateAndSaleFilteredMatches, matchTeamQuery, selectedLeagueSet, teamNameIndex]);
 
   const groupedMatches = useMemo(() => {
     const groups = new Map<string, MatchItem[]>();
@@ -3706,6 +3710,7 @@ function InnerFootballApp({
 
   const clearMatchFilters = () => {
     setSelectedMatchDate(null);
+    setMatchTeamQuery("");
     setSelectedLeagueNames([]);
     setMatchSaleFilter("all");
   };
@@ -4001,6 +4006,19 @@ function InnerFootballApp({
                 onClick={() => { void refreshSportteryData(); }}
               >{sportteryLoading ? "加载中" : "刷新数据"}</Button>
             </div>
+            <div className="match-filter-row match-team-filter-control">
+              <span>比赛队伍</span>
+              <Input
+                allowClear
+                className="match-team-filter-input"
+                prefix={<SearchOutlined />}
+                aria-label="按比赛队伍筛选比赛"
+                placeholder="输入主队、客队或别称"
+                value={matchTeamQuery}
+                disabled={sportteryLoading}
+                onChange={(event) => setMatchTeamQuery(event.target.value)}
+              />
+            </div>
             <div className="match-filter-row league-filter-control">
               <span className="match-filter-label">比赛类型<small>不选则不限</small></span>
               <div className="league-filter-tags">
@@ -4092,6 +4110,7 @@ function InnerFootballApp({
                       match={match}
                       now={saleNow}
                       teamNameIndex={teamNameIndex}
+                      teamQuery={matchTeamQuery}
                       onToggle={toggleOption}
                       onPreview={setPreviewMatchId}
                       onMore={setMoreMatchId}

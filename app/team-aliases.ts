@@ -37,6 +37,7 @@ export type TeamNameAliasesResponse = {
 export type TeamNameResolution = {
   groupId: string;
   activeNames: [TeamNameEntry, TeamNameEntry?];
+  searchNameKeys: string[];
   iconDataUrl: string | null;
 };
 
@@ -69,9 +70,11 @@ export function buildTeamNameIndex(groups: TeamNameGroup[]): TeamNameIndex {
     const firstActive = activeNames.find((entry) => entry.activeSlot === 1) ?? group.names[0];
     const secondActive = activeNames.find((entry) => entry.activeSlot === 2);
     if (!firstActive) return;
+    const searchNameKeys = [...new Set(group.names.map((entry) => normalizeTeamName(entry.name)).filter(Boolean))];
     const resolution: TeamNameResolution = {
       groupId: group.id,
       activeNames: [firstActive, secondActive],
+      searchNameKeys,
       iconDataUrl: group.iconDataUrl ?? null,
     };
     group.names.forEach((entry) => {

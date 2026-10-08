@@ -1,10 +1,8 @@
 import { selectedMatches } from "./calculator";
+import { normalizeTeamName, type TeamNameIndex } from "./team-aliases";
 import type { MatchItem, SavedSlip } from "./types";
 
-const normalizedTeamText = (value: string) => value
-  .trim()
-  .toLocaleLowerCase("zh-CN")
-  .replace(/\s+/g, "");
+const normalizedTeamText = normalizeTeamName;
 
 export type TeamNameSegment = {
   text: string;
@@ -64,6 +62,25 @@ export const matchPassesLeagueFilter = (
   match: Pick<MatchItem, "league">,
   selectedLeagues: ReadonlySet<string>,
 ) => selectedLeagues.size === 0 || selectedLeagues.has(match.league);
+
+export const teamNameMatchesQuery = (
+  teamName: string,
+  query: string,
+  teamNameIndex: TeamNameIndex,
+) => {
+  const normalizedQuery = normalizedTeamText(query);
+  if (!normalizedQuery) return true;
+  const normalizedName = normalizedTeamText(teamName);
+  if (normalizedName.includes(normalizedQuery)) return true;
+  return teamNameIndex.get(normalizedName)?.searchNameKeys.some((nameKey) => nameKey.includes(normalizedQuery)) ?? false;
+};
+
+export const matchPassesTeamFilter = (
+  match: Pick<MatchItem, "home" | "away">,
+  query: string,
+  teamNameIndex: TeamNameIndex,
+) => teamNameMatchesQuery(match.home, query, teamNameIndex)
+  || teamNameMatchesQuery(match.away, query, teamNameIndex);
 
 export const retainAvailableLeagueNames = (
   selectedLeagues: string[],

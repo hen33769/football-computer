@@ -20,11 +20,12 @@ import {
 } from "../app/calculator";
 import { cloneMatches, initialMatches } from "../app/data";
 import { orderFilterIncomeTotal, orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "../app/imports";
-import { matchPassesLeagueFilter, orderContainsTeam, orderPassesLeagueFilter, orderPassesMatchCountFilter, retainAvailableLeagueNames, splitTeamNameByQuery } from "../app/order-filters";
+import { matchPassesLeagueFilter, matchPassesTeamFilter, orderContainsTeam, orderPassesLeagueFilter, orderPassesMatchCountFilter, retainAvailableLeagueNames, splitTeamNameByQuery, teamNameMatchesQuery } from "../app/order-filters";
 import { appendOrderPassValue, inferOrderPasses, parseOrderPassValues } from "../app/order-passes";
 import { formatOrderResultLabel, formatOrderScoreResult, isOrderMatchJudged, isOrderMatchResultUnavailable, judgeLoadedOrdersWithResults, judgeSlipWithResults, repairSlipHandicapResults } from "../app/results";
 import { prioritizeLeagueNames, sortMatchesForManualOrder } from "../app/sorting";
 import { formatMatchCopyLine } from "../app/match-format";
+import { buildTeamNameIndex, type TeamNameGroup } from "../app/team-aliases";
 import type { MatchItem, SavedSlip } from "../app/types";
 
 test("订单按创建时间降序排列，非法时间排在末尾", () => {
@@ -84,6 +85,32 @@ test("比赛类型选项变化后只保留仍然可用的选择", () => {
   assert.deepEqual(retainAvailableLeagueNames(selected, new Set()), []);
 });
 
+test("投注页队伍过滤匹配主客队原名和名称组内全部别称", () => {
+  const teamGroup: TeamNameGroup = {
+    id: "djurgardens",
+    iconDataUrl: null,
+    revision: 0,
+    updatedAt: "2026-10-08T00:00:00.000Z",
+    names: [
+      { id: "name-1", groupId: "djurgardens", name: "尤加尔登", nameKey: "尤加尔登", activeSlot: 1 },
+      { id: "name-2", groupId: "djurgardens", name: "佐加顿斯", nameKey: "佐加顿斯", activeSlot: 2 },
+      { id: "name-3", groupId: "djurgardens", name: "Djurgardens", nameKey: "djurgardens", activeSlot: null },
+      { id: "name-4", groupId: "djurgardens", name: "Stockholm Club", nameKey: "stockholmclub", activeSlot: null },
+    ],
+  };
+  const index = buildTeamNameIndex([teamGroup]);
+  const match: Pick<MatchItem, "home" | "away"> = { home: "Djurgardens", away: "Manchester United" };
+
+  assert.equal(matchPassesTeamFilter(match, "", index), true);
+  assert.equal(matchPassesTeamFilter(match, "尤加", index), true);
+  assert.equal(matchPassesTeamFilter(match, "佐加顿", index), true);
+  assert.equal(matchPassesTeamFilter(match, "stock holm", index), true);
+  assert.equal(matchPassesTeamFilter(match, "ＭＡＮＣＨＥＳＴＥＲ", index), true);
+  assert.equal(matchPassesTeamFilter(match, "切尔西", index), false);
+  assert.equal(teamNameMatchesQuery("未知队伍", "未知", index), true);
+  assert.equal(teamNameMatchesQuery("未知队伍", "尤加", index), false);
+});
+
 test("订单队伍和比赛类型仅匹配实际已投注比赛，空类型代表不过滤", () => {
   const matches = cloneMatches(initialMatches.slice(0, 2));
   matches[0].markets[0].options[0].selected = true;
@@ -123,6 +150,10 @@ test("订单队伍名称按筛选文字拆分高亮片段", () => {
   ]);
   assert.deepEqual(splitTeamNameByQuery("阿森纳", "  "), [
     { text: "阿森纳", highlighted: false },
+  ]);
+  assert.deepEqual(splitTeamNameByQuery("Manchester United", "ＭＡＮ CHESTER"), [
+    { text: "Manchester", highlighted: true },
+    { text: " United", highlighted: false },
   ]);
 });
 
