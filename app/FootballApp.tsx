@@ -319,8 +319,8 @@ const matchesSaleFilter = (match: MatchItem, filter: MatchSaleFilter, now: Date)
   return state === filter;
 };
 
-const isOrderOddsLocked = (slip: Pick<SavedSlip, "oddsLocked" | "settledAt" | "paymentStatus">) => (
-  Boolean(slip.settledAt || slip.oddsLocked || isOrderPaid(slip))
+const isOrderOddsLocked = (slip: Pick<SavedSlip, "oddsLocked" | "settledAt">) => (
+  Boolean(slip.settledAt || slip.oddsLocked)
 );
 
 const formatHandicap = (handicap: number) => `${handicap > 0 ? "+" : ""}${handicap}`;
@@ -1288,7 +1288,6 @@ function InnerFootballApp({
   const [orderEditSaving, setOrderEditSaving] = useState(false);
   const [orderHitsSaving, setOrderHitsSaving] = useState(false);
   const [judgingOrders, setJudgingOrders] = useState(false);
-  const [lockingOrderOdds, setLockingOrderOdds] = useState(false);
   const [loadingOrderId, setLoadingOrderId] = useState<string | null>(null);
   const [settlingOrderIds, setSettlingOrderIds] = useState<string[]>([]);
   const [payingOrderIds, setPayingOrderIds] = useState<string[]>([]);
@@ -2025,10 +2024,6 @@ function InnerFootballApp({
           pendingSettlement: savedSlips.filter(isOrderPendingSettlement).length,
         }
   ), [cloudPendingSettlementCount, cloudUnpaidHopefulCount, isCloudMode, savedSlips]);
-  const visibleUnlockedOrderCount = useMemo(
-    () => filteredSavedSlips.filter((slip) => !isOrderPaid(slip) && !isOrderOddsLocked(slip)).length,
-    [filteredSavedSlips],
-  );
   const filteredOrderTotalStake = useMemo(() => orderStakeTotal(filteredSavedSlips), [filteredSavedSlips]);
   const filteredOrderPaidStake = useMemo(() => orderLedgerTotals(filteredSavedSlips).expense, [filteredSavedSlips]);
   const filteredOrderIncome = useMemo(() => orderFilterIncomeTotal(filteredSavedSlips), [filteredSavedSlips]);
@@ -2050,6 +2045,13 @@ function InnerFootballApp({
     () => filteredSavedSlips.slice(0, renderedOrderCount),
     [filteredSavedSlips, renderedOrderCount],
   );
+  const renderedOrderBatches = useMemo(() => {
+    const batches: SavedSlip[][] = [];
+    for (let index = 0; index < renderedSavedSlips.length; index += ORDER_LIST_BATCH_SIZE) {
+      batches.push(renderedSavedSlips.slice(index, index + ORDER_LIST_BATCH_SIZE));
+    }
+    return batches;
+  }, [renderedSavedSlips]);
   const filteredSettleableOrders = useMemo(
     () => filteredSavedSlips.filter(isOrderSettleable),
     [filteredSavedSlips],
@@ -2262,7 +2264,6 @@ function InnerFootballApp({
     setManualOrderPassText("");
     setManualOrderPassDropdownOpen(false);
     setManualOrderMultiple(1);
-    setManualOrderSavedAt("");
     setManualOrderEntries([createManualOrderEntry()]);
     setManualPickerEntryKey(null);
     setManualPickerMatch(null);
@@ -2656,38 +2657,9 @@ function InnerFootballApp({
     setExpandedOrderIds((current) => [...new Set([...current, ...visibleOrderKeys])]);
   };
 
-  const lockVisibleOrderOdds = async () => {
-    if (lockingOrderOdds) return;
-    const visibleUnlockedOrders = new Set(filteredSavedSlips.filter((slip) => !isOrderPaid(slip) && !isOrderOddsLocked(slip)));
-    if (visibleUnlockedOrders.size === 0) {
-      message.info("当前查看的订单倍率均已锁定");
-      return;
-    }
-
-    const nextOrders = savedSlips.map((slip) => visibleUnlockedOrders.has(slip) ? { ...slip, oddsLocked: true } : slip);
-    const updatedOrders = nextOrders.filter((slip, index) => slip !== savedSlips[index]);
-    const detailOrderId = orderDetail?.id;
-    setLockingOrderOdds(true);
-    try {
-      const committedOrders = await commitOrderMutation({ upsertOrders: updatedOrders, deleteOrderIds: [], operation: "lock-odds" });
-      if (!committedOrders) return;
-      if (detailOrderId) {
-        const committedDetail = committedOrders.find((slip) => slip.id === detailOrderId);
-        if (committedDetail) setOrderDetail(committedDetail);
-      }
-      notification.success({
-        title: "倍率锁定完成",
-        description: `已锁定当前查看的 ${visibleUnlockedOrders.size} 个订单`,
-        placement: "bottomRight",
-      });
-    } finally {
-      setLockingOrderOdds(false);
-    }
-  };
-
   const refreshUnlockedOrderOdds = async () => {
     if (orderOddsRefreshing) return;
-    const visibleUnlockedOrders = new Set(filteredSavedSlips.filter((slip) => !isOrderPaid(slip) && !isOrderOddsLocked(slip)));
+    const visibleUnlockedOrders = new Set(filteredSavedSlips.filter((slip) => !slip.settledAt && !isOrderOddsLocked(slip)));
     if (visibleUnlockedOrders.size === 0) {
       message.info("当前查看的订单没有可更新的未锁定订单");
       return;
@@ -3190,15 +3162,16 @@ function InnerFootballApp({
       message.warning("请选择有效的订单创建时间");
       return;
     }
-    const wagerFrozen = Boolean(editingOrder.settledAt || isOrderPaid(editingOrder));
-    const nextPasses = wagerFrozen
+    const structureFrozen = Boolean(editingOrder.settledAt || isOrderPaid(editingOrder));
+    const oddsFrozen = Boolean(editingOrder.settledAt || orderEditOddsLocked);
+    const nextPasses = structureFrozen
       ? [...editingOrder.passes]
       : [...new Set(orderEditPasses)].sort((left, right) => left - right);
-    if (!wagerFrozen && selectedMatches(orderEditMatches).length > 0 && nextPasses.length === 0) {
+    if (!structureFrozen && selectedMatches(orderEditMatches).length > 0 && nextPasses.length === 0) {
       message.warning("请至少选择一种串关方式");
       return;
     }
-    const hasInvalidOdds = !wagerFrozen && selectedMatches(orderEditMatches).some((match) => match.markets.some((market) => market.options.some((option) => option.selected && option.odds <= 0)));
+    const hasInvalidOdds = !oddsFrozen && selectedMatches(orderEditMatches).some((match) => match.markets.some((market) => market.options.some((option) => option.selected && option.odds <= 0)));
     if (hasInvalidOdds) {
       message.warning("请为所有已选项填写大于 0 的倍率");
       return;
@@ -3208,10 +3181,10 @@ function InnerFootballApp({
       id: editingOrder.id || createSlipId(),
       name: nextName,
       savedAt: nextTime.millisecond(0).toISOString(),
-      matches: wagerFrozen ? cloneMatches(editingOrder.matches) : cloneMatches(orderEditMatches),
+      matches: editingOrder.settledAt ? cloneMatches(editingOrder.matches) : cloneMatches(orderEditMatches),
       passes: nextPasses,
-      multiple: wagerFrozen ? editingOrder.multiple : orderEditMultiple,
-      oddsLocked: Boolean(wagerFrozen || orderEditOddsLocked),
+      multiple: structureFrozen ? editingOrder.multiple : orderEditMultiple,
+      oddsLocked: Boolean(editingOrder.settledAt || orderEditOddsLocked),
     };
     const sameOrder = (slip: SavedSlip) => slip === editingOrder || Boolean(editingOrder.id && slip.id === editingOrder.id);
     setOrderEditSaving(true);
@@ -3227,7 +3200,7 @@ function InnerFootballApp({
         setTemporaryOrder({ id: committedOrder.id!, name: committedOrder.name });
       }
       closeOrderEditor();
-      notification.success({ message: "订单已更新", description: `已保存“${committedOrder.name}”的${wagerFrozen ? "名称和时间" : "名称、时间、投注倍数、串关和赔率"}`, placement: "bottomRight" });
+      notification.success({ message: "订单已更新", description: `已保存“${committedOrder.name}”的${structureFrozen ? "名称、时间和倍率设置" : "名称、时间、投注倍数、串关和赔率"}`, placement: "bottomRight" });
     } finally {
       setOrderEditSaving(false);
     }
@@ -3258,8 +3231,8 @@ function InnerFootballApp({
           ...target,
           matches: refreshed.matches,
           paymentStatus: "paid" as const,
-          oddsLockedBeforePayment: Boolean(target.oddsLocked),
-          oddsLocked: true,
+          oddsLockedBeforePayment: undefined,
+          oddsLocked: Boolean(target.oddsLocked),
         };
       });
       const committedOrders = await commitOrderMutation({
@@ -3279,7 +3252,7 @@ function InnerFootballApp({
       setBulkPayPopoverOpen(false);
       notification.success({
         message: payableTargets.length === 1 ? "订单支付完成" : `${payableTargets.length} 个订单支付完成`,
-        description: `匹配 ${matchedOptionCount} 个投注项，更新 ${changedOptionCount} 项倍率，${unmatchedOptionCount} 项无法取得最新有效倍率并保留原值${refreshError ? `；接口异常：${refreshError}` : ""}；全部订单已锁定倍率`,
+        description: `匹配 ${matchedOptionCount} 个投注项，更新 ${changedOptionCount} 项倍率，${unmatchedOptionCount} 项无法取得最新有效倍率并保留原值${refreshError ? `；接口异常：${refreshError}` : ""}`,
         placement: "bottomRight",
       });
     } finally {
@@ -3936,14 +3909,15 @@ function InnerFootballApp({
   );
   const bulkSettleSuccessCount = filteredSettleableOrders.filter((order) => getOrderStatus(order) === "success").length;
   const bulkSettleFailedCount = filteredSettleableOrders.length - bulkSettleSuccessCount;
-  const editingOrderWagerFrozen = Boolean(editingOrder && (editingOrder.settledAt || isOrderPaid(editingOrder)));
+  const editingOrderStructureFrozen = Boolean(editingOrder && (editingOrder.settledAt || isOrderPaid(editingOrder)));
+  const editingOrderSettled = Boolean(editingOrder?.settledAt);
   const bulkPayContent = (
     <div className="bulk-action-popover">
       <b>确认一键支付？</b>
       <p>仅处理当前筛选结果中的未支付订单。</p>
       <div><span>订单数量</span><strong>{filteredPayableOrders.length} 个</strong></div>
       <div><span>支付金额</span><strong>¥{currency(bulkPayStake)}</strong></div>
-      <small>支付前会更新倍率；无法取得最新有效倍率的投注项保留原值。支付后投注内容与倍率全部冻结。</small>
+      <small>支付前会更新倍率；无法取得最新有效倍率的投注项保留原值。支付后投注项、串关和倍数冻结，倍率可在结账前编辑。</small>
       <Space>
         <Button size="small" onClick={() => setBulkPayPopoverOpen(false)}>取消</Button>
         <Button size="small" type="primary" loading={payingOrderIds.length > 0} onClick={() => { requestPayOrders(filteredPayableOrders); }}>确认支付</Button>
@@ -3990,7 +3964,7 @@ function InnerFootballApp({
           <div className="section-heading">
             <div><span className="eyebrow">MATCH CENTER</span><h2>比赛与预测</h2><p>默认展示胜平负和让球胜平负，点击更多玩法可选择比分、进球数与半全场。</p></div>
             <Space wrap>
-              <Tag color="cyan">显示 {filteredMatches.length} / 共 {matches.length} 场</Tag>
+              <Tag color="cyan">{filteredMatches.length} / {matches.length} 场</Tag>
               <Tag color={pickedCount ? "red" : "default"}>{pickedCount} 个选项</Tag>
               {bettingResultFetchingMatchIds.length > 0 && <Tag color="processing">正在获取 {bettingResultFetchingMatchIds.length} 场赛果</Tag>}
             </Space>
@@ -4187,7 +4161,7 @@ function InnerFootballApp({
             <div className="section-heading orders-heading">
               <div><span className="eyebrow">{isGuestMode ? "LOCAL ORDERS" : "CLOUD ORDERS"}</span><h2>订单列表</h2><p>{isGuestMode ? "游客订单和累计收支只保存在当前浏览器，不会上传服务器或跨设备同步。" : "订单、累计收支会保存到当前账号，并在其他设备登录后自动同步。"}</p></div>
               <Space className="orders-heading-actions" wrap>
-                <Tag color="cyan">{cloudOrdersLoading ? "正在加载订单…" : `显示 ${filteredSavedSlips.length} / 共 ${orderTotalCount} 个订单`}</Tag>
+                <Tag color="cyan">{cloudOrdersLoading ? "正在加载订单…" : `${filteredSavedSlips.length} / ${orderTotalCount} 订单`}</Tag>
                 <Tooltip title="添加订单">
                   <Button aria-label="添加订单" icon={<PlusOutlined />} onClick={openManualOrder} />
                 </Tooltip>
@@ -4195,10 +4169,7 @@ function InnerFootballApp({
                   <Button aria-label="展开全部选项" icon={<ExpandOutlined />} disabled={cloudOrdersLoading || filteredSavedSlips.length === 0} onClick={expandAllOrderOptions} />
                 </Tooltip>
                 <Tooltip title="更新倍率">
-                  <Button aria-label="更新倍率" icon={<ReloadOutlined />} loading={orderOddsRefreshing} disabled={cloudOrdersLoading || lockingOrderOdds || filteredSavedSlips.length === 0} onClick={() => { void refreshUnlockedOrderOdds(); }} />
-                </Tooltip>
-                <Tooltip title="锁定倍率">
-                  <Button aria-label="锁定倍率" icon={<LockOutlined />} loading={lockingOrderOdds} disabled={cloudOrdersLoading || orderOddsRefreshing || visibleUnlockedOrderCount === 0} onClick={() => { void lockVisibleOrderOdds(); }} />
+                  <Button aria-label="更新倍率" icon={<ReloadOutlined />} loading={orderOddsRefreshing} disabled={cloudOrdersLoading || filteredSavedSlips.length === 0} onClick={() => { void refreshUnlockedOrderOdds(); }} />
                 </Tooltip>
                 <Popover content={bulkPayContent} trigger="click" open={bulkPayPopoverOpen} onOpenChange={setBulkPayPopoverOpen}>
                   <Tooltip title="一键支付">
@@ -4690,8 +4661,11 @@ function InnerFootballApp({
               <Card className="orders-empty"><Empty description="当前筛选条件下没有订单"><Button type="primary" disabled={cloudOrdersLoading} onClick={clearOrderFilters}>清除筛选</Button></Empty></Card>
             ) : (
               <>
-                <div className="orders-grid">
-                  {renderedSavedSlips.map((slip, slipIndex) => {
+                <div className="orders-batches">
+                  {renderedOrderBatches.map((orderBatch, batchIndex) => (
+                    <div className="orders-grid" key={`order-batch-${batchIndex}`}>
+                      {orderBatch.map((slip, batchSlipIndex) => {
+                  const slipIndex = batchIndex * ORDER_LIST_BATCH_SIZE + batchSlipIndex;
                   const orderMatches = sortMatchesForDisplay(selectedMatches(slip.matches));
                   const orderBets = countBets(slip.matches, slip.passes);
                   const orderStake = calculateStake(slip.matches, slip.passes, slip.multiple);
@@ -4833,7 +4807,7 @@ function InnerFootballApp({
 	                          {!slip.settledAt && (!orderPaid ? (
 	                            <Popconfirm
 	                              title="确认支付？"
-	                              description="支付前会更新倍率；无法取得最新倍率时保留原值。支付后投注内容与倍率全部冻结。"
+	                              description="支付前会更新倍率；无法取得最新倍率时保留原值。支付后投注项、串关和倍数冻结，倍率可在结账前编辑。"
 	                              okText="确认支付"
 	                              cancelText="取消"
 	                              okButtonProps={{ loading: orderPaying, disabled: orderPaying }}
@@ -4866,7 +4840,9 @@ function InnerFootballApp({
                       </div>
                     </Card>
                   );
-                  })}
+                      })}
+                    </div>
+                  ))}
                 </div>
                 {hasMoreRenderedOrders && (
                   <div className="orders-load-more" ref={orderListLoadMoreRef} role="status" aria-live="polite">
@@ -5161,7 +5137,7 @@ function InnerFootballApp({
               controls={false}
               min={1}
               max={50}
-              disabled={editingOrderWagerFrozen || orderEditSaving}
+              disabled={editingOrderStructureFrozen || orderEditSaving}
               value={orderEditMultiple}
               onChange={(value) => setOrderEditMultiple(Math.min(50, Math.max(1, Number(value ?? 1))))}
             />
@@ -5173,7 +5149,7 @@ function InnerFootballApp({
             mode="multiple"
             allowClear
             maxTagCount="responsive"
-            disabled={editingOrderWagerFrozen || orderEditSaving}
+            disabled={editingOrderStructureFrozen || orderEditSaving}
             placeholder="请选择串关方式"
             value={orderEditPasses}
             options={orderEditPassOptions.map((value) => ({
@@ -5182,13 +5158,13 @@ function InnerFootballApp({
             }))}
             onChange={(values) => setOrderEditPasses([...values].sort((left, right) => left - right))}
           />
-          <small>{editingOrderWagerFrozen ? "已支付或已结账订单的投注内容已经冻结。" : "修改串关后，支付金额会按新的订单投入计算。"}</small>
+          <small>{editingOrderStructureFrozen ? "已支付或已结账订单的投注项、串关和倍数已经冻结。" : "修改串关后，支付金额会按新的订单投入计算。"}</small>
         </label>
         <div className="order-editor-section-title">
           <b>已选项倍率</b>
-          <div className="order-odds-lock"><LockOutlined /><span>锁定倍率</span><Switch checked={orderEditOddsLocked} disabled={editingOrderWagerFrozen || orderEditSaving} onChange={setOrderEditOddsLocked} /></div>
+          <div className="order-odds-lock"><LockOutlined /><span>锁定倍率</span><Switch checked={orderEditOddsLocked} disabled={editingOrderSettled || orderEditSaving} onChange={setOrderEditOddsLocked} /></div>
         </div>
-        <p className="modal-help">锁定后不会参与订单页的批量倍率更新；结账订单必须锁定。倍率修改只影响当前订单快照，不会改动官方比赛列表；串关修改会同步调整累计投入。</p>
+        <p className="modal-help">锁定后不会参与订单页的批量倍率更新；支付不会自动锁定，结账时自动锁定。倍率修改只影响当前订单快照，不会改动官方比赛列表；串关修改会同步调整累计投入。</p>
         <div className="order-odds-editor">
           {selectedMatches(orderEditMatches).map((match) => (
             <section className="order-odds-match" key={match.id}>
@@ -5209,7 +5185,7 @@ function InnerFootballApp({
                           precision={2}
                           value={option.odds > 0 ? option.odds : null}
                           prefix="@"
-                          disabled={editingOrderWagerFrozen || orderEditOddsLocked || orderEditSaving}
+                          disabled={editingOrderSettled || orderEditOddsLocked || orderEditSaving}
                           onChange={(value) => updateOrderOptionOdds(match.id, market.type, option.id, Number(value ?? 0))}
                         />
                       </label>

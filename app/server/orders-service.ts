@@ -217,10 +217,13 @@ export async function updateOrder(
     throw orderConflict([orderId]);
   }
   const existing = await getOrder(d1, userId, orderId);
-  if (isOrderPaid(existing) && wagerFingerprint(existing) !== wagerFingerprint(order)) {
-    throw httpError("已支付订单的投注项、串关、倍数和倍率均已冻结", 409);
+  if (existing.settledAt && wagerFingerprint(existing) !== wagerFingerprint(order)) {
+    throw httpError("已结账订单的投注项、串关、倍数和倍率均已冻结", 409);
   }
-  return writePreparedOrder(d1, userId, prepareStoredOrder(order));
+  if (isOrderPaid(existing) && wagerShapeFingerprint(existing) !== wagerShapeFingerprint(order)) {
+    throw httpError("已支付订单的投注项、串关和倍数均已冻结", 409);
+  }
+  return writePreparedOrder(d1, userId, prepareStoredOrder(existing.settledAt ? { ...order, oddsLocked: true } : order));
 }
 
 export async function deleteOrder(
@@ -353,15 +356,15 @@ function finalizeBulkOrder(current: CompactOrder, incoming: CompactOrder, operat
     return normalizeCompactOrder({
       ...incoming,
       paymentStatus: "paid",
-      oddsLockedBeforePayment: Boolean(current.oddsLocked),
-      oddsLocked: true,
+      oddsLockedBeforePayment: undefined,
+      oddsLocked: Boolean(current.oddsLocked),
       settledAt: undefined,
       settledPrize: undefined,
     });
   }
   if (operation === "settle") {
     if (!isOrderPaid(current) || current.settledAt) throw httpError(`订单“${current.name}”不符合结账条件`, 409);
-    if (!sameWager) throw httpError(`订单“${current.name}”的已支付倍率已冻结`, 409);
+    if (!sameWager) throw httpError(`订单“${current.name}”的倍率与当前版本不一致`, 409);
     const slip = compactOrderToSavedSlip(current);
     return normalizeCompactOrder({
       ...current,
@@ -377,25 +380,28 @@ function finalizeBulkOrder(current: CompactOrder, incoming: CompactOrder, operat
     return normalizeCompactOrder(withdrawn);
   }
   if (operation === "lock-odds") {
-    if (isOrderPaid(current) || current.settledAt) throw httpError(`订单“${current.name}”的倍率已经冻结`, 409);
+    if (current.settledAt) throw httpError(`订单“${current.name}”的倍率已经冻结`, 409);
     if (!sameWager) throw httpError(`订单“${current.name}”不能在锁定时修改倍率`, 409);
     return normalizeCompactOrder({ ...current, oddsLocked: true });
   }
   if (operation === "refresh-odds") {
-    if (isOrderPaid(current) || current.oddsLocked || current.settledAt) {
+    if (current.oddsLocked || current.settledAt) {
       throw httpError(`订单“${current.name}”不属于可更新倍率订单`, 409);
     }
     if (!sameShape) throw httpError(`订单“${current.name}”的投注内容与当前版本不一致`, 409);
-    return normalizeCompactOrder({ ...incoming, paymentStatus: "unpaid", oddsLocked: false });
+    return normalizeCompactOrder({ ...incoming, paymentStatus: current.paymentStatus, oddsLocked: false });
   }
   if (operation === "judge") {
     if (!sameWager) throw httpError(`订单“${current.name}”不能在判断赛果时修改已选倍率`, 409);
     return normalizeCompactOrder(incoming);
   }
-  if (isOrderPaid(current) && !sameWager) {
+  if (current.settledAt && !sameWager) {
     throw httpError(`订单“${current.name}”的投注项、串关、倍数和倍率均已冻结`, 409);
   }
-  return normalizeCompactOrder(incoming);
+  if (isOrderPaid(current) && !sameShape) {
+    throw httpError(`订单“${current.name}”的投注项、串关和倍数均已冻结`, 409);
+  }
+  return normalizeCompactOrder(current.settledAt ? { ...incoming, oddsLocked: true } : incoming);
 }
 
 export async function bulkUpdateOrders(
@@ -527,7 +533,7 @@ export async function lockOrders(d1: D1Database, userId: string, refs: OrderRef[
   const orders = await getOrdersByRefs(d1, userId, refs);
   const updated: CompactOrder[] = [];
   for (const order of orders) {
-    if (isOrderPaid(order) || order.oddsLocked || order.settledAt) continue;
+    if (order.oddsLocked || order.settledAt) continue;
     updated.push(await writePreparedOrder(d1, userId, prepareStoredOrder({ ...order, oddsLocked: true })));
   }
   return updated;
@@ -545,7 +551,7 @@ export async function refreshOrderOdds(
   let unmatchedOptionCount = 0;
   const updated: CompactOrder[] = [];
   for (const order of orders) {
-    if (isOrderPaid(order) || order.oddsLocked || order.settledAt) continue;
+    if (order.oddsLocked || order.settledAt) continue;
     const slip = compactOrderToSavedSlip(order);
     const refreshed = refreshSelectedOdds(slip.matches, latestMatches);
     matchedOptionCount += refreshed.matchedOptionCount;
@@ -553,7 +559,7 @@ export async function refreshOrderOdds(
     unmatchedOptionCount += refreshed.unmatchedOptionCount;
     if (refreshed.matches === slip.matches) continue;
     updated.push(await writePreparedOrder(d1, userId, prepareStoredOrder(
-      savedSlipToCompactOrder({ ...slip, matches: refreshed.matches }),
+      savedSlipToCompactOrder({ ...slip, matches: refreshed.matches, paymentStatus: order.paymentStatus }),
     )));
   }
   return {

@@ -102,8 +102,8 @@ class FakeD1 {
   }
 }
 
-test("批量支付会先完整校验，再将整批订单标记为已支付并锁定倍率", async () => {
-  const current = [order("a"), order("b")];
+test("批量支付会先完整校验，再将整批订单标记为已支付并保留手动锁定状态", async () => {
+  const current = [order("a"), { ...order("b"), oddsLocked: true }];
   const d1 = new FakeD1(current);
   const incoming = current.map((item, index) => ({
     ...item,
@@ -114,7 +114,8 @@ test("批量支付会先完整校验，再将整批订单标记为已支付并�
 
   assert.equal(d1.batchCalls, 1);
   assert.deepEqual(updated.map((item) => item.paymentStatus), ["paid", "paid"]);
-  assert.deepEqual(updated.map((item) => item.oddsLocked), [true, true]);
+  assert.deepEqual(updated.map((item) => item.oddsLocked), [false, true]);
+  assert.deepEqual(updated.map((item) => item.oddsLockedBeforePayment), [undefined, undefined]);
   assert.deepEqual(updated.map((item) => item.selections[0].odds), [2.1, 3.1]);
 });
 
@@ -150,21 +151,23 @@ test("撤回操作根据当前状态先撤回结账并保留支付状态", async
   assert.equal(withdrawn.oddsLockedBeforeSettlement, undefined);
 });
 
-test("撤回操作对已支付未结账订单撤回支付并恢复支付前倍率锁定状态", async () => {
-  const unlockedBeforePayment: CompactOrder = {
+test("撤回支付保留当前手动锁定状态并清理历史支付锁定快照", async () => {
+  const unlocked: CompactOrder = {
     ...order("unlocked", "paid"),
+    oddsLocked: false,
     oddsLockedBeforePayment: false,
   };
-  const lockedBeforePayment: CompactOrder = {
+  const locked: CompactOrder = {
     ...order("locked", "paid"),
+    oddsLocked: true,
     oddsLockedBeforePayment: true,
   };
-  const d1 = new FakeD1([unlockedBeforePayment, lockedBeforePayment]);
+  const d1 = new FakeD1([unlocked, locked]);
 
   const withdrawn = await bulkUpdateOrders(
     d1 as unknown as D1Database,
     "user",
-    [unlockedBeforePayment, lockedBeforePayment],
+    [unlocked, locked],
     "withdraw",
   );
 
@@ -172,6 +175,66 @@ test("撤回操作对已支付未结账订单撤回支付并恢复支付前倍�
   assert.deepEqual(withdrawn.map((item) => item.paymentStatus), ["unpaid", "unpaid"]);
   assert.deepEqual(withdrawn.map((item) => item.oddsLocked), [false, true]);
   assert.deepEqual(withdrawn.map((item) => item.oddsLockedBeforePayment), [undefined, undefined]);
+});
+
+test("已支付未结账订单可更新倍率和手动锁定状态，但投注结构保持冻结", async () => {
+  const current = { ...order("paid-edit", "paid"), oddsLocked: true };
+  const d1 = new FakeD1([current]);
+  const editedOdds = {
+    ...current,
+    oddsLocked: false,
+    selections: current.selections.map((selection) => ({ ...selection, odds: 2.5 })),
+  };
+
+  const [updated] = await bulkUpdateOrders(d1 as unknown as D1Database, "user", [editedOdds], "update");
+
+  assert.equal(d1.batchCalls, 1);
+  assert.equal(updated.paymentStatus, "paid");
+  assert.equal(updated.oddsLocked, false);
+  assert.equal(updated.selections[0].odds, 2.5);
+
+  const changedStructure = { ...current, multiple: 2 };
+  const rejectedD1 = new FakeD1([current]);
+  await assert.rejects(
+    bulkUpdateOrders(rejectedD1 as unknown as D1Database, "user", [changedStructure], "update"),
+    /投注项、串关和倍数均已冻结/,
+  );
+  assert.equal(rejectedD1.batchCalls, 0);
+});
+
+test("批量倍率更新支持已支付未结账订单并保留支付状态", async () => {
+  const current = { ...order("paid-refresh", "paid"), oddsLocked: false };
+  const incoming = {
+    ...current,
+    selections: current.selections.map((selection) => ({ ...selection, odds: 2.8 })),
+  };
+  const d1 = new FakeD1([current]);
+
+  const [updated] = await bulkUpdateOrders(d1 as unknown as D1Database, "user", [incoming], "refresh-odds");
+
+  assert.equal(updated.paymentStatus, "paid");
+  assert.equal(updated.oddsLocked, false);
+  assert.equal(updated.selections[0].odds, 2.8);
+});
+
+test("已结账订单不能修改倍率或解除锁定", async () => {
+  const current = {
+    ...order("settled", "paid"),
+    settledAt: "2026-10-08T02:00:00.000Z",
+    oddsLocked: true,
+  };
+  const incoming = {
+    ...current,
+    oddsLocked: false,
+    selections: current.selections.map((selection) => ({ ...selection, odds: 2.5 })),
+  };
+  const d1 = new FakeD1([current]);
+
+  await assert.rejects(
+    bulkUpdateOrders(d1 as unknown as D1Database, "user", [incoming], "update"),
+    /投注项、串关、倍数和倍率均已冻结/,
+  );
+  assert.equal(d1.batchCalls, 0);
 });
 
 test("撤回操作包含未支付订单时整批不写入", async () => {
@@ -185,7 +248,7 @@ test("撤回操作包含未支付订单时整批不写入", async () => {
   assert.equal(d1.batchCalls, 0);
 });
 
-test("支付锁定快照经过云端转换和结账撤回后仍可恢复，账本逐步回滚", async (t) => {
+test("手动锁定状态经过支付、结账和两次撤回后仍可恢复，账本逐步回滚", async (t) => {
   const db = new SqliteD1();
   t.after(() => db.database.close());
   db.database.exec("INSERT INTO users (id, auth_subject, account, normalized_account) VALUES ('user', 'user', 'user', 'user')");
@@ -197,7 +260,7 @@ test("支付锁定快照经过云端转换和结账撤回后仍可恢复，账�
   });
   const [paid] = await bulkUpdateOrders(d1, "user", [saved], "pay");
   const roundTripped = savedSlipToCompactOrder(compactOrderToSavedSlip(paid));
-  assert.equal(roundTripped.oddsLockedBeforePayment, true);
+  assert.equal(roundTripped.oddsLockedBeforePayment, undefined);
   const [settled] = await bulkUpdateOrders(d1, "user", [roundTripped], "settle");
   assert.deepEqual(await getOrderFinanceCents(d1, "user"), { expenseCents: 200, incomeCents: 400 });
 
@@ -243,13 +306,13 @@ test("撤回拒绝旧版本和其他账号订单，SQL 执行失败或并发修�
   assert.deepEqual(await getOrderFinanceCents(d1, "user"), { expenseCents: 400, incomeCents: 0 });
 });
 
-test("历史支付订单缺少锁定快照时可以撤回，历史未支付结账订单不会被标记为已支付", async () => {
+test("历史支付订单缺少锁定快照时保留当前锁定状态，历史未支付结账订单不会被标记为已支付", async () => {
   const legacyPaid = order("legacy-paid", "paid");
   const legacySettled = { ...order("legacy-settled"), settledAt: "2026-08-20T10:00:00.000Z", settledPrize: 0 };
   const current = [legacyPaid, legacySettled];
   const result = await bulkUpdateOrders(new FakeD1(current) as unknown as D1Database, "user", current, "withdraw");
   assert.equal(result[0].paymentStatus, "unpaid");
-  assert.equal(result[0].oddsLocked, false);
+  assert.equal(result[0].oddsLocked, true);
   assert.equal(result[1].paymentStatus, "unpaid");
   assert.equal(result[1].settledAt, undefined);
   assert.equal(result[1].settledPrize, undefined);

@@ -79,7 +79,7 @@ export const getOrderWithdrawalType = (order: OrderPaymentState) => (
   order.settledAt ? "settlement" : isOrderPaid(order) ? "payment" : null
 );
 
-/** 每次只撤回当前状态的一步；保留投注、赛果和支付前的手动锁定设置。 */
+/** 每次只撤回当前状态的一步；撤回结账时恢复结账前的手动锁定设置。 */
 export function withdrawOrderState<T extends OrderPaymentState>(order: T): T | null {
   switch (getOrderWithdrawalType(order)) {
     case "settlement":
@@ -94,7 +94,7 @@ export function withdrawOrderState<T extends OrderPaymentState>(order: T): T | n
       return {
         ...order,
         paymentStatus: "unpaid",
-        oddsLocked: order.oddsLockedBeforePayment ?? false,
+        oddsLocked: Boolean(order.oddsLocked),
         oddsLockedBeforePayment: undefined,
       };
     default:
