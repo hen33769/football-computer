@@ -1309,7 +1309,7 @@ function InnerFootballApp({
   });
   const [bulkPayPopoverOpen, setBulkPayPopoverOpen] = useState(false);
   const [bulkSettlePopoverOpen, setBulkSettlePopoverOpen] = useState(false);
-  const [orderProgressFilter, setOrderProgressFilter] = useState<OrderProgressFilter>("pending-settlement");
+  const [orderProgressFilter, setOrderProgressFilter] = useState<OrderProgressFilter>("unsettled");
   const [orderStatusFilters, setOrderStatusFilters] = useState<OrderStatusFilter[]>([]);
   const [orderShortPassFilters, setOrderShortPassFilters] = useState<number[]>([]);
   const [orderShortPassDropdownOpen, setOrderShortPassDropdownOpen] = useState(false);
