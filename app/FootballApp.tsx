@@ -85,7 +85,7 @@ import {
 } from "./calculator";
 import { appendOrderPassValue, formatOrderPassValue, inferOrderPasses } from "./order-passes";
 import { matchPassesLeagueFilter, matchPassesTeamFilter, orderContainsTeam, orderPassesLeagueFilter, orderPassesMatchCountFilter, retainAvailableLeagueNames, splitTeamNameByQuery } from "./order-filters";
-import { splitOrderBatchIntoColumns } from "./order-layout";
+import { splitOrdersIntoColumns } from "./order-layout";
 import { prioritizeLeagueNames, sortMatchesForManualOrder } from "./sorting";
 import {
   cloneMatches,
@@ -1185,6 +1185,7 @@ function InnerFootballApp({
   const teamNameIndex = useMemo(() => buildTeamNameIndex(teamNameGroups), [teamNameGroups]);
   const headerRef = useRef<HTMLElement | null>(null);
   const orderListLoadMoreRef = useRef<HTMLDivElement | null>(null);
+  const orderColumnLoadMoreRefs = useRef<Array<HTMLDivElement | null>>([]);
   const [isMobileViewport, setIsMobileViewport] = useState(false);
   const [accountLoginBetDraft] = useState<AccountLoginBetDraft | null>(() => {
     if (initialView !== "betting") return null;
@@ -2049,13 +2050,10 @@ function InnerFootballApp({
     () => filteredSavedSlips.slice(0, renderedOrderCount),
     [filteredSavedSlips, renderedOrderCount],
   );
-  const renderedOrderBatches = useMemo(() => {
-    const batches: SavedSlip[][] = [];
-    for (let index = 0; index < renderedSavedSlips.length; index += ORDER_LIST_BATCH_SIZE) {
-      batches.push(renderedSavedSlips.slice(index, index + ORDER_LIST_BATCH_SIZE));
-    }
-    return batches;
-  }, [renderedSavedSlips]);
+  const renderedOrderColumns = useMemo(
+    () => splitOrdersIntoColumns(renderedSavedSlips),
+    [renderedSavedSlips],
+  );
   const filteredSettleableOrders = useMemo(
     () => filteredSavedSlips.filter(isOrderSettleable),
     [filteredSavedSlips],
@@ -2080,8 +2078,11 @@ function InnerFootballApp({
 
   useEffect(() => {
     if (activeView !== "orders" || !hasMoreRenderedOrders || typeof IntersectionObserver === "undefined") return;
-    const target = orderListLoadMoreRef.current;
-    if (!target) return;
+    const targets = [
+      ...orderColumnLoadMoreRefs.current,
+      orderListLoadMoreRef.current,
+    ].filter((target): target is HTMLDivElement => Boolean(target));
+    if (targets.length === 0) return;
     const observer = new IntersectionObserver((entries) => {
       if (!entries.some((entry) => entry.isIntersecting)) return;
       setRenderedOrderCount((current) => Math.min(
@@ -2089,9 +2090,9 @@ function InnerFootballApp({
         filteredSavedSlips.length,
       ));
     }, { rootMargin: "360px 0px" });
-    observer.observe(target);
+    targets.forEach((target) => observer.observe(target));
     return () => observer.disconnect();
-  }, [activeView, filteredSavedSlips.length, hasMoreRenderedOrders]);
+  }, [activeView, filteredSavedSlips.length, hasMoreRenderedOrders, renderedSavedSlips.length]);
 
   const availableMatchDateSet = useMemo(
     () => new Set(matches.map((match) => match.date).filter(Boolean)),
@@ -4682,12 +4683,10 @@ function InnerFootballApp({
             ) : (
               <>
                 <div className="orders-batches">
-                  {renderedOrderBatches.map((orderBatch, batchIndex) => (
-                    <div className="orders-grid" key={`order-batch-${batchIndex}`}>
-                      {splitOrderBatchIntoColumns(orderBatch).map((orderColumn, columnIndex) => (
-                        <div className="orders-grid-column" key={`order-batch-${batchIndex}-column-${columnIndex}`}>
-                          {orderColumn.map(({ order: slip, batchIndex: batchSlipIndex }) => {
-                  const slipIndex = batchIndex * ORDER_LIST_BATCH_SIZE + batchSlipIndex;
+                  <div className="orders-grid">
+                    {renderedOrderColumns.map((orderColumn, columnIndex) => (
+                      <div className="orders-grid-column" key={`order-column-${columnIndex}`}>
+                        {orderColumn.map(({ order: slip, orderIndex: slipIndex }) => {
                   const orderMatches = sortMatchesForDisplay(selectedMatches(slip.matches));
                   const orderBets = countBets(slip.matches, slip.passes);
                   const orderStake = calculateStake(slip.matches, slip.passes, slip.multiple);
@@ -4712,7 +4711,7 @@ function InnerFootballApp({
 	                  const orderDeleting = deletingOrderIds.includes(actionKey);
 	                  const orderBusy = orderLoading || orderPaying || orderSettling || orderWithdrawing || orderDeleting;
 	                  return (
-                    <Card key={orderKey} className={`order-card ${orderStatus === "hopeful" ? "" : orderStatus}`} style={{ order: batchSlipIndex }}>
+                    <Card key={orderKey} className={`order-card ${orderStatus === "hopeful" ? "" : orderStatus}`} style={{ order: slipIndex }}>
                       <div className="order-card-head">
                         <div className="order-card-meta-line">
                           <div className="order-card-tags">
@@ -4862,11 +4861,19 @@ function InnerFootballApp({
                       </div>
                     </Card>
                   );
-                            })}
-                        </div>
-                      ))}
-                    </div>
-                  ))}
+                          })}
+                        {hasMoreRenderedOrders && (
+                          <div
+                            className="orders-column-load-more"
+                            ref={(element) => {
+                              orderColumnLoadMoreRefs.current[columnIndex] = element;
+                            }}
+                            aria-hidden="true"
+                          />
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
                 {hasMoreRenderedOrders && (
                   <div className="orders-load-more" ref={orderListLoadMoreRef} role="status" aria-live="polite">

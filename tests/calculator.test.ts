@@ -21,7 +21,7 @@ import {
 import { cloneMatches, initialMatches } from "../app/data";
 import { orderFilterIncomeTotal, orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "../app/imports";
 import { matchPassesLeagueFilter, matchPassesTeamFilter, orderContainsTeam, orderPassesLeagueFilter, orderPassesMatchCountFilter, retainAvailableLeagueNames, splitTeamNameByQuery, teamNameMatchesQuery } from "../app/order-filters";
-import { splitOrderBatchIntoColumns } from "../app/order-layout";
+import { splitOrdersIntoColumns } from "../app/order-layout";
 import { appendOrderPassValue, inferOrderPasses, parseOrderPassValues } from "../app/order-passes";
 import { formatOrderResultLabel, formatOrderScoreResult, isOrderMatchJudged, isOrderMatchResultUnavailable, judgeLoadedOrdersWithResults, judgeSlipWithResults, repairSlipHandicapResults } from "../app/results";
 import { prioritizeLeagueNames, sortMatchesForManualOrder } from "../app/sorting";
@@ -86,20 +86,20 @@ test("比赛类型选项变化后只保留仍然可用的选择", () => {
   assert.deepEqual(retainAvailableLeagueNames(selected, new Set()), []);
 });
 
-test("订单瀑布流按左、右顺序分配批次并保留原索引", () => {
-  const [leftColumn, rightColumn] = splitOrderBatchIntoColumns(["订单1", "订单2", "订单3", "订单4", "订单5"]);
+test("订单瀑布流按左、右顺序分配全部已加载订单并保留全局索引", () => {
+  const [leftColumn, rightColumn] = splitOrdersIntoColumns(["订单1", "订单2", "订单3", "订单4", "订单5"]);
 
   assert.deepEqual(leftColumn, [
-    { order: "订单1", batchIndex: 0 },
-    { order: "订单3", batchIndex: 2 },
-    { order: "订单5", batchIndex: 4 },
+    { order: "订单1", orderIndex: 0 },
+    { order: "订单3", orderIndex: 2 },
+    { order: "订单5", orderIndex: 4 },
   ]);
   assert.deepEqual(rightColumn, [
-    { order: "订单2", batchIndex: 1 },
-    { order: "订单4", batchIndex: 3 },
+    { order: "订单2", orderIndex: 1 },
+    { order: "订单4", orderIndex: 3 },
   ]);
   assert.deepEqual(
-    [...leftColumn, ...rightColumn].sort((left, right) => left.batchIndex - right.batchIndex).map(({ order }) => order),
+    [...leftColumn, ...rightColumn].sort((left, right) => left.orderIndex - right.orderIndex).map(({ order }) => order),
     ["订单1", "订单2", "订单3", "订单4", "订单5"],
   );
 });
