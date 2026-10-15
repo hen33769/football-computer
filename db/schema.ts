@@ -56,6 +56,16 @@ export const userFinanceCorrections = sqliteTable("user_finance_corrections", {
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+export const userMatchNotes = sqliteTable("user_match_notes", {
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  matchId: text("match_id").notNull(),
+  note: text("note").notNull().default(""),
+  revision: integer("revision").notNull().default(0),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  primaryKey({ columns: [table.userId, table.matchId] }),
+]);
+
 export const sharedMatches = sqliteTable("shared_matches", {
   matchId: text("match_id").primaryKey(),
   businessDate: text("business_date").notNull(),

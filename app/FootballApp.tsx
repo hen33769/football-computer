@@ -128,7 +128,10 @@ import {
   type MatchStartReminderItem,
 } from "./match-start-reminder";
 import { AppShellHeader } from "./components/AppShellHeader";
+import { MatchNotes } from "./components/MatchNotes";
 import { TeamNameWithIcon } from "./components/TeamNameWithAlias";
+import { usePersonalMatchNotes } from "./use-personal-match-notes";
+import { emptyPersonalMatchNote, type PersonalMatchNote, type PersonalMatchNoteLoadStatus } from "./match-notes";
 import { parseRecognizedText } from "./ocr";
 import {
   convertSportteryMatches,
@@ -843,6 +846,12 @@ function MatchCard({
   onLeagueColorSave,
   disableOddsTooltip,
   resultLoading,
+  personalNote,
+  personalNoteStatus,
+  canEditPersonalNote,
+  onRequirePersonalNoteAccount,
+  onPersonalNoteLoad,
+  onPersonalNoteSave,
 }: {
   match: MatchItem;
   now: Date;
@@ -856,12 +865,17 @@ function MatchCard({
   onLeagueColorSave: (league: string, color: string) => void;
   disableOddsTooltip: boolean;
   resultLoading: boolean;
+  personalNote: PersonalMatchNote;
+  personalNoteStatus: PersonalMatchNoteLoadStatus;
+  canEditPersonalNote: boolean;
+  onRequirePersonalNoteAccount: () => void;
+  onPersonalNoteLoad: (matchId: string, force?: boolean) => Promise<PersonalMatchNote>;
+  onPersonalNoteSave: (matchId: string, note: string, expectedRevision: number) => Promise<PersonalMatchNote>;
 }) {
   const picked = selectedOptions(match).length;
   const saleState = getMatchSaleState(match, now);
   const startingSoon = isMatchStartingSoon(match, now);
   const selectable = isMatchSelectable(match, now);
-  const remark = match.remark?.trim();
   const spf = match.markets.find((market) => market.type === "spf")!;
   const rqspf = match.markets.find((market) => market.type === "rqspf")!;
   const fullScore = match.result?.fullScore;
@@ -879,13 +893,16 @@ function MatchCard({
           {saleState === "cancelled" && <Tag color="default">已取消</Tag>}
         </div>
         <div className="match-time-group">
-          {remark && (
-            <Tooltip title={remark} trigger={["hover", "focus", "click"]}>
-              <button type="button" className="match-remark-button" aria-label={`比赛备注：${remark}`}>
-                <InfoCircleOutlined aria-hidden="true" />
-              </button>
-            </Tooltip>
-          )}
+          <MatchNotes
+            matchId={match.id}
+            officialRemark={match.remark}
+            personalNote={personalNote}
+            status={personalNoteStatus}
+            canEdit={canEditPersonalNote}
+            onRequireAccount={onRequirePersonalNoteAccount}
+            onLoad={onPersonalNoteLoad}
+            onSave={onPersonalNoteSave}
+          />
           <div className="match-time">{formatMatchCardTime(match)}</div>
         </div>
       </div>
@@ -1155,6 +1172,8 @@ function InnerFootballApp({
   onCloudMatchesChange,
   onCloudMatchesUpdate,
   onCloudMatchesRefresh,
+  onPersonalMatchNotesLoad,
+  onPersonalMatchNoteSave,
   startReminderBlocked,
   onRequireAccount,
   onLogout,
@@ -1174,6 +1193,8 @@ function InnerFootballApp({
   onCloudMatchesChange: (matches: MatchItem[]) => void;
   onCloudMatchesUpdate: (matches: MatchItem[]) => Promise<MatchItem[]>;
   onCloudMatchesRefresh: (manual: boolean) => Promise<SportteryMatchSnapshot>;
+  onPersonalMatchNotesLoad: (matchIds: string[]) => Promise<PersonalMatchNote[]>;
+  onPersonalMatchNoteSave: (matchId: string, note: string, expectedRevision: number) => Promise<PersonalMatchNote>;
   startReminderBlocked: boolean;
   onRequireAccount: (view?: AppView) => void;
   onLogout: () => Promise<void>;
@@ -1183,6 +1204,13 @@ function InnerFootballApp({
   const isCloudMode = Boolean(cloudAccount && !isGuestMode);
   const canManageTeamNames = cloudAccount?.role === "admin" && !isGuestMode;
   const teamNameIndex = useMemo(() => buildTeamNameIndex(teamNameGroups), [teamNameGroups]);
+  const requirePersonalMatchNoteAccount = useCallback(() => {
+    if (isGuestMode) {
+      message.info("游客模式不保存个人备注，请在云端页面登录账号后编辑");
+      return;
+    }
+    onRequireAccount(initialView);
+  }, [initialView, isGuestMode, message, onRequireAccount]);
   const headerRef = useRef<HTMLElement | null>(null);
   const orderListLoadMoreRef = useRef<HTMLDivElement | null>(null);
   const orderColumnLoadMoreRefs = useRef<Array<HTMLDivElement | null>>([]);
@@ -1219,6 +1247,17 @@ function InnerFootballApp({
       ? cloneMatches(loadedOrderDraft.matches)
       : loadCachedMatches());
   const matchesRef = useRef(matches);
+  const {
+    load: loadPersonalMatchNotes,
+    loadOne: loadPersonalMatchNote,
+    save: savePersonalMatchNote,
+    noteFor: personalMatchNoteFor,
+    statusFor: personalMatchNoteStatusFor,
+  } = usePersonalMatchNotes({
+    enabled: isCloudMode,
+    loadNotes: onPersonalMatchNotesLoad,
+    saveNote: onPersonalMatchNoteSave,
+  });
   const [passes, setPasses] = useState<number[]>(() => accountLoginBetDraft
     ? [...accountLoginBetDraft.passes]
     : loadedOrderDraft
@@ -1243,6 +1282,14 @@ function InnerFootballApp({
   const [detailsOpen, setDetailsOpen] = useState(false);
   const activeView = initialView;
   const [orderDetail, setOrderDetail] = useState<SavedSlip | null>(null);
+  useEffect(() => {
+    if (!isCloudMode) return;
+    void loadPersonalMatchNotes(matches.map((match) => match.id)).catch(() => undefined);
+  }, [isCloudMode, loadPersonalMatchNotes, matches]);
+  useEffect(() => {
+    if (!isCloudMode || !orderDetail) return;
+    void loadPersonalMatchNotes(orderDetail.matches.map((match) => match.id)).catch(() => undefined);
+  }, [isCloudMode, loadPersonalMatchNotes, orderDetail]);
   const [orderHits, setOrderHits] = useState<CurrentHits>({});
   const [orderFailedMatches, setOrderFailedMatches] = useState<string[]>([]);
   const [editingOrder, setEditingOrder] = useState<SavedSlip | null>(null);
@@ -4121,6 +4168,12 @@ function InnerFootballApp({
                       onLeagueColorSave={updateLeagueTagColor}
                       disableOddsTooltip={isMobileViewport}
                       resultLoading={bettingResultFetchingMatchIds.includes(normalizeSportteryMatchId(match.id))}
+                      personalNote={personalMatchNoteFor(match.id)}
+                      personalNoteStatus={personalMatchNoteStatusFor(match.id)}
+                      canEditPersonalNote={isCloudMode}
+                      onRequirePersonalNoteAccount={requirePersonalMatchNoteAccount}
+                      onPersonalNoteLoad={loadPersonalMatchNote}
+                      onPersonalNoteSave={savePersonalMatchNote}
                     />
                   ))}
                 </div>}
@@ -5305,7 +5358,7 @@ function InnerFootballApp({
               <span>订单串关</span>
               <div>{orderDetail.passes.length ? orderDetail.passes.map((value) => <Tag color="cyan" key={value}>{value === 1 ? "单场" : `${value} 串 1`}</Tag>) : <Tag>未选择</Tag>}</div>
             </div>
-            <p className="drawer-tip">{orderDetail.settledAt ? "该订单已结账，只能查看保存时的比赛结果与中奖金额。" : "点击已选项可标记玩法命中；勾选“失败”会清除该场命中并将投注项置灰。完成后点击底部保存。"}</p>
+            <p className="drawer-tip">{orderDetail.settledAt ? "该订单已结账，投注结果与中奖金额保持锁定；个人备注仍可独立编辑。" : "点击已选项可标记玩法命中；勾选“失败”会清除该场命中并将投注项置灰。完成后点击底部保存。"}</p>
             {orderDetailMatches.map((match) => {
               const matchFailed = orderFailedMatches.includes(match.id);
               const scoreResult = formatOrderScoreResult(
@@ -5322,6 +5375,16 @@ function InnerFootballApp({
                 <div className="detail-match-title">
                   <span>{match.weekday}{match.code}</span>
                   <b>{match.home} VS {match.away}</b>
+                  <MatchNotes
+                    matchId={match.id}
+                    officialRemark={match.remark}
+                    personalNote={personalMatchNoteFor(match.id)}
+                    status={personalMatchNoteStatusFor(match.id)}
+                    canEdit={isCloudMode}
+                    onRequireAccount={requirePersonalMatchNoteAccount}
+                    onLoad={loadPersonalMatchNote}
+                    onSave={savePersonalMatchNote}
+                  />
                   <div className="detail-match-result-tags">
                     {scoreResult && <Tag color="blue">{scoreResult}</Tag>}
                     {halfFullResult && <Tag color="volcano">{halfFullResult}</Tag>}
@@ -5581,6 +5644,13 @@ const ignoreCloudOrdersQueryChange = async (): Promise<CloudOrderQueryResult> =>
 const ignoreCloudMatchesChange = () => undefined;
 const ignoreCloudMatchesUpdate = async (matches: MatchItem[]) => matches;
 const ignoreCloudMatchesRefresh = async () => fetchSportteryMatchSnapshot(getSportteryRefreshPolicy(new Date()).mode);
+const ignorePersonalMatchNotesLoad = async (matchIds: string[]) => matchIds.map(emptyPersonalMatchNote);
+const ignorePersonalMatchNoteSave = async (matchId: string, note: string, expectedRevision: number): Promise<PersonalMatchNote> => ({
+  matchId,
+  note: note.trim(),
+  revision: expectedRevision + 1,
+  updatedAt: new Date().toISOString(),
+});
 
 export default function FootballApp({
   initialView = "betting",
@@ -5598,6 +5668,8 @@ export default function FootballApp({
   onCloudMatchesChange = ignoreCloudMatchesChange,
   onCloudMatchesUpdate = ignoreCloudMatchesUpdate,
   onCloudMatchesRefresh = ignoreCloudMatchesRefresh,
+  onPersonalMatchNotesLoad = ignorePersonalMatchNotesLoad,
+  onPersonalMatchNoteSave = ignorePersonalMatchNoteSave,
   startReminderBlocked = false,
   onRequireAccount = () => undefined,
   onLogout = async () => undefined,
@@ -5617,6 +5689,8 @@ export default function FootballApp({
   onCloudMatchesChange?: (matches: MatchItem[]) => void;
   onCloudMatchesUpdate?: (matches: MatchItem[]) => Promise<MatchItem[]>;
   onCloudMatchesRefresh?: (manual: boolean) => Promise<SportteryMatchSnapshot>;
+  onPersonalMatchNotesLoad?: (matchIds: string[]) => Promise<PersonalMatchNote[]>;
+  onPersonalMatchNoteSave?: (matchId: string, note: string, expectedRevision: number) => Promise<PersonalMatchNote>;
   startReminderBlocked?: boolean;
   onRequireAccount?: (view?: AppView) => void;
   onLogout?: () => Promise<void>;
@@ -5658,6 +5732,8 @@ export default function FootballApp({
           onCloudMatchesChange={onCloudMatchesChange}
           onCloudMatchesUpdate={onCloudMatchesUpdate}
           onCloudMatchesRefresh={onCloudMatchesRefresh}
+          onPersonalMatchNotesLoad={onPersonalMatchNotesLoad}
+          onPersonalMatchNoteSave={onPersonalMatchNoteSave}
           startReminderBlocked={startReminderBlocked}
           onRequireAccount={onRequireAccount}
           onLogout={onLogout}

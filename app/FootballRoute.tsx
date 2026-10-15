@@ -25,6 +25,7 @@ import type { MatchItem, SavedSlip } from "./types";
 import { requestJson } from "./api-client/http";
 import { getCurrentUser, loginAccount, logoutAccount } from "./api-client/users";
 import { getUserSettings, updateUserSettings } from "./api-client/settings";
+import { getPersonalMatchNotes, updatePersonalMatchNote } from "./api-client/match-notes";
 import { deleteTeamNameGroup, getTeamNameGroups, saveTeamNameGroup } from "./api-client/team-aliases";
 import { getFinance, updateFinanceCorrections, type FinanceResponse } from "./api-client/finance";
 import { bulkUpdateOrders, createOrder, deleteOrder, fetchOrders, type OrderQuery, type OrdersResponse } from "./api-client/orders";
@@ -502,6 +503,44 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
 
   const syncMatchUpdates = useCallback(async (matches: MatchItem[]) => updateMatches(clearMatchSelections(matches)), []);
 
+  const handlePersonalMatchNoteAuthError = useCallback((error: unknown, accountId: string) => {
+    if (Number((error as Error & { status?: unknown }).status) !== 401 || accountIdRef.current !== accountId) return;
+    accountIdRef.current = null;
+    clientPersonalRef.current = null;
+    clearCloudPersonalStorage();
+    setAccount(null);
+    setCloudPersonal(null);
+    setActiveView("betting");
+    setAccountDialogOpen(true);
+  }, []);
+
+  const loadPersonalMatchNotes = useCallback(async (matchIds: string[]) => {
+    const accountId = accountIdRef.current;
+    if (!accountId) throw new Error("请先输入账号登录");
+    try {
+      const response = await getPersonalMatchNotes(matchIds);
+      if (accountIdRef.current !== accountId) throw new Error("账号已切换，已忽略旧账号的备注响应");
+      return response.notes;
+    } catch (error) {
+      handlePersonalMatchNoteAuthError(error, accountId);
+      throw error;
+    }
+  }, [handlePersonalMatchNoteAuthError]);
+
+  const savePersonalMatchNote = useCallback((matchId: string, note: string, expectedRevision: number) => {
+    const accountId = accountIdRef.current;
+    if (!accountId) return Promise.reject(new Error("请先输入账号登录"));
+    return enqueueWrite(async () => {
+      if (accountIdRef.current !== accountId) throw new Error("账号已切换，不能保存旧账号的备注");
+      const saved = await updatePersonalMatchNote(matchId, note, expectedRevision);
+      if (accountIdRef.current !== accountId) throw new Error("账号已切换，已忽略旧账号的备注响应");
+      return saved;
+    }).catch((error) => {
+      handlePersonalMatchNoteAuthError(error, accountId);
+      throw error;
+    });
+  }, [enqueueWrite, handlePersonalMatchNoteAuthError]);
+
   const loadCloudMatches = useCallback(async (manual: boolean): Promise<SportteryMatchSnapshot> => (
     manual ? refreshCloudCurrentMatches() : getCloudCurrentMatches()
   ), []);
@@ -559,6 +598,8 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
         onCloudMatchesChange={syncMatches}
         onCloudMatchesUpdate={syncMatchUpdates}
         onCloudMatchesRefresh={loadCloudMatches}
+        onPersonalMatchNotesLoad={loadPersonalMatchNotes}
+        onPersonalMatchNoteSave={savePersonalMatchNote}
         startReminderBlocked={Boolean(latestVersion || (accountDialogOpen && !account))}
         onRequireAccount={openAccountDialog}
         onLogout={logout}

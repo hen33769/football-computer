@@ -7,7 +7,7 @@ export class SqliteD1 {
   beforeBatch?: () => void;
 
   constructor() {
-    for (const migration of ["0000_white_iron_lad", "0002_modular_cloud_data", "0003_order_payment_status"]) {
+    for (const migration of ["0000_white_iron_lad", "0002_modular_cloud_data", "0003_order_payment_status", "0007_user_match_notes"]) {
       this.database.exec(readFileSync(new URL(`../../drizzle/${migration}.sql`, import.meta.url), "utf8"));
     }
   }
