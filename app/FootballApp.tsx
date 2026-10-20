@@ -4748,7 +4748,7 @@ function InnerFootballApp({
 		                        <InputNumber autoFocus aria-label={isCloudMode ? "支出纠错值" : "累计支出校正"} controls={false} min={isCloudMode ? undefined : 0} precision={2} prefix="¥" value={expenseDraft} disabled={expenseSaving} onChange={(value) => setExpenseDraft(Number(value ?? 0))} onPressEnter={() => { if (!expenseSaving) void saveExpenseCorrection(); }} />
 		                        <Button type="primary" aria-label={isCloudMode ? "保存支出纠错值" : "保存累计支出"} icon={<CheckOutlined />} loading={expenseSaving} disabled={expenseSaving} onClick={() => { void saveExpenseCorrection(); }} />
 		                        <Button aria-label={isCloudMode ? "取消编辑支出纠错值" : "取消编辑累计支出"} icon={<CloseOutlined />} disabled={expenseSaving} onClick={() => setExpenseEditing(false)} />
-	                        {isCloudMode && <small>预览最终支出：¥{currency(expenseOrdersTotal)} {Number(expenseDraft || 0) >= 0 ? "+" : "−"} ¥{currency(Math.abs(Number(expenseDraft || 0)))} = ¥{currency(expenseOrdersTotal + Number(expenseDraft || 0))}</small>}
+	                        {isCloudMode && <small className="order-money-editor-preview">预览最终支出：¥{currency(expenseOrdersTotal)} {Number(expenseDraft || 0) >= 0 ? "+" : "−"} ¥{currency(Math.abs(Number(expenseDraft || 0)))} = ¥{currency(expenseOrdersTotal + Number(expenseDraft || 0))}</small>}
 	                      </div>
 	                    ) : (
 	                      <div className="order-money-locked">
@@ -4756,7 +4756,9 @@ function InnerFootballApp({
 	                        <Tooltip title={isCloudMode ? "编辑支出纠错值" : "解锁编辑累计支出"}><Button type="text" aria-label={isCloudMode ? "编辑支出纠错值" : "解锁编辑累计支出"} icon={<EditOutlined />} onClick={unlockExpenseEditor} /></Tooltip>
 	                      </div>
 	                    )}
-	                    <small>{isCloudMode ? `订单支出 ¥${currency(expenseOrdersTotal)}，纠错 ${expenseCorrection >= 0 ? "+" : "−"}¥${currency(Math.abs(expenseCorrection))}` : "订单投入自动计入"}</small>
+                      <div style={{display: 'flex',flexDirection: 'column'}}>
+                        {isCloudMode ? <><small>{`订单支出 ¥${currency(expenseOrdersTotal)}`}</small><small>{`纠错 ${expenseCorrection >= 0 ? "+" : "−"}¥${currency(Math.abs(expenseCorrection))}`}</small></> : <small>订单投入自动计入</small>}
+                      </div>
 	                  </div>
 	                  <div className="order-stat-item order-money-card income-card">
                     <span>累计税后收入</span>
@@ -4765,7 +4767,7 @@ function InnerFootballApp({
 	                        <InputNumber autoFocus aria-label={isCloudMode ? "收入纠错值" : "累计税后收入校正"} controls={false} min={isCloudMode ? undefined : 0} precision={2} prefix="¥" value={incomeDraft} disabled={incomeSaving} onChange={(value) => setIncomeDraft(Number(value ?? 0))} onPressEnter={() => { if (!incomeSaving) void saveIncomeCorrection(); }} />
 	                        <Button type="primary" aria-label={isCloudMode ? "保存收入纠错值" : "保存累计税后收入"} icon={<CheckOutlined />} loading={incomeSaving} disabled={incomeSaving} onClick={() => { void saveIncomeCorrection(); }} />
 	                        <Button aria-label={isCloudMode ? "取消编辑收入纠错值" : "取消编辑累计税后收入"} icon={<CloseOutlined />} disabled={incomeSaving} onClick={() => setIncomeEditing(false)} />
-	                        {isCloudMode && <small>预览最终税后收入：¥{currency(incomeOrdersTotal)} {Number(incomeDraft || 0) >= 0 ? "+" : "−"} ¥{currency(Math.abs(Number(incomeDraft || 0)))} = ¥{currency(incomeOrdersTotal + Number(incomeDraft || 0))}</small>}
+	                        {isCloudMode && <small className='order-money-editor-preview'>预览最终税后收入：¥{currency(incomeOrdersTotal)} {Number(incomeDraft || 0) >= 0 ? "+" : "−"} ¥{currency(Math.abs(Number(incomeDraft || 0)))} = ¥{currency(incomeOrdersTotal + Number(incomeDraft || 0))}</small>}
 	                      </div>
 	                    ) : (
 	                      <div className="order-money-locked">
@@ -4773,8 +4775,11 @@ function InnerFootballApp({
 	                        <Tooltip title={isCloudMode ? "编辑收入纠错值" : "解锁编辑累计税后收入"}><Button type="text" aria-label={isCloudMode ? "编辑收入纠错值" : "解锁编辑累计税后收入"} icon={<EditOutlined />} onClick={unlockIncomeEditor} /></Tooltip>
 	                      </div>
 	                    )}
-	                    <small>{isCloudMode ? `订单税后收入 ¥${currency(incomeOrdersTotal)}，纠错 ${incomeCorrection >= 0 ? "+" : "−"}¥${currency(Math.abs(incomeCorrection))}` : "已结账成功订单的税后奖金自动计入"}</small>
-	                    <small>税前奖金 ¥{currency(displayedOrderGrossIncome)}，订单税额 ¥{currency(displayedOrderTax)}</small>
+                      <div style={{display: 'flex',flexDirection: 'column'}}>
+                        {isCloudMode ? <><small>{`订单税后收入 ¥${currency(incomeOrdersTotal)}`}</small><small>{`纠错 ${incomeCorrection >= 0 ? "+" : "−"}¥${currency(Math.abs(incomeCorrection))}`}</small></> : <small>已结账成功订单的税后奖金自动计入</small>}
+                        <small>税前奖金 ¥{currency(displayedOrderGrossIncome)}</small>
+                        <small>订单税额 ¥{currency(displayedOrderTax)}</small>
+                      </div>
 	                  </div>
                   <div className={`order-stat-item order-profit-card ${netProfit >= 0 ? "positive" : "negative"}`}>
                     <span>当前利润</span>
