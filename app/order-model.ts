@@ -6,6 +6,7 @@ import {
   type OrderStatus,
 } from "./calculator";
 import type { CurrentHits, Market, MarketType, MatchItem, MatchResultOdds, MatchScores, OddsOption, SavedSlip } from "./types";
+import { afterTaxPrize, appliedOrderTax, isValidTaxAmount } from "./order-tax";
 
 export type CompactOrderSelection = {
   matchId: string;
@@ -41,6 +42,8 @@ export type CompactOrder = {
   failedMatchIds?: string[];
   settledAt?: string;
   settledPrize?: number;
+  taxAmount?: number;
+  confirmedAt?: string;
   oddsLockedBeforePayment?: boolean;
   oddsLockedBeforeSettlement?: boolean;
   selections: CompactOrderSelection[];
@@ -53,9 +56,9 @@ export type OrderSummary = {
   progress: "settled" | "unsettled";
 };
 
-export type BulkOrderOperation = "update" | "judge" | "refresh-odds" | "lock-odds" | "pay" | "settle" | "withdraw";
+export type BulkOrderOperation = "update" | "judge" | "refresh-odds" | "lock-odds" | "pay" | "settle" | "withdraw" | "confirm";
 
-export const ORDER_PROGRESS_FILTER_VALUES = ["settled", "unsettled", "pending-settlement", "unpaid", "paid"] as const;
+export const ORDER_PROGRESS_FILTER_VALUES = ["settled", "unsettled", "pending-settlement", "unconfirmed", "unpaid", "paid"] as const;
 export type OrderProgressFilterValue = typeof ORDER_PROGRESS_FILTER_VALUES[number];
 export type OrderProgressFilter = OrderProgressFilterValue | null;
 
@@ -72,7 +75,7 @@ export const isOrderPendingSettlement = (order: Pick<CompactOrder | SavedSlip, "
 );
 
 type OrderPaymentState = Pick<SavedSlip,
-  "paymentStatus" | "settledAt" | "settledPrize" | "oddsLocked" | "oddsLockedBeforePayment" | "oddsLockedBeforeSettlement"
+  "paymentStatus" | "settledAt" | "settledPrize" | "confirmedAt" | "oddsLocked" | "oddsLockedBeforePayment" | "oddsLockedBeforeSettlement"
 >;
 
 export const getOrderWithdrawalType = (order: OrderPaymentState) => (
@@ -87,6 +90,7 @@ export function withdrawOrderState<T extends OrderPaymentState>(order: T): T | n
         ...order,
         settledAt: undefined,
         settledPrize: undefined,
+        confirmedAt: undefined,
         oddsLocked: order.oddsLockedBeforeSettlement ?? false,
         oddsLockedBeforeSettlement: undefined,
       };
@@ -148,6 +152,8 @@ export function savedSlipToCompactOrder(slip: SavedSlip): CompactOrder {
     ...(slip.failedMatches ? { failedMatchIds: [...slip.failedMatches] } : {}),
     ...(slip.settledAt ? { settledAt: slip.settledAt } : {}),
     ...(typeof slip.settledPrize === "number" ? { settledPrize: slip.settledPrize } : {}),
+    ...(typeof slip.taxAmount === "number" ? { taxAmount: slip.taxAmount } : {}),
+    ...(slip.confirmedAt ? { confirmedAt: slip.confirmedAt } : {}),
     ...(slip.oddsLockedBeforePayment !== undefined
       ? { oddsLockedBeforePayment: slip.oddsLockedBeforePayment }
       : {}),
@@ -241,6 +247,8 @@ export function compactOrderToSavedSlip(order: CompactOrder): SavedSlip {
     ...(order.failedMatchIds ? { failedMatches: [...order.failedMatchIds] } : {}),
     ...(order.settledAt ? { settledAt: order.settledAt } : {}),
     ...(typeof order.settledPrize === "number" ? { settledPrize: order.settledPrize } : {}),
+    ...(typeof order.taxAmount === "number" ? { taxAmount: order.taxAmount } : {}),
+    ...(order.confirmedAt ? { confirmedAt: order.confirmedAt } : {}),
     ...(order.oddsLockedBeforePayment !== undefined
       ? { oddsLockedBeforePayment: order.oddsLockedBeforePayment }
       : {}),
@@ -267,12 +275,19 @@ export function normalizeCompactOrder(input: CompactOrder | SavedSlip): CompactO
 
 export function compactOrderSummary(order: CompactOrder): OrderSummary {
   const slip = compactOrderToSavedSlip(order);
+  const status = getOrderStatus(slip);
+  const grossIncome = order.settledAt && status === "success" ? order.settledPrize ?? 0 : 0;
   return {
     stake: calculateStake(slip.matches, slip.passes, slip.multiple),
-    income: order.settledAt ? order.settledPrize ?? 0 : 0,
-    status: getOrderStatus(slip),
+    income: afterTaxPrize(grossIncome, appliedOrderTax(order, status)),
+    status,
     progress: order.settledAt ? "settled" : "unsettled",
   };
+}
+
+export function isOrderUnconfirmed(order: CompactOrder | SavedSlip) {
+  const slip = "selections" in order ? compactOrderToSavedSlip(order) : order;
+  return Boolean(slip.settledAt && getOrderStatus(slip) === "success" && !slip.confirmedAt);
 }
 
 export function isOrderUnpaidHopeful(order: CompactOrder | SavedSlip) {
@@ -340,6 +355,8 @@ export function isCompactOrder(value: unknown): value is CompactOrder {
     && (value.resultOdds === undefined || isMatchResultOdds(value.resultOdds))
     && (value.settledAt === undefined || typeof value.settledAt === "string")
     && (value.settledPrize === undefined || (typeof value.settledPrize === "number" && Number.isFinite(value.settledPrize)))
+    && (value.taxAmount === undefined || isValidTaxAmount(value.taxAmount))
+    && (value.confirmedAt === undefined || typeof value.confirmedAt === "string")
     && (value.oddsLockedBeforePayment === undefined || typeof value.oddsLockedBeforePayment === "boolean")
     && (value.oddsLockedBeforeSettlement === undefined || typeof value.oddsLockedBeforeSettlement === "boolean");
 }

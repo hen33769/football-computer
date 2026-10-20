@@ -1,4 +1,4 @@
-import { calculateCurrentPrize } from "../calculator";
+import { calculateCurrentPrize, getOrderStatus } from "../calculator";
 import {
   compactOrderSummary,
   compactOrderToSavedSlip,
@@ -12,6 +12,7 @@ import {
   type OrderProgressFilter,
 } from "../order-model";
 import type { SavedSlip } from "../types";
+import { calculatePrizeTax, isValidTaxAmount } from "../order-tax";
 import { refreshSelectedOdds } from "../sporttery";
 import type { MatchItem } from "../types";
 import { httpError, orderConflict } from "./errors";
@@ -43,6 +44,8 @@ export type OrdersListResponse = {
 type OrderRow = {
   order_id: string;
   data_json: string;
+  tax_cents?: number | null;
+  confirmed_at?: string | null;
   updated_at: string;
 };
 
@@ -80,8 +83,41 @@ export function parseOrderJson(value: string): CompactOrder | null {
   return null;
 }
 
+function orderFromRow(row: OrderRow) {
+  const parsed = parseOrderJson(row.data_json);
+  if (!parsed) return null;
+  const normalized = { ...parsed };
+  if (row.confirmed_at) normalized.confirmedAt = row.confirmed_at;
+  else delete normalized.confirmedAt;
+  return {
+    ...normalized,
+    ...(normalized.taxAmount === undefined && row.tax_cents !== null && row.tax_cents !== undefined
+      ? { taxAmount: fromCents(row.tax_cents) }
+      : {}),
+    id: normalized.id || row.order_id,
+    updatedAt: row.updated_at,
+  };
+}
+
 function prepareStoredOrder(order: CompactOrder, now = new Date().toISOString()) {
-  const stored = normalizeCompactOrder({ ...order, updatedAt: now });
+  let stored = normalizeCompactOrder({ ...order, updatedAt: now });
+  const slip = compactOrderToSavedSlip(stored);
+  const prize = stored.settledAt && typeof stored.settledPrize === "number"
+    ? stored.settledPrize
+    : calculateCurrentPrize(slip.matches, slip.passes, slip.multiple, slip.hits ?? {});
+  if (stored.taxAmount === undefined && stored.settledAt && getOrderStatus(slip) === "success") {
+    stored = normalizeCompactOrder({ ...stored, taxAmount: calculatePrizeTax(prize) });
+  }
+  if (stored.taxAmount !== undefined) {
+    if (!isValidTaxAmount(stored.taxAmount)) throw httpError("税额必须是大于等于 0 且最多两位小数的金额", 400);
+    if (toCents(stored.taxAmount) > toCents(prize)) throw httpError("税额不能大于订单奖金", 400);
+  }
+  if (stored.confirmedAt !== undefined) {
+    if (!stored.settledAt || getOrderStatus(slip) !== "success") {
+      throw httpError("只有已结账的成功订单可以确认", 409);
+    }
+    if (Number.isNaN(new Date(stored.confirmedAt).getTime())) throw httpError("订单确认时间无效", 400);
+  }
   const json = JSON.stringify(stored);
   if (new TextEncoder().encode(json).byteLength > MAX_ORDER_BYTES) {
     throw httpError(`订单“${stored.name}”的数据过大，无法保存`, 400);
@@ -166,14 +202,16 @@ async function writePreparedOrder(
   await d1.prepare(`
     INSERT INTO user_orders (
       user_id, order_id, name, saved_at, settled_at, settled_prize_cents,
-      payment_status, stake_cents, status, match_ids_json, data_json, updated_at
+      tax_cents, confirmed_at, payment_status, stake_cents, status, match_ids_json, data_json, updated_at
     )
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
     ON CONFLICT(user_id, order_id) DO UPDATE SET
       name = excluded.name,
       saved_at = excluded.saved_at,
       settled_at = excluded.settled_at,
       settled_prize_cents = excluded.settled_prize_cents,
+      tax_cents = excluded.tax_cents,
+      confirmed_at = excluded.confirmed_at,
       payment_status = excluded.payment_status,
       stake_cents = excluded.stake_cents,
       status = excluded.status,
@@ -187,6 +225,8 @@ async function writePreparedOrder(
     order.savedAt,
     order.settledAt ?? null,
     typeof order.settledPrize === "number" ? toCents(order.settledPrize) : null,
+    typeof order.taxAmount === "number" ? toCents(order.taxAmount) : null,
+    order.confirmedAt ?? null,
     order.paymentStatus === "paid" ? "paid" : "unpaid",
     toCents(summary.stake),
     summary.status,
@@ -223,7 +263,12 @@ export async function updateOrder(
   if (isOrderPaid(existing) && wagerShapeFingerprint(existing) !== wagerShapeFingerprint(order)) {
     throw httpError("已支付订单的投注项、串关和倍数均已冻结", 409);
   }
-  return writePreparedOrder(d1, userId, prepareStoredOrder(existing.settledAt ? { ...order, oddsLocked: true } : order));
+  const confirmedAt = existing.confirmedAt && existing.taxAmount === order.taxAmount
+    ? existing.confirmedAt
+    : undefined;
+  return writePreparedOrder(d1, userId, prepareStoredOrder(existing.settledAt
+    ? { ...order, confirmedAt, oddsLocked: true }
+    : { ...order, confirmedAt: undefined }));
 }
 
 export async function deleteOrder(
@@ -244,14 +289,14 @@ export async function deleteOrder(
 
 export async function getOrder(d1: D1Database, userId: string, orderId: string) {
   const row = await d1.prepare(`
-    SELECT order_id, data_json, updated_at
+    SELECT order_id, data_json, tax_cents, confirmed_at, updated_at
     FROM user_orders
     WHERE user_id = ?1 AND order_id = ?2
   `).bind(userId, orderId).first<OrderRow>();
   if (!row) throw httpError("找不到订单", 404);
-  const order = parseOrderJson(row.data_json);
+  const order = orderFromRow(row);
   if (!order) throw httpError("订单数据结构异常", 500);
-  return { ...order, id: order.id || row.order_id, updatedAt: row.updated_at };
+  return order;
 }
 
 function ordersWhereClause(query: OrdersQuery) {
@@ -268,6 +313,7 @@ function ordersWhereClause(query: OrdersQuery) {
   if (query.progress === "settled") conditions.push("settled_at IS NOT NULL");
   if (query.progress === "unsettled") conditions.push("settled_at IS NULL");
   if (query.progress === "pending-settlement") conditions.push("payment_status = 'paid' AND settled_at IS NULL");
+  if (query.progress === "unconfirmed") conditions.push("settled_at IS NOT NULL AND status = 'success' AND confirmed_at IS NULL");
   if (query.progress === "unpaid") conditions.push("payment_status = 'unpaid'");
   if (query.progress === "paid") conditions.push("payment_status = 'paid'");
   const requestedStatuses = unique(query.statuses ?? []);
@@ -287,7 +333,7 @@ export async function listOrders(d1: D1Database, userId: string, query: OrdersQu
   const offset = Math.max(Math.round(Number(query.offset ?? 0)), 0);
   const where = ordersWhereClause(query);
   const rows = await d1.prepare(`
-    SELECT order_id, data_json, updated_at
+    SELECT order_id, data_json, tax_cents, confirmed_at, updated_at
     FROM user_orders
     WHERE ${where.clause}
     ORDER BY saved_at DESC, order_id DESC
@@ -308,8 +354,8 @@ export async function listOrders(d1: D1Database, userId: string, query: OrdersQu
   `).bind(userId).first<OrderStatsCountRow>();
   return {
     orders: (rows.results ?? []).flatMap((row) => {
-      const order = parseOrderJson(row.data_json);
-      return order ? [{ ...order, id: order.id || row.order_id, updatedAt: row.updated_at }] : [];
+      const order = orderFromRow(row);
+      return order ? [order] : [];
     }),
     total: Number(total?.total ?? 0),
     unsettledCount: Number(orderStats?.unsettledCount ?? 0),
@@ -322,15 +368,15 @@ async function getOrdersByRefs(d1: D1Database, userId: string, refs: OrderRef[])
   const ids = unique(refs.map((ref) => ref.id).filter(Boolean));
   if (ids.length === 0) return [];
   const rows = await d1.prepare(`
-    SELECT order_id, data_json, updated_at
+    SELECT order_id, data_json, tax_cents, confirmed_at, updated_at
     FROM user_orders
     WHERE user_id = ?1
       AND order_id IN (SELECT value FROM json_each(?2))
   `).bind(userId, JSON.stringify(ids)).all<OrderRow>();
   const found = new Map<string, CompactOrder>();
   for (const row of rows.results ?? []) {
-    const order = parseOrderJson(row.data_json);
-    if (order) found.set(row.order_id, { ...order, id: order.id || row.order_id, updatedAt: row.updated_at });
+    const order = orderFromRow(row);
+    if (order) found.set(row.order_id, order);
   }
   const conflicts = refs.flatMap((ref) => {
     const order = found.get(ref.id);
@@ -360,16 +406,20 @@ function finalizeBulkOrder(current: CompactOrder, incoming: CompactOrder, operat
       oddsLocked: Boolean(current.oddsLocked),
       settledAt: undefined,
       settledPrize: undefined,
+      confirmedAt: undefined,
     });
   }
   if (operation === "settle") {
     if (!isOrderPaid(current) || current.settledAt) throw httpError(`订单“${current.name}”不符合结账条件`, 409);
     if (!sameWager) throw httpError(`订单“${current.name}”的倍率与当前版本不一致`, 409);
     const slip = compactOrderToSavedSlip(current);
+    const settledPrize = calculateCurrentPrize(slip.matches, slip.passes, slip.multiple, slip.hits ?? {});
     return normalizeCompactOrder({
       ...current,
       settledAt: now,
-      settledPrize: calculateCurrentPrize(slip.matches, slip.passes, slip.multiple, slip.hits ?? {}),
+      settledPrize,
+      taxAmount: current.taxAmount ?? calculatePrizeTax(settledPrize),
+      confirmedAt: undefined,
       oddsLockedBeforeSettlement: Boolean(current.oddsLocked),
       oddsLocked: true,
     });
@@ -378,6 +428,13 @@ function finalizeBulkOrder(current: CompactOrder, incoming: CompactOrder, operat
     const withdrawn = withdrawOrderState(current);
     if (!withdrawn) throw httpError(`订单“${current.name}”没有可撤回的结账或支付`, 409);
     return normalizeCompactOrder(withdrawn);
+  }
+  if (operation === "confirm") {
+    if (!current.settledAt || compactOrderSummary(current).status !== "success") {
+      throw httpError(`订单“${current.name}”不是已结账的成功订单`, 409);
+    }
+    if (current.confirmedAt) throw httpError(`订单“${current.name}”已经确认`, 409);
+    return normalizeCompactOrder({ ...current, confirmedAt: now });
   }
   if (operation === "lock-odds") {
     if (current.settledAt) throw httpError(`订单“${current.name}”的倍率已经冻结`, 409);
@@ -393,7 +450,11 @@ function finalizeBulkOrder(current: CompactOrder, incoming: CompactOrder, operat
   }
   if (operation === "judge") {
     if (!sameWager) throw httpError(`订单“${current.name}”不能在判断赛果时修改已选倍率`, 409);
-    return normalizeCompactOrder(incoming);
+    const slip = compactOrderToSavedSlip(incoming);
+    const prize = incoming.settledAt && typeof incoming.settledPrize === "number"
+      ? incoming.settledPrize
+      : calculateCurrentPrize(slip.matches, slip.passes, slip.multiple, slip.hits ?? {});
+    return normalizeCompactOrder({ ...incoming, taxAmount: calculatePrizeTax(prize), confirmedAt: undefined });
   }
   if (current.settledAt && !sameWager) {
     throw httpError(`订单“${current.name}”的投注项、串关、倍数和倍率均已冻结`, 409);
@@ -401,7 +462,12 @@ function finalizeBulkOrder(current: CompactOrder, incoming: CompactOrder, operat
   if (isOrderPaid(current) && !sameShape) {
     throw httpError(`订单“${current.name}”的投注项、串关和倍数均已冻结`, 409);
   }
-  return normalizeCompactOrder(current.settledAt ? { ...incoming, oddsLocked: true } : incoming);
+  const confirmedAt = current.confirmedAt && current.taxAmount === incoming.taxAmount
+    ? current.confirmedAt
+    : undefined;
+  return normalizeCompactOrder(current.settledAt
+    ? { ...incoming, confirmedAt, oddsLocked: true }
+    : { ...incoming, confirmedAt: undefined });
 }
 
 export async function bulkUpdateOrders(
@@ -442,18 +508,22 @@ export async function bulkUpdateOrders(
         saved_at = ?2,
         settled_at = ?3,
         settled_prize_cents = ?4,
-        payment_status = ?5,
-        stake_cents = ?6,
-        status = ?7,
-        match_ids_json = ?8,
-        data_json = ?9,
-        updated_at = ?10
-    WHERE user_id = ?11 AND order_id = ?12 AND updated_at = ?13
+        tax_cents = ?5,
+        confirmed_at = ?6,
+        payment_status = ?7,
+        stake_cents = ?8,
+        status = ?9,
+        match_ids_json = ?10,
+        data_json = ?11,
+        updated_at = ?12
+    WHERE user_id = ?13 AND order_id = ?14 AND updated_at = ?15
   `).bind(
     order.name,
     order.savedAt,
     order.settledAt ?? null,
     typeof order.settledPrize === "number" ? toCents(order.settledPrize) : null,
+    typeof order.taxAmount === "number" ? toCents(order.taxAmount) : null,
+    order.confirmedAt ?? null,
     order.paymentStatus === "paid" ? "paid" : "unpaid",
     toCents(summary.stake),
     summary.status,
@@ -480,6 +550,8 @@ export async function settleOrders(d1: D1Database, userId: string, refs: OrderRe
       ...order,
       settledAt: now,
       settledPrize,
+      taxAmount: order.taxAmount ?? calculatePrizeTax(settledPrize),
+      confirmedAt: undefined,
       oddsLockedBeforeSettlement: Boolean(order.oddsLocked),
       oddsLocked: true,
     };
@@ -496,6 +568,7 @@ export async function withdrawOrderSettlement(d1: D1Database, userId: string, re
     ...order,
     settledAt: undefined,
     settledPrize: undefined,
+    confirmedAt: undefined,
     oddsLocked: order.oddsLockedBeforeSettlement ?? false,
     oddsLockedBeforeSettlement: undefined,
   };
@@ -526,7 +599,9 @@ export async function saveOrderResults(
     ...(payload.resultOdds ? { resultOdds: payload.resultOdds } : {}),
     failedMatchIds: [...new Set(payload.failedMatchIds ?? [])],
   };
-  return writePreparedOrder(d1, userId, prepareStoredOrder(next));
+  const slip = compactOrderToSavedSlip(next);
+  const prize = calculateCurrentPrize(slip.matches, slip.passes, slip.multiple, slip.hits ?? {});
+  return writePreparedOrder(d1, userId, prepareStoredOrder({ ...next, taxAmount: calculatePrizeTax(prize) }));
 }
 
 export async function lockOrders(d1: D1Database, userId: string, refs: OrderRef[]) {
@@ -578,7 +653,7 @@ export function financePreviewForOrders(orders: CompactOrder[]) {
   return orders.reduce((totals, order) => {
     const summary = compactOrderSummary(order);
     if (isOrderPaid(order)) totals.expense += summary.stake;
-    if (order.settledAt) totals.income += fromCents(toCents(order.settledPrize ?? 0));
+    if (order.settledAt) totals.income += summary.income;
     return totals;
   }, { expense: 0, income: 0 });
 }

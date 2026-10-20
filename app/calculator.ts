@@ -296,7 +296,7 @@ function isOrderPassImpossible(
  * 未确认和明确未命中的比赛都不计入 confirmed hit，因此都会被计入差关数。
  */
 export function getOrderShortPasses(
-  slip: Pick<SavedSlip, "matches" | "passes" | "hits">,
+  slip: Pick<SavedSlip, "matches" | "passes" | "hits" | "failedMatches">,
 ): number[] {
   const chosen = selectedMatches(slip.matches);
   const hits = slip.hits ?? {};

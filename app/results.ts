@@ -1,4 +1,5 @@
-import { matchHasSelectedHit, winningOptionId } from "./calculator";
+import { calculateCurrentPrize, matchHasSelectedHit, winningOptionId } from "./calculator";
+import { calculatePrizeTax } from "./order-tax";
 import { normalizeSportteryMatchId } from "./sporttery";
 import type { CurrentHits, MatchItem, MatchResultOdds, MatchResults, MatchScore, MatchScores, MarketType, ResultOdds, SavedSlip } from "./types";
 
@@ -139,7 +140,7 @@ export function judgeSlipWithResults(slip: SavedSlip, results: MatchResults): Sa
     }
   });
 
-  return {
+  const judged = {
     ...slip,
     ...(matchesChanged ? { matches } : {}),
     hits,
@@ -147,6 +148,14 @@ export function judgeSlipWithResults(slip: SavedSlip, results: MatchResults): Sa
     resultScores,
     resultOdds,
     failedMatches: [...failedMatches],
+  };
+  const prize = judged.settledAt && typeof judged.settledPrize === "number"
+    ? judged.settledPrize
+    : calculateCurrentPrize(judged.matches, judged.passes, judged.multiple, judged.hits ?? {});
+  return {
+    ...judged,
+    taxAmount: calculatePrizeTax(prize),
+    confirmedAt: undefined,
   };
 }
 
@@ -179,12 +188,17 @@ export function isOrderMatchResultUnavailable(order: SavedSlip, match: MatchItem
 export function judgeLoadedOrdersWithResults(orders: SavedSlip[], results: MatchResults): SavedSlip[] {
   return orders.flatMap((order) => {
     const judged = judgeSlipWithResults(order, results);
+    const hasRelevantResult = order.matches.some((match) => (
+      match.markets.some((market) => market.options.some((option) => option.selected))
+      && Boolean(resultForMatch(results, match.id))
+    ));
     const changed = judged.matches !== order.matches
       || !sameHits(judged.hits, order.hits)
       || !sameHits(judged.resultValues, order.resultValues)
       || !sameScores(judged.resultScores, order.resultScores)
       || !sameResultOdds(judged.resultOdds, order.resultOdds)
-      || !sameStringSet(judged.failedMatches, order.failedMatches);
+      || !sameStringSet(judged.failedMatches, order.failedMatches)
+      || (hasRelevantResult && judged.taxAmount !== order.taxAmount);
     return changed ? [judged] : [];
   });
 }

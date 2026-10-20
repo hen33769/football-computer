@@ -10,6 +10,8 @@ export type FinanceResponse = {
     total: number;
   };
   income: {
+    grossOrders: number;
+    tax: number;
     orders: number;
     correction: number;
     total: number;

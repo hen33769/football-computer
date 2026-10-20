@@ -56,27 +56,33 @@ test("游客订单趋势以纠错值为累计初值并按中国时区归集每�
     {
       date: "2026-08-20",
       expense: 0,
+      tax: 0,
       income: 0,
       profit: 0,
       cumulativeExpense: 1.25,
+      cumulativeTax: 0,
       cumulativeIncome: 2.75,
       cumulativeProfit: 1.5,
     },
     {
       date: "2026-08-21",
       expense: 4,
+      tax: 0,
       income: 0,
       profit: -4,
       cumulativeExpense: 5.25,
+      cumulativeTax: 0,
       cumulativeIncome: 2.75,
       cumulativeProfit: -2.5,
     },
     {
       date: "2026-08-22",
       expense: 0,
+      tax: 0,
       income: 5.5,
       profit: 5.5,
       cumulativeExpense: 5.25,
+      cumulativeTax: 0,
       cumulativeIncome: 8.25,
       cumulativeProfit: 3,
     },
@@ -92,9 +98,11 @@ test("游客订单趋势过滤日期范围且不计入未支付订单支出", ()
     {
       date: "2026-08-22",
       expense: 0,
+      tax: 0,
       income: 5.5,
       profit: 5.5,
       cumulativeExpense: 1,
+      cumulativeTax: 0,
       cumulativeIncome: 7.5,
       cumulativeProfit: 6.5,
     },
@@ -116,9 +124,11 @@ test("趋势补齐没有收支事件的自然日，保证每个日期都有 tool
   assert.deepEqual(points[2], {
     date: "2026-08-22",
     expense: 0,
+    tax: 0,
     income: 0,
     profit: 0,
     cumulativeExpense: 2,
+    cumulativeTax: 0,
     cumulativeIncome: 0,
     cumulativeProfit: -2,
   });
@@ -132,9 +142,11 @@ test("仅有纠错值时也返回累计初始点", () => {
   }), [{
     date: "2026-08-25",
     expense: 0,
+    tax: 0,
     income: 0,
     profit: 0,
     cumulativeExpense: 12,
+    cumulativeTax: 0,
     cumulativeIncome: 5,
     cumulativeProfit: -7,
   }]);
@@ -152,7 +164,7 @@ test("云端趋势查询绑定用户和截止日期，并把纠错值计入累�
           boundArgs.push(values);
           return statement;
         },
-        all: async () => ({ results: [{ date: "2026-08-25", expense_cents: 1234, income_cents: 5678 }] }),
+        all: async () => ({ results: [{ date: "2026-08-25", expense_cents: 1234, tax_cents: 678, income_cents: 5000 }] }),
         first: async () => ({
           expense_correction_cents: 125,
           income_correction_cents: 275,
@@ -177,11 +189,31 @@ test("云端趋势查询绑定用户和截止日期，并把纠错值计入累�
     points: [{
       date: "2026-08-25",
       expense: 12.34,
-      income: 56.78,
-      profit: 44.44,
+      tax: 6.78,
+      income: 50,
+      profit: 37.66,
       cumulativeExpense: 13.59,
-      cumulativeIncome: 59.53,
-      cumulativeProfit: 45.94,
+      cumulativeTax: 6.78,
+      cumulativeIncome: 52.75,
+      cumulativeProfit: 39.16,
     }],
   });
+});
+
+test("高额已结账成功订单的趋势按税后收入归集", () => {
+  const points = buildFinanceTrendFromOrders([
+    paidOrder({ settledPrize: 12_000, taxAmount: 2_400 }),
+  ], {}, { startDate: "2026-08-22", endDate: "2026-08-22" });
+
+  assert.deepEqual(points, [{
+    date: "2026-08-22",
+    expense: 0,
+    tax: 2_400,
+    income: 9_600,
+    profit: 9_600,
+    cumulativeExpense: 2,
+    cumulativeTax: 2_400,
+    cumulativeIncome: 9_600,
+    cumulativeProfit: 9_598,
+  }]);
 });

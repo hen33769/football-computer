@@ -42,7 +42,6 @@ export type TeamNameResolution = {
 };
 
 export type TeamNameIndex = Map<string, TeamNameResolution>;
-export type TeamNameAliasPosition = "before" | "after" | "auto";
 
 /** 与比赛名称匹配时忽略全角差异、大小写和空白差异。 */
 export function normalizeTeamName(value: string) {
@@ -93,9 +92,9 @@ export function resolveTeamNameDisplay(name: string, index: TeamNameIndex) {
   const currentKey = normalizeTeamName(name);
   const resolution = index.get(currentKey);
   if (!resolution) {
-    return { normalName: name, aliasName: null as string | null, aliasBefore: false };
+    return { normalName: name, aliasName: null as string | null };
   }
 
   const [firstActive, secondActive] = resolution.activeNames;
-  return { normalName: firstActive.name, aliasName: secondActive?.name ?? null, aliasBefore: true };
+  return { normalName: firstActive.name, aliasName: secondActive?.name ?? null };
 }

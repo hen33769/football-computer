@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { TeamNameWithAlias } from "../app/components/TeamNameWithAlias";
 import { buildTeamNameIndex, normalizeTeamName, resolveTeamIcon, resolveTeamNameDisplay, type TeamNameGroup, upsertTeamNameGroupAtPosition } from "../app/team-aliases";
 import { validateTeamNameGroupPayload } from "../app/server/team-aliases-service";
 
@@ -28,32 +31,52 @@ test("编辑队伍组保留原列表位置，新建队伍组放在列表顶部",
   assert.deepEqual(upsertTeamNameGroupAtPosition([first, second], { ...group, id: "new" }).map(({ id }) => id), ["new", "first", "second"]);
 });
 
-test("接口名称是第一个激活名时，配置激活 1 作为主名，激活 2 显示在前面", () => {
+test("接口名称是第一个激活名时，配置激活 1 作为主名并返回激活 2 作为别名", () => {
   const display = resolveTeamNameDisplay("尤加尔登", buildTeamNameIndex([group]));
-  assert.deepEqual(display, { normalName: "尤加尔登", aliasName: "佐加顿斯", aliasBefore: true });
+  assert.deepEqual(display, { normalName: "尤加尔登", aliasName: "佐加顿斯" });
 });
 
 test("接口名称是第二个激活名时，仍按激活 1 主名、激活 2 别名", () => {
   const display = resolveTeamNameDisplay("佐加顿斯", buildTeamNameIndex([group]));
-  assert.deepEqual(display, { normalName: "尤加尔登", aliasName: "佐加顿斯", aliasBefore: true });
+  assert.deepEqual(display, { normalName: "尤加尔登", aliasName: "佐加顿斯" });
 });
 
 test("接口名称是未激活名称时，仍按配置激活名称优先", () => {
   const display = resolveTeamNameDisplay("Djurgardens", buildTeamNameIndex([group]));
-  assert.deepEqual(display, { normalName: "尤加尔登", aliasName: "佐加顿斯", aliasBefore: true });
+  assert.deepEqual(display, { normalName: "尤加尔登", aliasName: "佐加顿斯" });
+});
+
+test("队伍位置统一决定别名、标签和主名的排列", () => {
+  const index = buildTeamNameIndex([group]);
+  const tag = createElement("span", { "data-team-tag": true }, "标签");
+  const home = renderToStaticMarkup(createElement(TeamNameWithAlias, {
+    name: "Djurgardens",
+    index,
+    teamPosition: "home",
+    betweenNames: tag,
+  }));
+  const away = renderToStaticMarkup(createElement(TeamNameWithAlias, {
+    name: "Djurgardens",
+    index,
+    teamPosition: "away",
+    betweenNames: tag,
+  }));
+
+  assert.ok(home.indexOf("佐加顿斯") < home.indexOf("data-team-tag"));
+  assert.ok(home.indexOf("data-team-tag") < home.indexOf("尤加尔登"));
+  assert.ok(away.indexOf("尤加尔登") < away.indexOf("data-team-tag"));
+  assert.ok(away.indexOf("data-team-tag") < away.indexOf("佐加顿斯"));
 });
 
 test("没有匹配队伍配置时不显示别名，单独激活名称 1 时可显示主名和图标", () => {
   assert.deepEqual(resolveTeamNameDisplay("未知队伍", buildTeamNameIndex([group])), {
     normalName: "未知队伍",
     aliasName: null,
-    aliasBefore: false,
   });
   const incomplete = { ...group, names: group.names.map((entry) => ({ ...entry, activeSlot: entry.activeSlot === 2 ? null : entry.activeSlot })) };
   assert.deepEqual(resolveTeamNameDisplay("Djurgardens", buildTeamNameIndex([incomplete])), {
     normalName: "尤加尔登",
     aliasName: null,
-    aliasBefore: true,
   });
   assert.equal(resolveTeamIcon("Djurgardens", buildTeamNameIndex([incomplete])), "data:image/png;base64,AAAA");
 });
@@ -63,7 +86,6 @@ test("全部名称未激活时使用首个名称作为主名并保留队伍图�
   assert.deepEqual(resolveTeamNameDisplay("Djurgardens", buildTeamNameIndex([inactive])), {
     normalName: "尤加尔登",
     aliasName: null,
-    aliasBefore: true,
   });
   assert.equal(resolveTeamIcon("Djurgardens", buildTeamNameIndex([inactive])), "data:image/png;base64,AAAA");
 });

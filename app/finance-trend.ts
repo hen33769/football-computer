@@ -1,5 +1,6 @@
-import { calculateStake } from "./calculator";
+import { calculateStake, getOrderStatus } from "./calculator";
 import { isOrderPaid } from "./order-model";
+import { afterTaxPrize, appliedOrderTax } from "./order-tax";
 import type { SavedSlip } from "./types";
 
 export type FinanceTrendDateRange = {
@@ -10,9 +11,11 @@ export type FinanceTrendDateRange = {
 export type FinanceTrendPoint = {
   date: string;
   expense: number;
+  tax: number;
   income: number;
   profit: number;
   cumulativeExpense: number;
+  cumulativeTax: number;
   cumulativeIncome: number;
   cumulativeProfit: number;
 };
@@ -30,6 +33,7 @@ export type FinanceTrendCorrections = {
 export type FinanceTrendDailyAmount = {
   date: string;
   expense: number;
+  tax?: number;
   income: number;
 };
 
@@ -85,11 +89,12 @@ export function buildCumulativeFinanceTrend(
   rawRange: FinanceTrendDateRange = {},
 ): FinanceTrendPoint[] {
   const range = normalizeFinanceTrendDateRange(rawRange);
-  const amountsByDate = new Map<string, { expenseCents: number; incomeCents: number }>();
+  const amountsByDate = new Map<string, { expenseCents: number; taxCents: number; incomeCents: number }>();
   for (const amount of dailyAmounts) {
     if (!isFinanceTrendDate(amount.date)) continue;
-    const current = amountsByDate.get(amount.date) ?? { expenseCents: 0, incomeCents: 0 };
+    const current = amountsByDate.get(amount.date) ?? { expenseCents: 0, taxCents: 0, incomeCents: 0 };
     current.expenseCents += toCents(amount.expense);
+    current.taxCents += toCents(amount.tax ?? 0);
     current.incomeCents += toCents(amount.income);
     amountsByDate.set(amount.date, current);
   }
@@ -108,11 +113,13 @@ export function buildCumulativeFinanceTrend(
   if (!startDate || !endDate || startDate > endDate) return [];
 
   let expenseCents = toCents(corrections.expenseCorrection ?? 0);
+  let taxCents = 0;
   let incomeCents = toCents(corrections.incomeCorrection ?? 0);
   for (const date of eventDates) {
     if (date >= startDate) break;
     const amount = amountsByDate.get(date)!;
     expenseCents += amount.expenseCents;
+    taxCents += amount.taxCents;
     incomeCents += amount.incomeCents;
   }
 
@@ -120,15 +127,19 @@ export function buildCumulativeFinanceTrend(
   for (let date = startDate, count = 0; date <= endDate; date = addCalendarDays(date, 1), count += 1) {
     if (count >= MAX_TREND_DAYS) throw new Error(`趋势日期范围最多支持 ${MAX_TREND_DAYS} 天`);
     const dailyExpenseCents = amountsByDate.get(date)?.expenseCents ?? 0;
+    const dailyTaxCents = amountsByDate.get(date)?.taxCents ?? 0;
     const dailyIncomeCents = amountsByDate.get(date)?.incomeCents ?? 0;
     expenseCents += dailyExpenseCents;
+    taxCents += dailyTaxCents;
     incomeCents += dailyIncomeCents;
     points.push({
       date,
       expense: fromCents(dailyExpenseCents),
+      tax: fromCents(dailyTaxCents),
       income: fromCents(dailyIncomeCents),
       profit: fromCents(dailyIncomeCents - dailyExpenseCents),
       cumulativeExpense: fromCents(expenseCents),
+      cumulativeTax: fromCents(taxCents),
       cumulativeIncome: fromCents(incomeCents),
       cumulativeProfit: fromCents(incomeCents - expenseCents),
     });
@@ -141,9 +152,9 @@ export function buildFinanceTrendFromOrders(
   corrections: FinanceTrendCorrections = {},
   rawRange: FinanceTrendDateRange = {},
 ): FinanceTrendPoint[] {
-  const totals = new Map<string, { expenseCents: number; incomeCents: number }>();
+  const totals = new Map<string, { expenseCents: number; taxCents: number; incomeCents: number }>();
   const totalsFor = (date: string) => {
-    const current = totals.get(date) ?? { expenseCents: 0, incomeCents: 0 };
+    const current = totals.get(date) ?? { expenseCents: 0, taxCents: 0, incomeCents: 0 };
     totals.set(date, current);
     return current;
   };
@@ -155,7 +166,13 @@ export function buildFinanceTrendFromOrders(
     }
     if (order.settledAt) {
       const date = shanghaiDateKey(order.settledAt);
-      if (date) totalsFor(date).incomeCents += toCents(order.settledPrize ?? 0);
+      const status = getOrderStatus(order);
+      const grossIncome = status === "success" ? order.settledPrize ?? 0 : 0;
+      const tax = appliedOrderTax(order, status);
+      if (date) {
+        totalsFor(date).taxCents += toCents(tax);
+        totalsFor(date).incomeCents += toCents(afterTaxPrize(grossIncome, tax));
+      }
     }
   }
 
@@ -163,6 +180,7 @@ export function buildFinanceTrendFromOrders(
     [...totals.entries()].map(([date, values]) => ({
       date,
       expense: fromCents(values.expenseCents),
+      tax: fromCents(values.taxCents),
       income: fromCents(values.incomeCents),
     })),
     corrections,

@@ -27,6 +27,14 @@ import { getCurrentUser, loginAccount, logoutAccount } from "./api-client/users"
 import { getUserSettings, updateUserSettings } from "./api-client/settings";
 import { getPersonalMatchNotes, updatePersonalMatchNote } from "./api-client/match-notes";
 import { deleteTeamNameGroup, getTeamNameGroups, saveTeamNameGroup } from "./api-client/team-aliases";
+import {
+  createTeamTagShare,
+  deleteTeamTag,
+  getTeamTags,
+  importTeamTag as importTeamTagByCode,
+  saveTeamTag,
+  saveTeamTagMemberNote,
+} from "./api-client/team-tags";
 import { getFinance, updateFinanceCorrections, type FinanceResponse } from "./api-client/finance";
 import { bulkUpdateOrders, createOrder, deleteOrder, fetchOrders, type OrderQuery, type OrdersResponse } from "./api-client/orders";
 import { isOrderPendingSettlement, isOrderUnpaidHopeful } from "./order-model";
@@ -39,6 +47,7 @@ import {
 import type { AppSettings } from "./settings";
 import type { SportteryMatchSnapshot } from "./sporttery";
 import { upsertTeamNameGroupAtPosition, type TeamNameGroup, type TeamNameGroupDraft } from "./team-aliases";
+import { upsertTeamTag, type TeamTag, type TeamTagDraft } from "./team-tags";
 
 type RouteStatus = "loading" | "ready" | "error";
 type VersionResponse = { appVersion?: string };
@@ -82,6 +91,8 @@ function cloudFinanceFromResponse(finance: FinanceResponse): CloudPersonalData["
     incomeTotal: finance.income.total,
     expenseOrders: finance.expense.orders,
     incomeOrders: finance.income.orders,
+    incomeGrossOrders: finance.income.grossOrders,
+    incomeTax: finance.income.tax,
     expenseCorrection: finance.expense.correction,
     incomeCorrection: finance.income.correction,
     revision: finance.revision,
@@ -101,6 +112,7 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
   const [syncStatus, setSyncStatus] = useState<CloudSyncStatus>("saved");
   const [cloudPersonal, setCloudPersonal] = useState<CloudPersonalData | null>(null);
   const [teamNameGroups, setTeamNameGroups] = useState<TeamNameGroup[]>([]);
+  const [teamTags, setTeamTags] = useState<TeamTag[]>([]);
   const [latestVersion, setLatestVersion] = useState("");
   const syncQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const pendingWritesRef = useRef(0);
@@ -138,15 +150,17 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
         clientPersonalRef.current = null;
         setAccount(null);
         setCloudPersonal(null);
+        setTeamTags([]);
         setSyncStatus("saved");
         setRouteStatus("ready");
         return;
       }
 
-      const [ordersResult, financeResult, settingsResult] = await Promise.all([
+      const [ordersResult, financeResult, settingsResult, teamTagsResult] = await Promise.all([
         fetchOrders({ limit: 500 }),
         getFinance(),
         getUserSettings(),
+        getTeamTags(),
       ]);
       const nextAccount = userResult.account;
       const serverPersonal: CloudPersonalData = {
@@ -169,6 +183,7 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
       clientPersonalRef.current = serverPersonal;
       setAccount(nextAccount);
       setCloudPersonal(serverPersonal);
+      setTeamTags(teamTagsResult.tags);
       setSyncStatus("saved");
       const pendingView = pendingViewRef.current;
       if (pendingView) {
@@ -280,6 +295,7 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
       clearCloudPersonalStorage();
       setAccount(null);
       setCloudPersonal(null);
+      setTeamTags([]);
       setSyncStatus("saved");
       setActiveView("betting");
       pendingViewRef.current = null;
@@ -310,6 +326,7 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
         clearCloudPersonalStorage();
         setAccount(null);
         setCloudPersonal(null);
+        setTeamTags([]);
         setActiveView("betting");
         setAccountDialogOpen(true);
       }
@@ -344,6 +361,39 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
     if (!accountIdRef.current) throw new Error("请先输入账号登录");
     await deleteTeamNameGroup(group);
     setTeamNameGroups((current) => current.filter((item) => item.id !== group.id));
+  }, []);
+
+  const savePersonalTeamTag = useCallback(async (draft: TeamTagDraft) => {
+    if (!accountIdRef.current) throw new Error("请先输入账号登录");
+    const saved = await saveTeamTag(draft);
+    setTeamTags((current) => upsertTeamTag(current, saved));
+    return saved;
+  }, []);
+
+  const deletePersonalTeamTag = useCallback(async (tag: Pick<TeamTag, "id" | "revision">) => {
+    if (!accountIdRef.current) throw new Error("请先输入账号登录");
+    await deleteTeamTag(tag);
+    setTeamTags((current) => current.filter((item) => item.id !== tag.id));
+  }, []);
+
+  const savePersonalTeamTagMemberNote = useCallback(async (tagId: string, memberId: string, note: string, expectedRevision: number) => {
+    if (!accountIdRef.current) throw new Error("请先输入账号登录");
+    const response = await saveTeamTagMemberNote(tagId, memberId, note, expectedRevision);
+    setTeamTags((current) => upsertTeamTag(current, response.tag));
+    return response.tag;
+  }, []);
+
+  const sharePersonalTeamTag = useCallback(async (tag: Pick<TeamTag, "id" | "revision">) => {
+    if (!accountIdRef.current) throw new Error("请先输入账号登录");
+    return createTeamTagShare(tag);
+  }, []);
+
+  const importPersonalTeamTag = useCallback(async (code: string, requestId: string) => {
+    if (!accountIdRef.current) throw new Error("请先输入账号登录");
+    const imported = await importTeamTagByCode(code, requestId);
+    const reloaded = await getTeamTags();
+    setTeamTags(reloaded.tags);
+    return imported.tag;
   }, []);
 
   const syncFinanceCorrections = useCallback(async (correction: { expenseCorrection: number; incomeCorrection: number }) => {
@@ -588,10 +638,16 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
         cloudAccount={account}
         cloudPersonal={cloudPersonal}
         teamNameGroups={teamNameGroups}
+        teamTags={teamTags}
         cloudSyncStatus={syncStatus}
         onCloudSettingsChange={syncSettings}
         onTeamNameGroupSave={saveSharedTeamNameGroup}
         onTeamNameGroupDelete={deleteSharedTeamNameGroup}
+        onTeamTagSave={savePersonalTeamTag}
+        onTeamTagDelete={deletePersonalTeamTag}
+        onTeamTagMemberNoteSave={savePersonalTeamTagMemberNote}
+        onTeamTagShare={sharePersonalTeamTag}
+        onTeamTagImport={importPersonalTeamTag}
         onCloudFinanceCorrectionChange={syncFinanceCorrections}
         onCloudOrderMutation={syncOrders}
         onCloudOrdersQueryChange={queryCloudOrders}

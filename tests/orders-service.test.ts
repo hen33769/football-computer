@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import {
   compactOrderToSavedSlip,
   isCompactOrder,
   isOrderPendingSettlement,
+  isOrderUnconfirmed,
   isOrderUnpaidHopeful,
   savedSlipToCompactOrder,
   type CompactOrder,
@@ -49,6 +52,9 @@ test("具体赛果比分和赔率经云端紧凑模型往返不丢失", () => {
     resultValues: { "2040001": { score: "winOther" } },
     resultScores: { "2040001": { home: 6, away: 0 } },
     resultOdds: { "2040001": { score: 250, halfFull: 16.5 } },
+    settledAt: "2026-08-21T00:00:00.000Z",
+    settledPrize: 500,
+    confirmedAt: "2026-08-22T00:00:00.000Z",
   };
 
   const roundTripped = savedSlipToCompactOrder(compactOrderToSavedSlip(compact));
@@ -58,6 +64,7 @@ test("具体赛果比分和赔率经云端紧凑模型往返不丢失", () => {
   assert.notEqual(roundTripped.resultScores, compact.resultScores);
   assert.notEqual(roundTripped.resultScores?.["2040001"], compact.resultScores?.["2040001"]);
   assert.deepEqual(roundTripped.resultOdds, compact.resultOdds);
+  assert.equal(roundTripped.confirmedAt, compact.confirmedAt);
   assert.notEqual(roundTripped.resultOdds, compact.resultOdds);
   assert.notEqual(roundTripped.resultOdds?.["2040001"], compact.resultOdds?.["2040001"]);
   assert.equal(isCompactOrder(roundTripped), true);
@@ -73,12 +80,14 @@ test("未支付且有希望状态排除已支付和已有中奖结果的订单",
 
 class FakeD1 {
   batchCalls = 0;
-  readonly rows: Array<{ order_id: string; data_json: string; updated_at: string }>;
+  readonly rows: Array<{ order_id: string; data_json: string; tax_cents: number | null; confirmed_at: string | null; updated_at: string }>;
 
   constructor(orders: CompactOrder[]) {
     this.rows = orders.map((item) => ({
       order_id: item.id,
       data_json: JSON.stringify(item),
+      tax_cents: typeof item.taxAmount === "number" ? Math.round(item.taxAmount * 100) : null,
+      confirmed_at: item.confirmedAt ?? null,
       updated_at: item.updatedAt!,
     }));
   }
@@ -135,6 +144,7 @@ test("撤回操作根据当前状态先撤回结账并保留支付状态", async
     ...order("settled", "paid"),
     settledAt: "2026-09-09T02:00:00.000Z",
     settledPrize: 4,
+    confirmedAt: "2026-09-09T03:00:00.000Z",
     oddsLockedBeforePayment: false,
     oddsLockedBeforeSettlement: true,
   };
@@ -146,6 +156,7 @@ test("撤回操作根据当前状态先撤回结账并保留支付状态", async
   assert.equal(withdrawn.paymentStatus, "paid");
   assert.equal(withdrawn.settledAt, undefined);
   assert.equal(withdrawn.settledPrize, undefined);
+  assert.equal(withdrawn.confirmedAt, undefined);
   assert.equal(withdrawn.oddsLocked, true);
   assert.equal(withdrawn.oddsLockedBeforePayment, false);
   assert.equal(withdrawn.oddsLockedBeforeSettlement, undefined);
@@ -262,7 +273,7 @@ test("手动锁定状态经过支付、结账和两次撤回后仍可恢复，�
   const roundTripped = savedSlipToCompactOrder(compactOrderToSavedSlip(paid));
   assert.equal(roundTripped.oddsLockedBeforePayment, undefined);
   const [settled] = await bulkUpdateOrders(d1, "user", [roundTripped], "settle");
-  assert.deepEqual(await getOrderFinanceCents(d1, "user"), { expenseCents: 200, incomeCents: 400 });
+  assert.deepEqual(await getOrderFinanceCents(d1, "user"), { expenseCents: 200, grossIncomeCents: 400, taxCents: 0, incomeCents: 400 });
 
   // 客户端即使附带其它变更，撤回也必须只使用服务端现有内容。
   const [unsettled] = await bulkUpdateOrders(d1, "user", [{ ...settled, name: "不应写入", multiple: 50, paymentStatus: "unpaid" }], "withdraw");
@@ -270,14 +281,123 @@ test("手动锁定状态经过支付、结账和两次撤回后仍可恢复，�
   assert.equal(unsettled.name, saved.name);
   assert.equal(unsettled.multiple, 1);
   assert.deepEqual(unsettled.hits, saved.hits);
-  assert.deepEqual(await getOrderFinanceCents(d1, "user"), { expenseCents: 200, incomeCents: 0 });
+  assert.deepEqual(await getOrderFinanceCents(d1, "user"), { expenseCents: 200, grossIncomeCents: 0, taxCents: 0, incomeCents: 0 });
 
   const [unpaid] = await bulkUpdateOrders(d1, "user", [unsettled], "withdraw");
   assert.equal(unpaid.paymentStatus, "unpaid");
   assert.equal(unpaid.oddsLocked, true);
   assert.equal(unpaid.oddsLockedBeforePayment, undefined);
-  assert.deepEqual(await getOrderFinanceCents(d1, "user"), { expenseCents: 0, incomeCents: 0 });
+  assert.deepEqual(await getOrderFinanceCents(d1, "user"), { expenseCents: 0, grossIncomeCents: 0, taxCents: 0, incomeCents: 0 });
   assert.deepEqual(await getOrder(d1, "user", unpaid.id), JSON.parse(JSON.stringify(unpaid)));
+});
+
+test("高额成功订单结账自动计税，结账后可手动改税且再次判断会覆盖", async (t) => {
+  const db = new SqliteD1();
+  t.after(() => db.database.close());
+  db.database.exec("INSERT INTO users (id, auth_subject, account, normalized_account) VALUES ('user', 'user', 'user', 'user')");
+  const d1 = db.asD1();
+  const highPrize = {
+    ...order("high-prize"),
+    selections: order("high-prize").selections.map((selection) => ({ ...selection, odds: 6_000 })),
+    hits: { "2040001": { spf: "win" as const } },
+  };
+
+  const saved = await createOrder(d1, "user", highPrize);
+  const [paid] = await bulkUpdateOrders(d1, "user", [saved], "pay");
+  const [settled] = await bulkUpdateOrders(d1, "user", [paid], "settle");
+  assert.equal(settled.settledPrize, 12_000);
+  assert.equal(settled.taxAmount, 2_400);
+  assert.deepEqual(await getOrderFinanceCents(d1, "user"), {
+    expenseCents: 200,
+    grossIncomeCents: 1_200_000,
+    taxCents: 240_000,
+    incomeCents: 960_000,
+  });
+
+  const [confirmed] = await bulkUpdateOrders(d1, "user", [settled], "confirm");
+  assert.ok(confirmed.confirmedAt);
+  assert.equal(isOrderUnconfirmed(confirmed), false);
+  const confirmedRow = db.database.prepare("SELECT confirmed_at, json_extract(data_json, '$.confirmedAt') AS json_confirmed_at FROM user_orders WHERE order_id = 'high-prize'").get();
+  assert.equal(confirmedRow?.confirmed_at, confirmed.confirmedAt);
+  assert.equal(confirmedRow?.json_confirmed_at, confirmed.confirmedAt);
+  await assert.rejects(bulkUpdateOrders(d1, "user", [confirmed], "confirm"), /已经确认/);
+
+  const [manuallyAdjusted] = await bulkUpdateOrders(d1, "user", [{ ...confirmed, taxAmount: 1_000 }], "update");
+  assert.equal(manuallyAdjusted.taxAmount, 1_000);
+  assert.equal(manuallyAdjusted.confirmedAt, undefined);
+  assert.deepEqual(await getOrderFinanceCents(d1, "user"), {
+    expenseCents: 200,
+    grossIncomeCents: 1_200_000,
+    taxCents: 100_000,
+    incomeCents: 1_100_000,
+  });
+
+  const [rejudged] = await bulkUpdateOrders(d1, "user", [manuallyAdjusted], "judge");
+  assert.equal(rejudged.taxAmount, 2_400);
+  assert.equal(rejudged.confirmedAt, undefined);
+  await assert.rejects(
+    bulkUpdateOrders(d1, "user", [{ ...rejudged, taxAmount: 12_000.01 }], "update"),
+    /税额不能大于订单奖金/,
+  );
+});
+
+test("确认操作只接受已结账成功订单并在整批校验失败时不写入", async () => {
+  const success = {
+    ...order("confirm-success", "paid"),
+    settledAt: "2026-10-20T02:00:00.000Z",
+    settledPrize: 4,
+    hits: { "2040001": { spf: "win" as const } },
+  };
+  const failed = {
+    ...order("confirm-failed", "paid"),
+    settledAt: "2026-10-20T02:00:00.000Z",
+    settledPrize: 0,
+    failedMatchIds: ["2040001"],
+  };
+  const d1 = new FakeD1([success, failed]);
+
+  await assert.rejects(
+    bulkUpdateOrders(d1 as unknown as D1Database, "user", [success, failed], "confirm"),
+    /不是已结账的成功订单/,
+  );
+  assert.equal(d1.batchCalls, 0);
+  await assert.rejects(
+    bulkUpdateOrders(new FakeD1([order("unsettled", "paid")]) as unknown as D1Database, "user", [order("unsettled", "paid")], "confirm"),
+    /不是已结账的成功订单/,
+  );
+});
+
+test("税额迁移只回填超过一万元的历史已结账成功订单并同步 JSON", () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    for (const migration of ["0000_white_iron_lad", "0002_modular_cloud_data", "0003_order_payment_status"]) {
+      database.exec(readFileSync(new URL(`../drizzle/${migration}.sql`, import.meta.url), "utf8"));
+    }
+    database.exec("INSERT INTO users (id, auth_subject, account, normalized_account) VALUES ('user', 'user', 'user', 'user')");
+    const insert = database.prepare(`
+      INSERT INTO user_orders (
+        user_id, order_id, saved_at, settled_at, settled_prize_cents,
+        payment_status, status, data_json, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'paid', 'success', ?, ?)
+    `);
+    const legacyJson = (id: string, prize: number) => JSON.stringify({ id, name: id, settledPrize: prize });
+    insert.run("user", "taxed", "2026-10-01T00:00:00.000Z", "2026-10-02T00:00:00.000Z", 1_200_000, legacyJson("taxed", 12_000), "v1");
+    insert.run("user", "threshold", "2026-10-01T00:00:00.000Z", "2026-10-02T00:00:00.000Z", 1_000_000, legacyJson("threshold", 10_000), "v1");
+
+    database.exec(readFileSync(new URL("../drizzle/0011_order_tax.sql", import.meta.url), "utf8"));
+
+    const rows = database.prepare(`
+      SELECT order_id, tax_cents, json_extract(data_json, '$.taxAmount') AS json_tax
+      FROM user_orders
+      ORDER BY order_id
+    `).all().map((row) => ({ ...row }));
+    assert.deepEqual(rows, [
+      { order_id: "taxed", tax_cents: 240_000, json_tax: 2_400 },
+      { order_id: "threshold", tax_cents: null, json_tax: null },
+    ]);
+  } finally {
+    database.close();
+  }
 });
 
 test("撤回拒绝旧版本和其他账号订单，SQL 执行失败或并发修改时整批回滚", async (t) => {
@@ -303,7 +423,7 @@ test("撤回拒绝旧版本和其他账号订单，SQL 执行失败或并发修�
   await assert.rejects(bulkUpdateOrders(d1, "user", saved, "withdraw"), /malformed JSON/);
   assert.equal((await getOrder(d1, "user", "a")).paymentStatus, "paid");
   assert.equal((await getOrder(d1, "user", "b")).updatedAt, "concurrent-version");
-  assert.deepEqual(await getOrderFinanceCents(d1, "user"), { expenseCents: 400, incomeCents: 0 });
+  assert.deepEqual(await getOrderFinanceCents(d1, "user"), { expenseCents: 400, grossIncomeCents: 0, taxCents: 0, incomeCents: 0 });
 });
 
 test("历史支付订单缺少锁定快照时保留当前锁定状态，历史未支付结账订单不会被标记为已支付", async () => {
@@ -482,6 +602,30 @@ test("订单列表的待结账进度只筛选已支付且未结账订单", async
 
   assert.match(preparedSql[0], /WHERE user_id = \? AND payment_status = 'paid' AND settled_at IS NULL AND status IN \(SELECT value FROM json_each\(\?\)\)/);
   assert.deepEqual(boundArgs[0], ["user", JSON.stringify(["success"]), 10, 0]);
+});
+
+test("订单列表的未确认进度只筛选已结账成功且确认时间为空的订单", async () => {
+  const preparedSql: string[] = [];
+  const boundArgs: unknown[][] = [];
+  const d1 = {
+    prepare: (sql: string) => {
+      preparedSql.push(sql);
+      const statement = {
+        bind: (...args: unknown[]) => {
+          boundArgs.push(args);
+          return statement;
+        },
+        all: async () => ({ results: [] }),
+        first: async () => ({ total: 0 }),
+      };
+      return statement;
+    },
+  };
+
+  await listOrders(d1 as unknown as D1Database, "user", { progress: "unconfirmed", limit: 10 });
+
+  assert.match(preparedSql[0], /settled_at IS NOT NULL AND status = 'success' AND confirmed_at IS NULL/);
+  assert.deepEqual(boundArgs[0], ["user", 10, 0]);
 });
 
 test("订单列表响应独立统计未支付有希望和待结账订单", async () => {

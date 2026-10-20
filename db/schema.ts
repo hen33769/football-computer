@@ -28,6 +28,8 @@ export const userOrders = sqliteTable("user_orders", {
   savedAt: text("saved_at").notNull(),
   settledAt: text("settled_at"),
   settledPrizeCents: integer("settled_prize_cents"),
+  taxCents: integer("tax_cents"),
+  confirmedAt: text("confirmed_at"),
   paymentStatus: text("payment_status", { enum: ["unpaid", "paid"] }).notNull().default("unpaid"),
   stakeCents: integer("stake_cents").notNull().default(0),
   status: text("status", { enum: ["success", "hopeful", "failed"] }).notNull().default("hopeful"),
@@ -64,6 +66,74 @@ export const userMatchNotes = sqliteTable("user_match_notes", {
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [
   primaryKey({ columns: [table.userId, table.matchId] }),
+]);
+
+export const userTeamTags = sqliteTable("user_team_tags", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  shortText: text("short_text").notNull().default(""),
+  color: text("color").notNull(),
+  dateBasis: text("date_basis", { enum: ["current", "match"] }).notNull().default("current"),
+  startDate: text("start_date"),
+  endDate: text("end_date"),
+  displayOrder: integer("display_order").notNull().default(0),
+  revision: integer("revision").notNull().default(0),
+  mutationToken: text("mutation_token").notNull().default(""),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [index("user_team_tags_user_order_idx").on(table.userId, table.displayOrder, table.id)]);
+
+export const userTeamTagMembers = sqliteTable("user_team_tag_members", {
+  id: text("id").primaryKey(),
+  tagId: text("tag_id").notNull().references(() => userTeamTags.id, { onDelete: "cascade" }),
+  sourceName: text("source_name").notNull(),
+  sourceNameKey: text("source_name_key").notNull(),
+  teamGroupId: text("team_group_id"),
+  note: text("note").notNull().default(""),
+  displayOrder: integer("display_order").notNull().default(0),
+  revision: integer("revision").notNull().default(0),
+  mutationToken: text("mutation_token").notNull().default(""),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("user_team_tag_members_name_unique").on(table.tagId, table.sourceNameKey),
+  index("user_team_tag_members_tag_order_idx").on(table.tagId, table.displayOrder, table.id),
+]);
+
+export const teamTagShares = sqliteTable("team_tag_shares", {
+  id: text("id").primaryKey(),
+  codeHash: text("code_hash").notNull().unique(),
+  ownerId: text("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  sourceTagId: text("source_tag_id"),
+  snapshotVersion: integer("snapshot_version").notNull().default(1),
+  snapshotJson: text("snapshot_json").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  expiresAt: text("expires_at").notNull(),
+}, (table) => [
+  index("team_tag_shares_owner_created_idx").on(table.ownerId, table.createdAt),
+  index("team_tag_shares_expires_idx").on(table.expiresAt),
+]);
+
+export const userTeamTagImports = sqliteTable("user_team_tag_imports", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  shareId: text("share_id").notNull().references(() => teamTagShares.id, { onDelete: "cascade" }),
+  requestId: text("request_id").notNull(),
+  targetTagId: text("target_tag_id").references(() => userTeamTags.id, { onDelete: "set null" }),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("user_team_tag_imports_share_unique").on(table.userId, table.shareId),
+  uniqueIndex("user_team_tag_imports_request_unique").on(table.userId, table.requestId),
+]);
+
+export const teamTagImportRateLimits = sqliteTable("team_tag_import_rate_limits", {
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  windowStart: text("window_start").notNull(),
+  attempts: integer("attempts").notNull().default(0),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  primaryKey({ columns: [table.userId, table.windowStart] }),
+  index("team_tag_import_rate_limits_window_idx").on(table.windowStart),
 ]);
 
 export const sharedMatches = sqliteTable("shared_matches", {

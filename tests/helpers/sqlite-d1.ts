@@ -7,7 +7,20 @@ export class SqliteD1 {
   beforeBatch?: () => void;
 
   constructor() {
-    for (const migration of ["0000_white_iron_lad", "0002_modular_cloud_data", "0003_order_payment_status", "0007_user_match_notes"]) {
+    for (const migration of [
+      "0000_white_iron_lad",
+      "0002_modular_cloud_data",
+      "0003_order_payment_status",
+      "0004_shared_team_names",
+      "0005_team_group_icons",
+      "0006_team_group_display_order",
+      "0007_user_match_notes",
+      "0008_user_team_tags",
+      "0009_team_tag_import_rate_limits",
+      "0010_team_tag_mutation_tokens",
+      "0011_order_tax",
+      "0012_order_confirmation",
+    ]) {
       this.database.exec(readFileSync(new URL(`../../drizzle/${migration}.sql`, import.meta.url), "utf8"));
     }
   }
@@ -22,7 +35,11 @@ export class SqliteD1 {
         parameters = args;
         return statement;
       },
-      all: async () => ({ results: numbered ? query.all(bindings()) : query.all(...parameters), success: true }),
+      all: async () => {
+        const results = numbered ? query.all(bindings()) : query.all(...parameters);
+        const changes = Number(this.database.prepare("SELECT changes() AS changes").get()?.changes ?? 0);
+        return { results, success: true, meta: { changes } };
+      },
       first: async () => (numbered ? query.get(bindings()) : query.get(...parameters)) ?? null,
       run: async () => ({ success: true, meta: numbered ? query.run(bindings()) : query.run(...parameters) }),
     };

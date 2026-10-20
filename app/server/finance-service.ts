@@ -14,6 +14,8 @@ export type FinanceState = {
     total: number;
   };
   income: {
+    grossOrders: number;
+    tax: number;
     orders: number;
     correction: number;
     total: number;
@@ -31,12 +33,15 @@ type FinanceCorrectionRow = {
 
 type OrderFinanceRow = {
   order_expense_cents: number | null;
+  order_gross_income_cents: number | null;
+  order_tax_cents: number | null;
   order_income_cents: number | null;
 };
 
 type FinanceTrendRow = {
   date: string;
   expense_cents: number | null;
+  tax_cents: number | null;
   income_cents: number | null;
 };
 
@@ -54,12 +59,25 @@ export async function getOrderFinanceCents(d1: D1Database, userId: string) {
   const row = await d1.prepare(`
     SELECT
       COALESCE(SUM(CASE WHEN payment_status = 'paid' THEN stake_cents ELSE 0 END), 0) AS order_expense_cents,
-      COALESCE(SUM(CASE WHEN settled_at IS NOT NULL THEN COALESCE(settled_prize_cents, 0) ELSE 0 END), 0) AS order_income_cents
+      COALESCE(SUM(CASE WHEN settled_at IS NOT NULL AND status = 'success' THEN COALESCE(settled_prize_cents, 0) ELSE 0 END), 0) AS order_gross_income_cents,
+      COALESCE(SUM(CASE
+        WHEN settled_at IS NOT NULL AND status = 'success' AND COALESCE(settled_prize_cents, 0) > 1000000
+          THEN COALESCE(tax_cents, CAST(ROUND(settled_prize_cents * 0.2) AS INTEGER))
+        ELSE 0
+      END), 0) AS order_tax_cents,
+      COALESCE(SUM(CASE WHEN settled_at IS NOT NULL AND status = 'success' THEN COALESCE(settled_prize_cents, 0) ELSE 0 END), 0)
+        - COALESCE(SUM(CASE
+          WHEN settled_at IS NOT NULL AND status = 'success' AND COALESCE(settled_prize_cents, 0) > 1000000
+            THEN COALESCE(tax_cents, CAST(ROUND(settled_prize_cents * 0.2) AS INTEGER))
+          ELSE 0
+        END), 0) AS order_income_cents
     FROM user_orders
     WHERE user_id = ?1
   `).bind(userId).first<OrderFinanceRow>();
   return {
     expenseCents: Math.round(Number(row?.order_expense_cents ?? 0)),
+    grossIncomeCents: Math.round(Number(row?.order_gross_income_cents ?? 0)),
+    taxCents: Math.round(Number(row?.order_tax_cents ?? 0)),
     incomeCents: Math.round(Number(row?.order_income_cents ?? 0)),
   };
 }
@@ -83,6 +101,8 @@ export async function getFinanceState(d1: D1Database, userId: string): Promise<F
       total: fromCents(orders.expenseCents + expenseCorrectionCents),
     },
     income: {
+      grossOrders: fromCents(orders.grossIncomeCents),
+      tax: fromCents(orders.taxCents),
       orders: fromCents(orders.incomeCents),
       correction: fromCents(incomeCorrectionCents),
       total: fromCents(orders.incomeCents + incomeCorrectionCents),
@@ -103,11 +123,13 @@ export async function getFinanceTrend(
       SELECT
         event_date AS date,
         COALESCE(SUM(expense_cents), 0) AS expense_cents,
+        COALESCE(SUM(tax_cents), 0) AS tax_cents,
         COALESCE(SUM(income_cents), 0) AS income_cents
       FROM (
         SELECT
           date(saved_at, '+8 hours') AS event_date,
           stake_cents AS expense_cents,
+          0 AS tax_cents,
           0 AS income_cents
         FROM user_orders
         WHERE user_id = ?1 AND payment_status = 'paid'
@@ -115,7 +137,17 @@ export async function getFinanceTrend(
         SELECT
           date(settled_at, '+8 hours') AS event_date,
           0 AS expense_cents,
-          COALESCE(settled_prize_cents, 0) AS income_cents
+          CASE
+            WHEN status = 'success' AND COALESCE(settled_prize_cents, 0) > 1000000
+              THEN COALESCE(tax_cents, CAST(ROUND(settled_prize_cents * 0.2) AS INTEGER))
+            ELSE 0
+          END AS tax_cents,
+          CASE WHEN status = 'success' THEN COALESCE(settled_prize_cents, 0) ELSE 0 END
+            - CASE
+              WHEN status = 'success' AND COALESCE(settled_prize_cents, 0) > 1000000
+                THEN COALESCE(tax_cents, CAST(ROUND(settled_prize_cents * 0.2) AS INTEGER))
+              ELSE 0
+            END AS income_cents
         FROM user_orders
         WHERE user_id = ?1 AND settled_at IS NOT NULL
       ) AS finance_events
@@ -135,6 +167,7 @@ export async function getFinanceTrend(
       (rows.results ?? []).map((row) => ({
         date: row.date,
         expense: fromCents(Math.round(Number(row.expense_cents ?? 0))),
+        tax: fromCents(Math.round(Number(row.tax_cents ?? 0))),
         income: fromCents(Math.round(Number(row.income_cents ?? 0))),
       })),
       {

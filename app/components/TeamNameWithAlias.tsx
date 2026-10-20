@@ -1,8 +1,10 @@
 "use client";
 
-import { Fragment } from "react";
+import { Fragment, type ReactNode } from "react";
 import { splitTeamNameByQuery, teamNameMatchesQuery } from "../order-filters";
-import { normalizeTeamName, resolveTeamIcon, resolveTeamNameDisplay, type TeamNameAliasPosition, type TeamNameIndex } from "../team-aliases";
+import { normalizeTeamName, resolveTeamIcon, resolveTeamNameDisplay, type TeamNameIndex } from "../team-aliases";
+
+type TeamPosition = "home" | "away";
 
 const highlightedName = (name: string, query: string) => splitTeamNameByQuery(name, query).map((segment, index) => (
   segment.highlighted
@@ -13,13 +15,15 @@ const highlightedName = (name: string, query: string) => splitTeamNameByQuery(na
 export function TeamNameWithAlias({
   name,
   index,
-  aliasPosition = "auto",
+  teamPosition,
   highlightQuery = "",
+  betweenNames = null,
 }: {
   name: string;
   index: TeamNameIndex;
-  aliasPosition?: TeamNameAliasPosition;
+  teamPosition: TeamPosition;
   highlightQuery?: string;
+  betweenNames?: ReactNode;
 }) {
   const display = resolveTeamNameDisplay(name, index);
   const normalSegments = splitTeamNameByQuery(display.normalName, highlightQuery);
@@ -28,39 +32,43 @@ export function TeamNameWithAlias({
   const hiddenAliasHit = Boolean(normalizeTeamName(highlightQuery))
     && teamNameMatchesQuery(name, highlightQuery, index)
     && !hasVisibleHighlight;
-  const normalName = highlightedName(display.normalName, highlightQuery);
+  const normalName = <span className="team-name-normal">{highlightedName(display.normalName, highlightQuery)}</span>;
   const alias = display.aliasName
     ? <small className="team-name-alias">({highlightedName(display.aliasName, highlightQuery)})</small>
     : null;
-  const aliasBefore = aliasPosition === "before" || (aliasPosition === "auto" && display.aliasBefore);
-  const label = alias
-    ? aliasBefore ? <>{alias}{normalName}</> : <>{normalName}{alias}</>
-    : <>{normalName}</>;
+  const isHome = teamPosition === "home";
+  const label = <span className={`team-name-alias-layout ${isHome ? "alias-before" : "alias-after"}`}>
+    {isHome && alias}
+    {!isHome && normalName}
+    {betweenNames}
+    {!isHome && alias}
+    {isHome && normalName}
+  </span>;
   return hiddenAliasHit ? <mark className="team-name-query-alias-hit">{label}</mark> : label;
 }
 
 export function TeamNameWithIcon({
   name,
   index,
-  iconPosition = "after",
-  aliasPosition = "auto",
+  teamPosition,
   highlightQuery = "",
+  betweenNames = null,
 }: {
   name: string;
   index: TeamNameIndex;
-  iconPosition?: "before" | "after";
-  aliasPosition?: TeamNameAliasPosition;
+  teamPosition: TeamPosition;
   highlightQuery?: string;
+  betweenNames?: ReactNode;
 }) {
   const icon = resolveTeamIcon(name, index);
-  const label = <span className="team-name-with-icon-label"><TeamNameWithAlias name={name} index={index} aliasPosition={aliasPosition} highlightQuery={highlightQuery} /></span>;
+  const label = <span className="team-name-with-icon-label"><TeamNameWithAlias name={name} index={index} teamPosition={teamPosition} highlightQuery={highlightQuery} betweenNames={betweenNames} /></span>;
   if (!icon) return label;
   const image = <img className="team-name-icon" src={icon} alt="" aria-hidden="true" />;
   return (
     <span className="team-name-with-icon">
-      {iconPosition === "before" && image}
+      {teamPosition === "away" && image}
       {label}
-      {iconPosition === "after" && image}
+      {teamPosition === "home" && image}
     </span>
   );
 }

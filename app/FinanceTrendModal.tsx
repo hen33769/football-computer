@@ -47,10 +47,10 @@ function chartOption(points: FinanceTrendPoint[]): EChartsOption {
   const showSymbol = points.length <= 31;
   const series = [
     { name: "累计支出", color: EXPENSE_COLOR, values: points.map((point) => point.cumulativeExpense), daily: false },
-    { name: "累计收入", color: INCOME_COLOR, values: points.map((point) => point.cumulativeIncome), daily: false },
+    { name: "累计税后收入", color: INCOME_COLOR, values: points.map((point) => point.cumulativeIncome), daily: false },
     { name: "累计利润", color: PROFIT_COLOR, values: points.map((point) => point.cumulativeProfit), daily: false },
     { name: "当日支出", color: DAILY_EXPENSE_COLOR, values: points.map((point) => point.expense), daily: true },
-    { name: "当日收入", color: DAILY_INCOME_COLOR, values: points.map((point) => point.income), daily: true },
+    { name: "当日税后收入", color: DAILY_INCOME_COLOR, values: points.map((point) => point.income), daily: true },
     { name: "当日利润", color: DAILY_PROFIT_COLOR, values: points.map((point) => point.profit), daily: true },
   ];
   return {
@@ -62,24 +62,29 @@ function chartOption(points: FinanceTrendPoint[]): EChartsOption {
       data: series.map((item) => item.name),
       selected: {
         累计支出: true,
-        累计收入: true,
+        累计税后收入: true,
         累计利润: true,
         当日支出: false,
-        当日收入: false,
+        当日税后收入: false,
         当日利润: false,
       },
       textStyle: { color: "#526c72" },
     },
     tooltip: {
       trigger: "axis",
-      triggerOn: "mousemove|click",
+      triggerOn: "mousemove|click|mousewheel",
       axisPointer: { type: "line", snap: true, label: { show: true } },
       formatter: (rawParams: unknown) => {
         const params = (Array.isArray(rawParams) ? rawParams : [rawParams]) as TooltipParam[];
         const lines = params.map((param) => (
           `${param.marker ?? ""}${param.seriesName ?? ""}<b>¥${currency(tooltipValue(param))}</b>`
         ));
-        return `<div class="finance-trend-tooltip"><strong>${monthDay(params[0]?.axisValue)}</strong>${lines.map((line) => `<span>${line}</span>`).join("")}</div>`;
+        const date = String(params[0]?.axisValue ?? "");
+        const point = points.find((item) => item.date === date);
+        const taxLines = point
+          ? [`当日税额<b>¥${currency(point.tax)}</b>`, `累计税额<b>¥${currency(point.cumulativeTax)}</b>`]
+          : [];
+        return `<div class="finance-trend-tooltip"><strong>${monthDay(date)}</strong>${lines.map((line) => `<span>${line}</span>`).join("")}${taxLines.map((line) => `<span class="tax-line">${line}</span>`).join("")}</div>`;
       },
     },
     grid: { top: 48, right: 28, bottom: 72, left: 74 },
@@ -217,7 +222,7 @@ export function FinanceTrendModal({ open, onClose, loadTrend }: FinanceTrendModa
       className="finance-trend-modal"
       destroyOnHidden
     >
-      <p className="finance-trend-note">累计支出与累计收入分别以对应纠错值为初始值，并按日累加订单支出与结账收入；三条浅色当日线可在图例中开启。</p>
+      <p className="finance-trend-note">累计支出与累计税后收入分别以对应纠错值为初始值，并按日累加订单支出与已结账成功订单的税后收入；tooltip 同时显示当日与累计税额。</p>
       {loading ? (
         <div className="finance-trend-loading"><Spin size="large" description="正在加载趋势数据…" /></div>
       ) : error ? (

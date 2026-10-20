@@ -19,7 +19,8 @@ import {
   sortPassMultiplierDetails,
 } from "../app/calculator";
 import { cloneMatches, initialMatches } from "../app/data";
-import { orderFilterIncomeTotal, orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "../app/imports";
+import { orderFilterIncomeBreakdown, orderFilterIncomeTotal, orderLedgerBreakdown, orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "../app/imports";
+import { calculatePrizeTax } from "../app/order-tax";
 import { matchPassesLeagueFilter, matchPassesTeamFilter, orderContainsTeam, orderPassesLeagueFilter, orderPassesMatchCountFilter, retainAvailableLeagueNames, splitTeamNameByQuery, teamNameMatchesQuery } from "../app/order-filters";
 import { splitOrdersIntoColumns } from "../app/order-layout";
 import { appendOrderPassValue, inferOrderPasses, parseOrderPassValues } from "../app/order-passes";
@@ -198,7 +199,7 @@ test("订单比赛场次按实际已投注比赛数量多选过滤", () => {
 test("新增导入订单以新值更新同 ID 订单", () => {
   const existing: SavedSlip = { id: "order-1", name: "本地订单", savedAt: "2026-07-27T01:00:00.000Z", matches: [], passes: [], multiple: 1 };
   const duplicate: SavedSlip = { ...existing, name: "导入同 ID 订单" };
-  const added: SavedSlip = { ...existing, id: "order-2", name: "新订单", savedAt: "2026-07-27T02:00:00.000Z", settledPrize: 12 };
+  const added: SavedSlip = { ...existing, id: "order-2", name: "新订单", savedAt: "2026-07-27T02:00:00.000Z", settledAt: "2026-07-27T03:00:00.000Z", settledPrize: 12 };
 
   const result = unionSavedOrders([existing], [duplicate, added]);
 
@@ -222,6 +223,7 @@ test("订单汇总区分筛选总额与已支付支出", () => {
     ...unpaid,
     name: "已支付订单",
     paymentStatus: "paid",
+    settledAt: "2026-08-25T01:00:00.000Z",
     settledPrize: 12,
   };
 
@@ -255,6 +257,46 @@ test("订单筛选收入只计入已支付成功订单，包括未结账订单",
   };
 
   assert.equal(orderFilterIncomeTotal([unsettledSuccess, hopeful, unpaidSuccess]), 24);
+});
+
+test("奖金严格超过一万元时按整单奖金的 20% 计税并按分舍入", () => {
+  assert.equal(calculatePrizeTax(9_999.99), 0);
+  assert.equal(calculatePrizeTax(10_000), 0);
+  assert.equal(calculatePrizeTax(10_000.01), 2_000);
+  assert.equal(calculatePrizeTax(10_000.03), 2_000.01);
+});
+
+test("账本与筛选统计只对已结账成功订单扣税", () => {
+  const matches = select();
+  const settledSuccess: SavedSlip = {
+    name: "已结账成功",
+    savedAt: "2026-08-24T01:00:00.000Z",
+    settledAt: "2026-08-25T01:00:00.000Z",
+    settledPrize: 12_000,
+    taxAmount: 2_400,
+    matches,
+    passes: [2],
+    multiple: 2,
+    paymentStatus: "paid",
+    hits: {
+      [matches[0].id]: { spf: "win" },
+      [matches[1].id]: { spf: "win" },
+    },
+  };
+  const unsettledSuccess = { ...settledSuccess, name: "未结账成功", settledAt: undefined, settledPrize: undefined };
+  const failed = { ...settledSuccess, name: "已结账失败", hits: undefined, failedMatches: matches.map((match) => match.id) };
+
+  assert.deepEqual(orderLedgerBreakdown([settledSuccess, unsettledSuccess, failed]), {
+    expense: 12,
+    grossIncome: 12_000,
+    tax: 2_400,
+    income: 9_600,
+  });
+  assert.deepEqual(orderFilterIncomeBreakdown([settledSuccess, unsettledSuccess, failed]), {
+    grossIncome: 12_024,
+    tax: 2_400,
+    income: 9_624,
+  });
 });
 
 function select(matches = cloneMatches(initialMatches.slice(0, 2))) {

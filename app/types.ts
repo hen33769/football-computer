@@ -81,6 +81,8 @@ export type SavedSlip = {
   failedMatches?: string[];
   settledAt?: string;
   settledPrize?: number;
+  taxAmount?: number;
+  confirmedAt?: string;
   oddsLockedBeforePayment?: boolean;
   oddsLockedBeforeSettlement?: boolean;
 };

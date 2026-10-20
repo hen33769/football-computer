@@ -1,6 +1,7 @@
 import { calculateCurrentPrize, calculateStake, getOrderStatus } from "./calculator";
 import type { SavedSlip } from "./types";
 import { isOrderPaid } from "./order-model";
+import { afterTaxPrize, appliedOrderTax } from "./order-tax";
 
 const paidStake = (order: SavedSlip) => isOrderPaid(order)
   ? calculateStake(order.matches, order.passes, order.multiple)
@@ -21,19 +22,47 @@ export const sortSavedOrders = (orders: SavedSlip[]) => [...orders].sort((left, 
   return right.savedAt.localeCompare(left.savedAt);
 });
 
-export const orderLedgerTotals = (orders: SavedSlip[]) => ({
-  expense: orders.reduce((total, order) => total + paidStake(order), 0),
-  income: orders.reduce((total, order) => total + (order.settledPrize ?? 0), 0),
-});
+export const orderLedgerIncome = (order: SavedSlip) => {
+  const status = getOrderStatus(order);
+  const grossIncome = order.settledAt && status === "success" ? order.settledPrize ?? 0 : 0;
+  const tax = appliedOrderTax(order, status);
+  return afterTaxPrize(grossIncome, tax);
+};
+
+export const orderLedgerBreakdown = (orders: SavedSlip[]) => orders.reduce((totals, order) => {
+  const status = getOrderStatus(order);
+  const grossIncome = order.settledAt && status === "success" ? order.settledPrize ?? 0 : 0;
+  const tax = appliedOrderTax(order, status);
+  totals.expense += paidStake(order);
+  totals.grossIncome += grossIncome;
+  totals.tax += tax;
+  totals.income += afterTaxPrize(grossIncome, tax);
+  return totals;
+}, { expense: 0, grossIncome: 0, tax: 0, income: 0 });
+
+export const orderLedgerTotals = (orders: SavedSlip[]) => {
+  const totals = orderLedgerBreakdown(orders);
+  return { expense: totals.expense, income: totals.income };
+};
 
 const orderFilterIncome = (order: SavedSlip) => Math.max(
   order.settledPrize ?? 0,
   calculateCurrentPrize(order.matches, order.passes, order.multiple, order.hits ?? {}),
 );
 
+export const orderFilterIncomeBreakdown = (orders: SavedSlip[]) => orders.reduce((totals, order) => {
+  if (!isOrderPaid(order) || getOrderStatus(order) !== "success") return totals;
+  const grossIncome = orderFilterIncome(order);
+  const tax = appliedOrderTax({ ...order, settledPrize: grossIncome }, "success");
+  totals.grossIncome += grossIncome;
+  totals.tax += tax;
+  totals.income += afterTaxPrize(grossIncome, tax);
+  return totals;
+}, { grossIncome: 0, tax: 0, income: 0 });
+
 /** 订单页筛选摘要的收入：只把筛选结果中的已支付成功订单计入，包括未结账订单。 */
 export const orderFilterIncomeTotal = (orders: SavedSlip[]) => orders.reduce(
-  (total, order) => total + (isOrderPaid(order) && getOrderStatus(order) === "success" ? orderFilterIncome(order) : 0),
+  (total, order) => total + orderFilterIncomeBreakdown([order]).income,
   0,
 );
 
@@ -52,13 +81,13 @@ export function unionSavedOrders(current: SavedSlip[], incoming: SavedSlip[]) {
       const mergedOrder = { ...currentOrder, ...order };
       nextOrders[currentIndex] = mergedOrder;
       expenseDelta += paidStake(mergedOrder) - paidStake(currentOrder);
-      incomeDelta += (mergedOrder.settledPrize ?? 0) - (currentOrder.settledPrize ?? 0);
+      incomeDelta += orderLedgerIncome(mergedOrder) - orderLedgerIncome(currentOrder);
       updated += 1;
       return;
     }
     nextOrders.push(order);
     expenseDelta += paidStake(order);
-    incomeDelta += order.settledPrize ?? 0;
+    incomeDelta += orderLedgerIncome(order);
     added += 1;
   });
 
