@@ -11,7 +11,6 @@ const OPERATIONS = new Set<BulkOrderOperation>([
   "pay",
   "settle",
   "withdraw",
-  "confirm",
 ]);
 
 export async function PATCH(request: Request) {

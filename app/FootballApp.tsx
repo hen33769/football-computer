@@ -112,7 +112,6 @@ import {
   isOrderPaid,
   isOrderPendingSettlement,
   isOrderProgressFilterValue,
-  isOrderUnconfirmed,
   isOrderUnpaidHopeful,
   withdrawOrderState,
   type OrderProgressFilter,
@@ -632,8 +631,6 @@ const isExportedOrder = (value: unknown): value is SavedSlip => {
       && order.taxAmount <= (typeof order.settledPrize === "number"
         ? order.settledPrize
         : calculateCurrentPrize(order.matches, order.passes, order.multiple, order.hits ?? {}))))
-    && (typeof order.confirmedAt === "undefined" || (typeof order.confirmedAt === "string"
-      && !Number.isNaN(new Date(order.confirmedAt).getTime())))
     && (typeof order.oddsLockedBeforePayment === "undefined" || typeof order.oddsLockedBeforePayment === "boolean")
     && (typeof order.oddsLockedBeforeSettlement === "undefined" || typeof order.oddsLockedBeforeSettlement === "boolean");
 };
@@ -1376,7 +1373,6 @@ function InnerFootballApp({
   const [settlingOrderIds, setSettlingOrderIds] = useState<string[]>([]);
   const [payingOrderIds, setPayingOrderIds] = useState<string[]>([]);
   const [withdrawingOrderIds, setWithdrawingOrderIds] = useState<string[]>([]);
-  const [confirmingOrderIds, setConfirmingOrderIds] = useState<string[]>([]);
   const [deletingOrderIds, setDeletingOrderIds] = useState<string[]>([]);
   const [expenseSaving, setExpenseSaving] = useState(false);
   const [incomeSaving, setIncomeSaving] = useState(false);
@@ -2093,7 +2089,6 @@ function InnerFootballApp({
       if (orderProgressFilter === "settled" && !slip.settledAt) return false;
       if (orderProgressFilter === "unsettled" && slip.settledAt) return false;
       if (orderProgressFilter === "pending-settlement" && !isOrderPendingSettlement(slip)) return false;
-      if (orderProgressFilter === "unconfirmed" && !isOrderUnconfirmed(slip)) return false;
       if (orderProgressFilter === "unpaid" && isOrderPaid(slip)) return false;
       if (orderProgressFilter === "paid" && !isOrderPaid(slip)) return false;
       if (orderStatusFilters.length > 0 && !orderStatusFilters.includes(getOrderStatus(slip))) return false;
@@ -3313,9 +3308,6 @@ function InnerFootballApp({
       passes: nextPasses,
       multiple: structureFrozen ? editingOrder.multiple : orderEditMultiple,
       taxAmount: orderEditTaxAmount,
-      confirmedAt: editingOrder.confirmedAt && editingOrder.taxAmount === orderEditTaxAmount
-        ? editingOrder.confirmedAt
-        : undefined,
       oddsLocked: Boolean(editingOrder.settledAt || orderEditOddsLocked),
     };
     const updatedPrize = updated.settledAt && typeof updated.settledPrize === "number"
@@ -3449,7 +3441,6 @@ function InnerFootballApp({
         settledAt,
         settledPrize,
         taxAmount: target.taxAmount ?? calculatePrizeTax(settledPrize),
-        confirmedAt: undefined,
         oddsLockedBeforeSettlement: Boolean(target.oddsLocked),
         oddsLocked: true,
       } satisfies SavedSlip] as const;
@@ -3517,27 +3508,6 @@ function InnerFootballApp({
       });
     } finally {
       setWithdrawingOrderIds((current) => current.filter((key) => key !== targetKey));
-    }
-  };
-
-  const confirmOrder = async (target: SavedSlip) => {
-    const targetKey = orderActionKey(target);
-    if (confirmingOrderIds.includes(targetKey) || !savedSlips.includes(target)) return;
-    if (!target.settledAt || getOrderStatus(target) !== "success" || target.confirmedAt) return;
-    const confirmed = { ...target, confirmedAt: new Date().toISOString() };
-    setConfirmingOrderIds((current) => [...new Set([...current, targetKey])]);
-    try {
-      const committedOrders = await commitOrderMutation({
-        upsertOrders: [confirmed],
-        deleteOrderIds: [],
-        operation: "confirm",
-      });
-      if (!committedOrders) return;
-      const committedOrder = committedOrders.find((slip) => slip.id === confirmed.id) ?? confirmed;
-      if (orderDetail?.id === committedOrder.id) setOrderDetail(committedOrder);
-      notification.success({ title: "订单已确认", description: `已确认“${committedOrder.name}”的结账结果`, placement: "bottomRight" });
-    } finally {
-      setConfirmingOrderIds((current) => current.filter((key) => key !== targetKey));
     }
   };
 
@@ -4455,7 +4425,6 @@ function InnerFootballApp({
                         { value: "all", label: "不限" },
                         { value: "unsettled", label: "未结账" },
                         { value: "pending-settlement", label: "待结账" },
-                        { value: "unconfirmed", label: "未确认" },
                         { value: "settled", label: "已结账" },
                         { value: "paid", label: "已支付" },
                         { value: "unpaid", label: "未支付" },
@@ -4909,9 +4878,8 @@ function InnerFootballApp({
 	                  const orderSettling = settlingOrderIds.includes(actionKey);
 	                  const orderPaying = payingOrderIds.includes(actionKey);
 	                  const orderWithdrawing = withdrawingOrderIds.includes(actionKey);
-	                  const orderConfirming = confirmingOrderIds.includes(actionKey);
 	                  const orderDeleting = deletingOrderIds.includes(actionKey);
-	                  const orderBusy = orderLoading || orderPaying || orderSettling || orderWithdrawing || orderConfirming || orderDeleting;
+	                  const orderBusy = orderLoading || orderPaying || orderSettling || orderWithdrawing || orderDeleting;
 	                  return (
                     <Card key={orderKey} className={`order-card ${orderStatus === "hopeful" ? "" : orderStatus}`} style={{ order: slipIndex }}>
                       <div className="order-card-head">
@@ -5020,22 +4988,6 @@ function InnerFootballApp({
 	                        {!slip.settledAt && !orderPaid && <Button type="primary" icon={<ImportOutlined />} loading={orderLoading} disabled={orderBusy || cloudOrdersLoading} onClick={() => { void loadSlip(slip); }}>载入投注</Button>}
 	                        <Button color="orange" variant="solid" icon={<CopyOutlined />} disabled={orderBusy || cloudOrdersLoading} onClick={() => copySlip(slip)}>复制投注</Button>
 	                        <div className="order-closing-actions">
-	                          {slip.settledAt && orderStatus === "success" && (slip.confirmedAt ? (
-	                            <Tooltip title={`确认时间：${new Date(slip.confirmedAt).toLocaleString("zh-CN")}`}>
-	                              <span><Button icon={<CheckOutlined />} disabled>已确认</Button></span>
-	                            </Tooltip>
-	                          ) : (
-	                            <Popconfirm
-	                              title="确认这张订单？"
-	                              description="确认后会记录当前结账结果；撤回结账、重新判断赛果或修改税额后需要重新确认。"
-	                              okText="确认订单"
-	                              cancelText="取消"
-	                              okButtonProps={{ loading: orderConfirming, disabled: orderConfirming }}
-	                              onConfirm={() => { void confirmOrder(slip); }}
-	                            >
-	                              <Button icon={<CheckOutlined />} loading={orderConfirming} disabled={orderBusy || cloudOrdersLoading}>确认</Button>
-	                            </Popconfirm>
-	                          ))}
 	                          {(slip.settledAt || orderPaid) && (
 	                            <Popconfirm
 	                              title={slip.settledAt ? "确认撤回结账？" : "确认撤回支付？"}

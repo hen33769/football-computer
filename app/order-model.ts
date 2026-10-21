@@ -43,7 +43,6 @@ export type CompactOrder = {
   settledAt?: string;
   settledPrize?: number;
   taxAmount?: number;
-  confirmedAt?: string;
   oddsLockedBeforePayment?: boolean;
   oddsLockedBeforeSettlement?: boolean;
   selections: CompactOrderSelection[];
@@ -56,9 +55,9 @@ export type OrderSummary = {
   progress: "settled" | "unsettled";
 };
 
-export type BulkOrderOperation = "update" | "judge" | "refresh-odds" | "lock-odds" | "pay" | "settle" | "withdraw" | "confirm";
+export type BulkOrderOperation = "update" | "judge" | "refresh-odds" | "lock-odds" | "pay" | "settle" | "withdraw";
 
-export const ORDER_PROGRESS_FILTER_VALUES = ["settled", "unsettled", "pending-settlement", "unconfirmed", "unpaid", "paid"] as const;
+export const ORDER_PROGRESS_FILTER_VALUES = ["settled", "unsettled", "pending-settlement", "unpaid", "paid"] as const;
 export type OrderProgressFilterValue = typeof ORDER_PROGRESS_FILTER_VALUES[number];
 export type OrderProgressFilter = OrderProgressFilterValue | null;
 
@@ -75,7 +74,7 @@ export const isOrderPendingSettlement = (order: Pick<CompactOrder | SavedSlip, "
 );
 
 type OrderPaymentState = Pick<SavedSlip,
-  "paymentStatus" | "settledAt" | "settledPrize" | "confirmedAt" | "oddsLocked" | "oddsLockedBeforePayment" | "oddsLockedBeforeSettlement"
+  "paymentStatus" | "settledAt" | "settledPrize" | "oddsLocked" | "oddsLockedBeforePayment" | "oddsLockedBeforeSettlement"
 >;
 
 export const getOrderWithdrawalType = (order: OrderPaymentState) => (
@@ -90,7 +89,6 @@ export function withdrawOrderState<T extends OrderPaymentState>(order: T): T | n
         ...order,
         settledAt: undefined,
         settledPrize: undefined,
-        confirmedAt: undefined,
         oddsLocked: order.oddsLockedBeforeSettlement ?? false,
         oddsLockedBeforeSettlement: undefined,
       };
@@ -153,7 +151,6 @@ export function savedSlipToCompactOrder(slip: SavedSlip): CompactOrder {
     ...(slip.settledAt ? { settledAt: slip.settledAt } : {}),
     ...(typeof slip.settledPrize === "number" ? { settledPrize: slip.settledPrize } : {}),
     ...(typeof slip.taxAmount === "number" ? { taxAmount: slip.taxAmount } : {}),
-    ...(slip.confirmedAt ? { confirmedAt: slip.confirmedAt } : {}),
     ...(slip.oddsLockedBeforePayment !== undefined
       ? { oddsLockedBeforePayment: slip.oddsLockedBeforePayment }
       : {}),
@@ -248,7 +245,6 @@ export function compactOrderToSavedSlip(order: CompactOrder): SavedSlip {
     ...(order.settledAt ? { settledAt: order.settledAt } : {}),
     ...(typeof order.settledPrize === "number" ? { settledPrize: order.settledPrize } : {}),
     ...(typeof order.taxAmount === "number" ? { taxAmount: order.taxAmount } : {}),
-    ...(order.confirmedAt ? { confirmedAt: order.confirmedAt } : {}),
     ...(order.oddsLockedBeforePayment !== undefined
       ? { oddsLockedBeforePayment: order.oddsLockedBeforePayment }
       : {}),
@@ -259,17 +255,21 @@ export function compactOrderToSavedSlip(order: CompactOrder): SavedSlip {
 }
 
 export function normalizeCompactOrder(input: CompactOrder | SavedSlip): CompactOrder {
-  if ("selections" in input && Array.isArray(input.selections)) return {
-    ...input,
-    paymentStatus: input.paymentStatus === "paid" ? "paid" : "unpaid",
-    passes: [...input.passes],
-    selections: input.selections.map((selection) => ({ ...selection })),
-    ...(input.hits ? { hits: cloneHits(input.hits) } : {}),
-    ...(input.resultValues ? { resultValues: cloneHits(input.resultValues) } : {}),
-    ...(input.resultScores ? { resultScores: cloneScores(input.resultScores) } : {}),
-    ...(input.resultOdds ? { resultOdds: cloneResultOdds(input.resultOdds) } : {}),
-    ...(input.failedMatchIds ? { failedMatchIds: [...input.failedMatchIds] } : {}),
-  };
+  if ("selections" in input && Array.isArray(input.selections)) {
+    const normalized: CompactOrder & { confirmedAt?: unknown } = {
+      ...input,
+      paymentStatus: input.paymentStatus === "paid" ? "paid" : "unpaid",
+      passes: [...input.passes],
+      selections: input.selections.map((selection) => ({ ...selection })),
+      ...(input.hits ? { hits: cloneHits(input.hits) } : {}),
+      ...(input.resultValues ? { resultValues: cloneHits(input.resultValues) } : {}),
+      ...(input.resultScores ? { resultScores: cloneScores(input.resultScores) } : {}),
+      ...(input.resultOdds ? { resultOdds: cloneResultOdds(input.resultOdds) } : {}),
+      ...(input.failedMatchIds ? { failedMatchIds: [...input.failedMatchIds] } : {}),
+    };
+    delete normalized.confirmedAt;
+    return normalized;
+  }
   return savedSlipToCompactOrder(input as SavedSlip);
 }
 
@@ -283,11 +283,6 @@ export function compactOrderSummary(order: CompactOrder): OrderSummary {
     status,
     progress: order.settledAt ? "settled" : "unsettled",
   };
-}
-
-export function isOrderUnconfirmed(order: CompactOrder | SavedSlip) {
-  const slip = "selections" in order ? compactOrderToSavedSlip(order) : order;
-  return Boolean(slip.settledAt && getOrderStatus(slip) === "success" && !slip.confirmedAt);
 }
 
 export function isOrderUnpaidHopeful(order: CompactOrder | SavedSlip) {
@@ -356,7 +351,6 @@ export function isCompactOrder(value: unknown): value is CompactOrder {
     && (value.settledAt === undefined || typeof value.settledAt === "string")
     && (value.settledPrize === undefined || (typeof value.settledPrize === "number" && Number.isFinite(value.settledPrize)))
     && (value.taxAmount === undefined || isValidTaxAmount(value.taxAmount))
-    && (value.confirmedAt === undefined || typeof value.confirmedAt === "string")
     && (value.oddsLockedBeforePayment === undefined || typeof value.oddsLockedBeforePayment === "boolean")
     && (value.oddsLockedBeforeSettlement === undefined || typeof value.oddsLockedBeforeSettlement === "boolean");
 }

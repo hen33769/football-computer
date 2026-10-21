@@ -155,7 +155,6 @@ export function judgeSlipWithResults(slip: SavedSlip, results: MatchResults): Sa
   return {
     ...judged,
     taxAmount: calculatePrizeTax(prize),
-    confirmedAt: undefined,
   };
 }
 

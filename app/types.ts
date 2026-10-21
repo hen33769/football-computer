@@ -82,7 +82,6 @@ export type SavedSlip = {
   settledAt?: string;
   settledPrize?: number;
   taxAmount?: number;
-  confirmedAt?: string;
   oddsLockedBeforePayment?: boolean;
   oddsLockedBeforeSettlement?: boolean;
 };

@@ -70,9 +70,14 @@ export function accountNameError(value: string) {
 }
 
 export function ensureOrderIds(orders: SavedSlip[]) {
-  return orders.map((order) => order.id
-    ? order
-    : { ...order, id: globalThis.crypto.randomUUID() });
+  return orders.map((order) => {
+    const legacyOrder = order as SavedSlip & { confirmedAt?: unknown };
+    const normalized = "confirmedAt" in legacyOrder ? { ...legacyOrder } : legacyOrder;
+    delete normalized.confirmedAt;
+    return normalized.id
+      ? normalized
+      : { ...normalized, id: globalThis.crypto.randomUUID() };
+  });
 }
 
 export function clearMatchSelections(matches: MatchItem[]) {

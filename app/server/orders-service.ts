@@ -45,7 +45,6 @@ type OrderRow = {
   order_id: string;
   data_json: string;
   tax_cents?: number | null;
-  confirmed_at?: string | null;
   updated_at: string;
 };
 
@@ -86,15 +85,12 @@ export function parseOrderJson(value: string): CompactOrder | null {
 function orderFromRow(row: OrderRow) {
   const parsed = parseOrderJson(row.data_json);
   if (!parsed) return null;
-  const normalized = { ...parsed };
-  if (row.confirmed_at) normalized.confirmedAt = row.confirmed_at;
-  else delete normalized.confirmedAt;
   return {
-    ...normalized,
-    ...(normalized.taxAmount === undefined && row.tax_cents !== null && row.tax_cents !== undefined
+    ...parsed,
+    ...(parsed.taxAmount === undefined && row.tax_cents !== null && row.tax_cents !== undefined
       ? { taxAmount: fromCents(row.tax_cents) }
       : {}),
-    id: normalized.id || row.order_id,
+    id: parsed.id || row.order_id,
     updatedAt: row.updated_at,
   };
 }
@@ -111,12 +107,6 @@ function prepareStoredOrder(order: CompactOrder, now = new Date().toISOString())
   if (stored.taxAmount !== undefined) {
     if (!isValidTaxAmount(stored.taxAmount)) throw httpError("税额必须是大于等于 0 且最多两位小数的金额", 400);
     if (toCents(stored.taxAmount) > toCents(prize)) throw httpError("税额不能大于订单奖金", 400);
-  }
-  if (stored.confirmedAt !== undefined) {
-    if (!stored.settledAt || getOrderStatus(slip) !== "success") {
-      throw httpError("只有已结账的成功订单可以确认", 409);
-    }
-    if (Number.isNaN(new Date(stored.confirmedAt).getTime())) throw httpError("订单确认时间无效", 400);
   }
   const json = JSON.stringify(stored);
   if (new TextEncoder().encode(json).byteLength > MAX_ORDER_BYTES) {
@@ -202,16 +192,15 @@ async function writePreparedOrder(
   await d1.prepare(`
     INSERT INTO user_orders (
       user_id, order_id, name, saved_at, settled_at, settled_prize_cents,
-      tax_cents, confirmed_at, payment_status, stake_cents, status, match_ids_json, data_json, updated_at
+      tax_cents, payment_status, stake_cents, status, match_ids_json, data_json, updated_at
     )
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
     ON CONFLICT(user_id, order_id) DO UPDATE SET
       name = excluded.name,
       saved_at = excluded.saved_at,
       settled_at = excluded.settled_at,
       settled_prize_cents = excluded.settled_prize_cents,
       tax_cents = excluded.tax_cents,
-      confirmed_at = excluded.confirmed_at,
       payment_status = excluded.payment_status,
       stake_cents = excluded.stake_cents,
       status = excluded.status,
@@ -226,7 +215,6 @@ async function writePreparedOrder(
     order.settledAt ?? null,
     typeof order.settledPrize === "number" ? toCents(order.settledPrize) : null,
     typeof order.taxAmount === "number" ? toCents(order.taxAmount) : null,
-    order.confirmedAt ?? null,
     order.paymentStatus === "paid" ? "paid" : "unpaid",
     toCents(summary.stake),
     summary.status,
@@ -263,12 +251,9 @@ export async function updateOrder(
   if (isOrderPaid(existing) && wagerShapeFingerprint(existing) !== wagerShapeFingerprint(order)) {
     throw httpError("已支付订单的投注项、串关和倍数均已冻结", 409);
   }
-  const confirmedAt = existing.confirmedAt && existing.taxAmount === order.taxAmount
-    ? existing.confirmedAt
-    : undefined;
   return writePreparedOrder(d1, userId, prepareStoredOrder(existing.settledAt
-    ? { ...order, confirmedAt, oddsLocked: true }
-    : { ...order, confirmedAt: undefined }));
+    ? { ...order, oddsLocked: true }
+    : order));
 }
 
 export async function deleteOrder(
@@ -289,7 +274,7 @@ export async function deleteOrder(
 
 export async function getOrder(d1: D1Database, userId: string, orderId: string) {
   const row = await d1.prepare(`
-    SELECT order_id, data_json, tax_cents, confirmed_at, updated_at
+    SELECT order_id, data_json, tax_cents, updated_at
     FROM user_orders
     WHERE user_id = ?1 AND order_id = ?2
   `).bind(userId, orderId).first<OrderRow>();
@@ -313,7 +298,6 @@ function ordersWhereClause(query: OrdersQuery) {
   if (query.progress === "settled") conditions.push("settled_at IS NOT NULL");
   if (query.progress === "unsettled") conditions.push("settled_at IS NULL");
   if (query.progress === "pending-settlement") conditions.push("payment_status = 'paid' AND settled_at IS NULL");
-  if (query.progress === "unconfirmed") conditions.push("settled_at IS NOT NULL AND status = 'success' AND confirmed_at IS NULL");
   if (query.progress === "unpaid") conditions.push("payment_status = 'unpaid'");
   if (query.progress === "paid") conditions.push("payment_status = 'paid'");
   const requestedStatuses = unique(query.statuses ?? []);
@@ -333,7 +317,7 @@ export async function listOrders(d1: D1Database, userId: string, query: OrdersQu
   const offset = Math.max(Math.round(Number(query.offset ?? 0)), 0);
   const where = ordersWhereClause(query);
   const rows = await d1.prepare(`
-    SELECT order_id, data_json, tax_cents, confirmed_at, updated_at
+    SELECT order_id, data_json, tax_cents, updated_at
     FROM user_orders
     WHERE ${where.clause}
     ORDER BY saved_at DESC, order_id DESC
@@ -368,7 +352,7 @@ async function getOrdersByRefs(d1: D1Database, userId: string, refs: OrderRef[])
   const ids = unique(refs.map((ref) => ref.id).filter(Boolean));
   if (ids.length === 0) return [];
   const rows = await d1.prepare(`
-    SELECT order_id, data_json, tax_cents, confirmed_at, updated_at
+    SELECT order_id, data_json, tax_cents, updated_at
     FROM user_orders
     WHERE user_id = ?1
       AND order_id IN (SELECT value FROM json_each(?2))
@@ -406,7 +390,6 @@ function finalizeBulkOrder(current: CompactOrder, incoming: CompactOrder, operat
       oddsLocked: Boolean(current.oddsLocked),
       settledAt: undefined,
       settledPrize: undefined,
-      confirmedAt: undefined,
     });
   }
   if (operation === "settle") {
@@ -419,7 +402,6 @@ function finalizeBulkOrder(current: CompactOrder, incoming: CompactOrder, operat
       settledAt: now,
       settledPrize,
       taxAmount: current.taxAmount ?? calculatePrizeTax(settledPrize),
-      confirmedAt: undefined,
       oddsLockedBeforeSettlement: Boolean(current.oddsLocked),
       oddsLocked: true,
     });
@@ -428,13 +410,6 @@ function finalizeBulkOrder(current: CompactOrder, incoming: CompactOrder, operat
     const withdrawn = withdrawOrderState(current);
     if (!withdrawn) throw httpError(`订单“${current.name}”没有可撤回的结账或支付`, 409);
     return normalizeCompactOrder(withdrawn);
-  }
-  if (operation === "confirm") {
-    if (!current.settledAt || compactOrderSummary(current).status !== "success") {
-      throw httpError(`订单“${current.name}”不是已结账的成功订单`, 409);
-    }
-    if (current.confirmedAt) throw httpError(`订单“${current.name}”已经确认`, 409);
-    return normalizeCompactOrder({ ...current, confirmedAt: now });
   }
   if (operation === "lock-odds") {
     if (current.settledAt) throw httpError(`订单“${current.name}”的倍率已经冻结`, 409);
@@ -454,7 +429,7 @@ function finalizeBulkOrder(current: CompactOrder, incoming: CompactOrder, operat
     const prize = incoming.settledAt && typeof incoming.settledPrize === "number"
       ? incoming.settledPrize
       : calculateCurrentPrize(slip.matches, slip.passes, slip.multiple, slip.hits ?? {});
-    return normalizeCompactOrder({ ...incoming, taxAmount: calculatePrizeTax(prize), confirmedAt: undefined });
+    return normalizeCompactOrder({ ...incoming, taxAmount: calculatePrizeTax(prize) });
   }
   if (current.settledAt && !sameWager) {
     throw httpError(`订单“${current.name}”的投注项、串关、倍数和倍率均已冻结`, 409);
@@ -462,12 +437,9 @@ function finalizeBulkOrder(current: CompactOrder, incoming: CompactOrder, operat
   if (isOrderPaid(current) && !sameShape) {
     throw httpError(`订单“${current.name}”的投注项、串关和倍数均已冻结`, 409);
   }
-  const confirmedAt = current.confirmedAt && current.taxAmount === incoming.taxAmount
-    ? current.confirmedAt
-    : undefined;
   return normalizeCompactOrder(current.settledAt
-    ? { ...incoming, confirmedAt, oddsLocked: true }
-    : { ...incoming, confirmedAt: undefined });
+    ? { ...incoming, oddsLocked: true }
+    : incoming);
 }
 
 export async function bulkUpdateOrders(
@@ -509,21 +481,19 @@ export async function bulkUpdateOrders(
         settled_at = ?3,
         settled_prize_cents = ?4,
         tax_cents = ?5,
-        confirmed_at = ?6,
-        payment_status = ?7,
-        stake_cents = ?8,
-        status = ?9,
-        match_ids_json = ?10,
-        data_json = ?11,
-        updated_at = ?12
-    WHERE user_id = ?13 AND order_id = ?14 AND updated_at = ?15
+        payment_status = ?6,
+        stake_cents = ?7,
+        status = ?8,
+        match_ids_json = ?9,
+        data_json = ?10,
+        updated_at = ?11
+    WHERE user_id = ?12 AND order_id = ?13 AND updated_at = ?14
   `).bind(
     order.name,
     order.savedAt,
     order.settledAt ?? null,
     typeof order.settledPrize === "number" ? toCents(order.settledPrize) : null,
     typeof order.taxAmount === "number" ? toCents(order.taxAmount) : null,
-    order.confirmedAt ?? null,
     order.paymentStatus === "paid" ? "paid" : "unpaid",
     toCents(summary.stake),
     summary.status,
@@ -551,7 +521,6 @@ export async function settleOrders(d1: D1Database, userId: string, refs: OrderRe
       settledAt: now,
       settledPrize,
       taxAmount: order.taxAmount ?? calculatePrizeTax(settledPrize),
-      confirmedAt: undefined,
       oddsLockedBeforeSettlement: Boolean(order.oddsLocked),
       oddsLocked: true,
     };
@@ -568,7 +537,6 @@ export async function withdrawOrderSettlement(d1: D1Database, userId: string, re
     ...order,
     settledAt: undefined,
     settledPrize: undefined,
-    confirmedAt: undefined,
     oddsLocked: order.oddsLockedBeforeSettlement ?? false,
     oddsLockedBeforeSettlement: undefined,
   };

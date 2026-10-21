@@ -6,8 +6,9 @@ import {
   compactOrderToSavedSlip,
   isCompactOrder,
   isOrderPendingSettlement,
-  isOrderUnconfirmed,
+  isOrderProgressFilterValue,
   isOrderUnpaidHopeful,
+  normalizeCompactOrder,
   savedSlipToCompactOrder,
   type CompactOrder,
 } from "../app/order-model";
@@ -46,8 +47,8 @@ test("待结账状态要求订单已支付且尚未结账", () => {
   assert.equal(isOrderPendingSettlement({ ...order("settled", "paid"), settledAt: "2026-09-14T10:00:00.000Z" }), false);
 });
 
-test("具体赛果比分和赔率经云端紧凑模型往返不丢失", () => {
-  const compact: CompactOrder = {
+test("具体赛果比分和赔率经云端紧凑模型往返不丢失，旧确认字段不再保留", () => {
+  const compact: CompactOrder & { confirmedAt?: string } = {
     ...order("score-result"),
     resultValues: { "2040001": { score: "winOther" } },
     resultScores: { "2040001": { home: 6, away: 0 } },
@@ -59,12 +60,13 @@ test("具体赛果比分和赔率经云端紧凑模型往返不丢失", () => {
 
   const roundTripped = savedSlipToCompactOrder(compactOrderToSavedSlip(compact));
 
+  assert.equal("confirmedAt" in normalizeCompactOrder(compact), false);
   assert.deepEqual(roundTripped.resultValues, compact.resultValues);
   assert.deepEqual(roundTripped.resultScores, compact.resultScores);
   assert.notEqual(roundTripped.resultScores, compact.resultScores);
   assert.notEqual(roundTripped.resultScores?.["2040001"], compact.resultScores?.["2040001"]);
   assert.deepEqual(roundTripped.resultOdds, compact.resultOdds);
-  assert.equal(roundTripped.confirmedAt, compact.confirmedAt);
+  assert.equal("confirmedAt" in roundTripped, false);
   assert.notEqual(roundTripped.resultOdds, compact.resultOdds);
   assert.notEqual(roundTripped.resultOdds?.["2040001"], compact.resultOdds?.["2040001"]);
   assert.equal(isCompactOrder(roundTripped), true);
@@ -80,14 +82,13 @@ test("未支付且有希望状态排除已支付和已有中奖结果的订单",
 
 class FakeD1 {
   batchCalls = 0;
-  readonly rows: Array<{ order_id: string; data_json: string; tax_cents: number | null; confirmed_at: string | null; updated_at: string }>;
+  readonly rows: Array<{ order_id: string; data_json: string; tax_cents: number | null; updated_at: string }>;
 
   constructor(orders: CompactOrder[]) {
     this.rows = orders.map((item) => ({
       order_id: item.id,
       data_json: JSON.stringify(item),
       tax_cents: typeof item.taxAmount === "number" ? Math.round(item.taxAmount * 100) : null,
-      confirmed_at: item.confirmedAt ?? null,
       updated_at: item.updatedAt!,
     }));
   }
@@ -144,7 +145,6 @@ test("撤回操作根据当前状态先撤回结账并保留支付状态", async
     ...order("settled", "paid"),
     settledAt: "2026-09-09T02:00:00.000Z",
     settledPrize: 4,
-    confirmedAt: "2026-09-09T03:00:00.000Z",
     oddsLockedBeforePayment: false,
     oddsLockedBeforeSettlement: true,
   };
@@ -156,7 +156,6 @@ test("撤回操作根据当前状态先撤回结账并保留支付状态", async
   assert.equal(withdrawn.paymentStatus, "paid");
   assert.equal(withdrawn.settledAt, undefined);
   assert.equal(withdrawn.settledPrize, undefined);
-  assert.equal(withdrawn.confirmedAt, undefined);
   assert.equal(withdrawn.oddsLocked, true);
   assert.equal(withdrawn.oddsLockedBeforePayment, false);
   assert.equal(withdrawn.oddsLockedBeforeSettlement, undefined);
@@ -314,17 +313,8 @@ test("高额成功订单结账自动计税，结账后可手动改税且再次�
     incomeCents: 960_000,
   });
 
-  const [confirmed] = await bulkUpdateOrders(d1, "user", [settled], "confirm");
-  assert.ok(confirmed.confirmedAt);
-  assert.equal(isOrderUnconfirmed(confirmed), false);
-  const confirmedRow = db.database.prepare("SELECT confirmed_at, json_extract(data_json, '$.confirmedAt') AS json_confirmed_at FROM user_orders WHERE order_id = 'high-prize'").get();
-  assert.equal(confirmedRow?.confirmed_at, confirmed.confirmedAt);
-  assert.equal(confirmedRow?.json_confirmed_at, confirmed.confirmedAt);
-  await assert.rejects(bulkUpdateOrders(d1, "user", [confirmed], "confirm"), /已经确认/);
-
-  const [manuallyAdjusted] = await bulkUpdateOrders(d1, "user", [{ ...confirmed, taxAmount: 1_000 }], "update");
+  const [manuallyAdjusted] = await bulkUpdateOrders(d1, "user", [{ ...settled, taxAmount: 1_000 }], "update");
   assert.equal(manuallyAdjusted.taxAmount, 1_000);
-  assert.equal(manuallyAdjusted.confirmedAt, undefined);
   assert.deepEqual(await getOrderFinanceCents(d1, "user"), {
     expenseCents: 200,
     grossIncomeCents: 1_200_000,
@@ -334,36 +324,9 @@ test("高额成功订单结账自动计税，结账后可手动改税且再次�
 
   const [rejudged] = await bulkUpdateOrders(d1, "user", [manuallyAdjusted], "judge");
   assert.equal(rejudged.taxAmount, 2_400);
-  assert.equal(rejudged.confirmedAt, undefined);
   await assert.rejects(
     bulkUpdateOrders(d1, "user", [{ ...rejudged, taxAmount: 12_000.01 }], "update"),
     /税额不能大于订单奖金/,
-  );
-});
-
-test("确认操作只接受已结账成功订单并在整批校验失败时不写入", async () => {
-  const success = {
-    ...order("confirm-success", "paid"),
-    settledAt: "2026-10-20T02:00:00.000Z",
-    settledPrize: 4,
-    hits: { "2040001": { spf: "win" as const } },
-  };
-  const failed = {
-    ...order("confirm-failed", "paid"),
-    settledAt: "2026-10-20T02:00:00.000Z",
-    settledPrize: 0,
-    failedMatchIds: ["2040001"],
-  };
-  const d1 = new FakeD1([success, failed]);
-
-  await assert.rejects(
-    bulkUpdateOrders(d1 as unknown as D1Database, "user", [success, failed], "confirm"),
-    /不是已结账的成功订单/,
-  );
-  assert.equal(d1.batchCalls, 0);
-  await assert.rejects(
-    bulkUpdateOrders(new FakeD1([order("unsettled", "paid")]) as unknown as D1Database, "user", [order("unsettled", "paid")], "confirm"),
-    /不是已结账的成功订单/,
   );
 });
 
@@ -604,28 +567,8 @@ test("订单列表的待结账进度只筛选已支付且未结账订单", async
   assert.deepEqual(boundArgs[0], ["user", JSON.stringify(["success"]), 10, 0]);
 });
 
-test("订单列表的未确认进度只筛选已结账成功且确认时间为空的订单", async () => {
-  const preparedSql: string[] = [];
-  const boundArgs: unknown[][] = [];
-  const d1 = {
-    prepare: (sql: string) => {
-      preparedSql.push(sql);
-      const statement = {
-        bind: (...args: unknown[]) => {
-          boundArgs.push(args);
-          return statement;
-        },
-        all: async () => ({ results: [] }),
-        first: async () => ({ total: 0 }),
-      };
-      return statement;
-    },
-  };
-
-  await listOrders(d1 as unknown as D1Database, "user", { progress: "unconfirmed", limit: 10 });
-
-  assert.match(preparedSql[0], /settled_at IS NOT NULL AND status = 'success' AND confirmed_at IS NULL/);
-  assert.deepEqual(boundArgs[0], ["user", 10, 0]);
+test("订单进度不再接受未确认筛选", () => {
+  assert.equal(isOrderProgressFilterValue("unconfirmed"), false);
 });
 
 test("订单列表响应独立统计未支付有希望和待结账订单", async () => {
