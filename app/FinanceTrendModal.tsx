@@ -111,7 +111,7 @@ function chartOption(points: FinanceTrendPoint[]): EChartsOption {
       {
         type: "inside",
         xAxisIndex: 0,
-        filterMode: "none",
+        filterMode: "filter",
         zoomOnMouseWheel: true,
         moveOnMouseMove: true,
         moveOnMouseWheel: false,
@@ -120,7 +120,7 @@ function chartOption(points: FinanceTrendPoint[]): EChartsOption {
       {
         type: "slider",
         xAxisIndex: 0,
-        filterMode: "none",
+        filterMode: "filter",
         height: 24,
         bottom: 14,
         brushSelect: false,
