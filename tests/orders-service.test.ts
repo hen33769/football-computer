@@ -102,6 +102,7 @@ class FakeD1 {
         return statement;
       },
       all: async () => ({ results: this.rows }),
+      run: async () => ({ success: true, meta: { changes: 0 } }),
     };
     return statement;
   }
@@ -594,4 +595,20 @@ test("订单列表响应独立统计未支付有希望和待结账订单", async
   assert.equal(result.pendingSettlementCount, 2);
   assert.match(preparedSql[2], /payment_status = 'unpaid' AND status = 'hopeful'/);
   assert.match(preparedSql[2], /payment_status = 'paid' AND settled_at IS NULL/);
+});
+
+test("订单单笔与批量成功各增加一次个人数据版本，失败不增加", async () => {
+  const db = new SqliteD1();
+  db.database.exec(`INSERT INTO users (id,auth_subject,account,normalized_account)
+    VALUES ('revision-user','revision-subject','revision','revision')`);
+  const created = await createOrder(db.asD1(), "revision-user", order("revision-order"));
+  const afterCreate = db.database.prepare(`SELECT revision FROM user_personal_data_revisions WHERE user_id = 'revision-user'`).get() as { revision: number };
+  assert.equal(afterCreate.revision, 1);
+
+  await bulkUpdateOrders(db.asD1(), "revision-user", [created], "pay");
+  const afterPay = db.database.prepare(`SELECT revision FROM user_personal_data_revisions WHERE user_id = 'revision-user'`).get() as { revision: number };
+  assert.equal(afterPay.revision, 2);
+  await assert.rejects(bulkUpdateOrders(db.asD1(), "revision-user", [created], "pay"));
+  const afterFailure = db.database.prepare(`SELECT revision FROM user_personal_data_revisions WHERE user_id = 'revision-user'`).get() as { revision: number };
+  assert.equal(afterFailure.revision, 2);
 });

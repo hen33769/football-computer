@@ -11,8 +11,12 @@ export type FinanceTrendDateRange = {
 export type FinanceTrendPoint = {
   date: string;
   expense: number;
+  orderExpense?: number;
+  expenseCorrection?: number;
   tax: number;
   income: number;
+  orderIncome?: number;
+  incomeCorrection?: number;
   profit: number;
   cumulativeExpense: number;
   cumulativeTax: number;
@@ -33,8 +37,12 @@ export type FinanceTrendCorrections = {
 export type FinanceTrendDailyAmount = {
   date: string;
   expense: number;
+  orderExpense?: number;
+  expenseCorrection?: number;
   tax?: number;
   income: number;
+  orderIncome?: number;
+  incomeCorrection?: number;
 };
 
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -89,13 +97,41 @@ export function buildCumulativeFinanceTrend(
   rawRange: FinanceTrendDateRange = {},
 ): FinanceTrendPoint[] {
   const range = normalizeFinanceTrendDateRange(rawRange);
-  const amountsByDate = new Map<string, { expenseCents: number; taxCents: number; incomeCents: number }>();
+  const hasBreakdown = dailyAmounts.some((amount) => amount.orderExpense !== undefined
+    || amount.expenseCorrection !== undefined
+    || amount.orderIncome !== undefined
+    || amount.incomeCorrection !== undefined);
+  const amountsByDate = new Map<string, {
+    expenseCents: number;
+    orderExpenseCents: number;
+    expenseCorrectionCents: number;
+    taxCents: number;
+    incomeCents: number;
+    orderIncomeCents: number;
+    incomeCorrectionCents: number;
+  }>();
   for (const amount of dailyAmounts) {
     if (!isFinanceTrendDate(amount.date)) continue;
-    const current = amountsByDate.get(amount.date) ?? { expenseCents: 0, taxCents: 0, incomeCents: 0 };
-    current.expenseCents += toCents(amount.expense);
+    const current = amountsByDate.get(amount.date) ?? {
+      expenseCents: 0,
+      orderExpenseCents: 0,
+      expenseCorrectionCents: 0,
+      taxCents: 0,
+      incomeCents: 0,
+      orderIncomeCents: 0,
+      incomeCorrectionCents: 0,
+    };
+    const orderExpenseCents = toCents(amount.orderExpense ?? amount.expense);
+    const expenseCorrectionCents = toCents(amount.expenseCorrection ?? 0);
+    const orderIncomeCents = toCents(amount.orderIncome ?? amount.income);
+    const incomeCorrectionCents = toCents(amount.incomeCorrection ?? 0);
+    current.orderExpenseCents += orderExpenseCents;
+    current.expenseCorrectionCents += expenseCorrectionCents;
+    current.expenseCents += orderExpenseCents + expenseCorrectionCents;
     current.taxCents += toCents(amount.tax ?? 0);
-    current.incomeCents += toCents(amount.income);
+    current.orderIncomeCents += orderIncomeCents;
+    current.incomeCorrectionCents += incomeCorrectionCents;
+    current.incomeCents += orderIncomeCents + incomeCorrectionCents;
     amountsByDate.set(amount.date, current);
   }
 
@@ -132,9 +168,16 @@ export function buildCumulativeFinanceTrend(
     expenseCents += dailyExpenseCents;
     taxCents += dailyTaxCents;
     incomeCents += dailyIncomeCents;
+    const breakdown = hasBreakdown ? {
+      orderExpense: fromCents(amountsByDate.get(date)?.orderExpenseCents ?? 0),
+      expenseCorrection: fromCents(amountsByDate.get(date)?.expenseCorrectionCents ?? 0),
+      orderIncome: fromCents(amountsByDate.get(date)?.orderIncomeCents ?? 0),
+      incomeCorrection: fromCents(amountsByDate.get(date)?.incomeCorrectionCents ?? 0),
+    } : {};
     points.push({
       date,
       expense: fromCents(dailyExpenseCents),
+      ...breakdown,
       tax: fromCents(dailyTaxCents),
       income: fromCents(dailyIncomeCents),
       profit: fromCents(dailyIncomeCents - dailyExpenseCents),
@@ -151,10 +194,27 @@ export function buildFinanceTrendFromOrders(
   orders: SavedSlip[],
   corrections: FinanceTrendCorrections = {},
   rawRange: FinanceTrendDateRange = {},
+  datedCorrections: Array<{
+    kind: "expense" | "income";
+    deltaCents: number;
+    effectiveDate: string | null;
+  }> = [],
 ): FinanceTrendPoint[] {
-  const totals = new Map<string, { expenseCents: number; taxCents: number; incomeCents: number }>();
+  const totals = new Map<string, {
+    expenseCents: number;
+    expenseCorrectionCents: number;
+    taxCents: number;
+    incomeCents: number;
+    incomeCorrectionCents: number;
+  }>();
   const totalsFor = (date: string) => {
-    const current = totals.get(date) ?? { expenseCents: 0, taxCents: 0, incomeCents: 0 };
+    const current = totals.get(date) ?? {
+      expenseCents: 0,
+      expenseCorrectionCents: 0,
+      taxCents: 0,
+      incomeCents: 0,
+      incomeCorrectionCents: 0,
+    };
     totals.set(date, current);
     return current;
   };
@@ -176,12 +236,25 @@ export function buildFinanceTrendFromOrders(
     }
   }
 
+  for (const correction of datedCorrections) {
+    if (!correction.effectiveDate || !isFinanceTrendDate(correction.effectiveDate)) continue;
+    if (correction.kind === "expense") totalsFor(correction.effectiveDate).expenseCorrectionCents += correction.deltaCents;
+    else totalsFor(correction.effectiveDate).incomeCorrectionCents += correction.deltaCents;
+  }
+
+  const includeBreakdown = datedCorrections.length > 0;
   return buildCumulativeFinanceTrend(
     [...totals.entries()].map(([date, values]) => ({
       date,
-      expense: fromCents(values.expenseCents),
+      expense: fromCents(values.expenseCents + values.expenseCorrectionCents),
+      ...(includeBreakdown ? {
+        orderExpense: fromCents(values.expenseCents),
+        expenseCorrection: fromCents(values.expenseCorrectionCents),
+        orderIncome: fromCents(values.incomeCents),
+        incomeCorrection: fromCents(values.incomeCorrectionCents),
+      } : {}),
       tax: fromCents(values.taxCents),
-      income: fromCents(values.incomeCents),
+      income: fromCents(values.incomeCents + values.incomeCorrectionCents),
     })),
     corrections,
     rawRange,

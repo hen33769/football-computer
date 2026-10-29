@@ -1,6 +1,55 @@
 import { getD1 } from "../../../../db";
 import { requireAuthenticatedCloudAccount, routeError } from "../../../cloud-server";
-import { updateFinanceCorrections } from "../../../server/finance-service";
+import {
+  createFinanceCorrectionEntry,
+  listFinanceCorrectionEntries,
+  updateFinanceCorrections,
+} from "../../../server/finance-service";
+import type { FinanceCorrectionKind } from "../../../finance-corrections";
+
+export async function GET(request: Request) {
+  try {
+    const authenticated = await requireAuthenticatedCloudAccount(request);
+    if (!authenticated.value) return authenticated.response!;
+    const url = new URL(request.url);
+    const rawLimit = url.searchParams.get("limit");
+    return Response.json(await listFinanceCorrectionEntries(
+      getD1(),
+      authenticated.value.account.id,
+      {
+        kind: (url.searchParams.get("kind") || undefined) as FinanceCorrectionKind | undefined,
+        ledgerId: url.searchParams.get("ledger_id") || undefined,
+        cursor: url.searchParams.get("cursor") || undefined,
+        limit: rawLimit === null ? undefined : Number(rawLimit),
+      },
+    ));
+  } catch (error) {
+    return routeError(error);
+  }
+}
+
+export async function POST(request: Request) {
+  try {
+    const authenticated = await requireAuthenticatedCloudAccount(request);
+    if (!authenticated.value) return authenticated.response!;
+    const payload = await request.json() as Record<string, unknown>;
+    return Response.json(await createFinanceCorrectionEntry(
+      getD1(),
+      authenticated.value.account.id,
+      {
+        kind: payload.kind as FinanceCorrectionKind,
+        deltaCents: Number(payload.deltaCents),
+        effectiveDate: payload.effectiveDate === null ? null : String(payload.effectiveDate ?? ""),
+        note: String(payload.note ?? ""),
+        requestId: String(payload.requestId ?? ""),
+        expectedRevision: Number(payload.expectedRevision),
+        adjustsEntryId: payload.adjustsEntryId == null ? null : String(payload.adjustsEntryId),
+      },
+    ), { status: 201 });
+  } catch (error) {
+    return routeError(error);
+  }
+}
 
 export async function PATCH(request: Request) {
   try {

@@ -17,6 +17,7 @@ import { refreshSelectedOdds } from "../sporttery";
 import type { MatchItem } from "../types";
 import { httpError, orderConflict } from "./errors";
 import { fromCents, toCents } from "./money";
+import { ensurePersonalDataRevision, incrementPersonalDataRevisionStatement } from "./personal-data-revision-service";
 
 export type OrderProgressQuery = OrderProgressFilter;
 export type OrdersQuery = {
@@ -183,13 +184,13 @@ async function currentOrderVersion(d1: D1Database, userId: string, orderId: stri
   `).bind(userId, orderId).first<{ updatedAt: string }>();
 }
 
-async function writePreparedOrder(
+function preparedOrderWriteStatement(
   d1: D1Database,
   userId: string,
   prepared: ReturnType<typeof prepareStoredOrder>,
 ) {
   const { order, json, summary, matchIdsJson } = prepared;
-  await d1.prepare(`
+  return d1.prepare(`
     INSERT INTO user_orders (
       user_id, order_id, name, saved_at, settled_at, settled_prize_cents,
       tax_cents, payment_status, stake_cents, status, match_ids_json, data_json, updated_at
@@ -221,8 +222,21 @@ async function writePreparedOrder(
     matchIdsJson,
     json,
     order.updatedAt ?? new Date().toISOString(),
-  ).run();
-  return order;
+  );
+}
+
+async function writePreparedOrder(
+  d1: D1Database,
+  userId: string,
+  prepared: ReturnType<typeof prepareStoredOrder>,
+) {
+  const now = prepared.order.updatedAt ?? new Date().toISOString();
+  await ensurePersonalDataRevision(d1, userId, now);
+  await d1.batch([
+    preparedOrderWriteStatement(d1, userId, prepared),
+    incrementPersonalDataRevisionStatement(d1, userId, now),
+  ]);
+  return prepared.order;
 }
 
 export async function createOrder(d1: D1Database, userId: string, rawOrder: CompactOrder | SavedSlip) {
@@ -265,10 +279,20 @@ export async function deleteOrder(
   const existing = await currentOrderVersion(d1, userId, orderId);
   if (!existing) return { deletedOrderId: orderId };
   if (!expectedUpdatedAt || existing.updatedAt !== expectedUpdatedAt) throw orderConflict([orderId]);
-  await d1.prepare(`
-    DELETE FROM user_orders
-    WHERE user_id = ?1 AND order_id = ?2
-  `).bind(userId, orderId).run();
+  const now = new Date().toISOString();
+  await ensurePersonalDataRevision(d1, userId, now);
+  await d1.batch([
+    d1.prepare(`
+      SELECT CASE WHEN EXISTS (
+        SELECT 1 FROM user_orders WHERE user_id = ?1 AND order_id = ?2 AND updated_at = ?3
+      ) THEN json('null') ELSE json('') END
+    `).bind(userId, orderId, expectedUpdatedAt),
+    d1.prepare(`
+      DELETE FROM user_orders
+      WHERE user_id = ?1 AND order_id = ?2 AND updated_at = ?3
+    `).bind(userId, orderId, expectedUpdatedAt),
+    incrementPersonalDataRevisionStatement(d1, userId, now),
+  ]);
   return { deletedOrderId: orderId };
 }
 
@@ -504,14 +528,15 @@ export async function bulkUpdateOrders(
     order.id,
     refs[index].updatedAt ?? "",
   ));
-  await d1.batch([...guards, ...updates]);
+  await ensurePersonalDataRevision(d1, userId, now);
+  await d1.batch([...guards, ...updates, incrementPersonalDataRevisionStatement(d1, userId, now)]);
   return prepared.map((item) => item.order);
 }
 
 export async function settleOrders(d1: D1Database, userId: string, refs: OrderRef[]) {
   const now = new Date().toISOString();
   const orders = await getOrdersByRefs(d1, userId, refs);
-  const settled: CompactOrder[] = [];
+  const preparedSettled: ReturnType<typeof prepareStoredOrder>[] = [];
   for (const order of orders) {
     if (!isOrderPaid(order) || order.settledAt) continue;
     const slip = compactOrderToSavedSlip(order);
@@ -524,9 +549,15 @@ export async function settleOrders(d1: D1Database, userId: string, refs: OrderRe
       oddsLockedBeforeSettlement: Boolean(order.oddsLocked),
       oddsLocked: true,
     };
-    settled.push(await writePreparedOrder(d1, userId, prepareStoredOrder(next, now)));
+    preparedSettled.push(prepareStoredOrder(next, now));
   }
-  return settled;
+  if (preparedSettled.length === 0) return [];
+  await ensurePersonalDataRevision(d1, userId, now);
+  await d1.batch([
+    ...preparedSettled.map((prepared) => preparedOrderWriteStatement(d1, userId, prepared)),
+    incrementPersonalDataRevisionStatement(d1, userId, now),
+  ]);
+  return preparedSettled.map((prepared) => prepared.order);
 }
 
 export async function withdrawOrderSettlement(d1: D1Database, userId: string, ref: OrderRef) {
@@ -574,12 +605,19 @@ export async function saveOrderResults(
 
 export async function lockOrders(d1: D1Database, userId: string, refs: OrderRef[]) {
   const orders = await getOrdersByRefs(d1, userId, refs);
-  const updated: CompactOrder[] = [];
+  const now = new Date().toISOString();
+  const prepared: ReturnType<typeof prepareStoredOrder>[] = [];
   for (const order of orders) {
     if (order.oddsLocked || order.settledAt) continue;
-    updated.push(await writePreparedOrder(d1, userId, prepareStoredOrder({ ...order, oddsLocked: true })));
+    prepared.push(prepareStoredOrder({ ...order, oddsLocked: true }, now));
   }
-  return updated;
+  if (prepared.length === 0) return [];
+  await ensurePersonalDataRevision(d1, userId, now);
+  await d1.batch([
+    ...prepared.map((item) => preparedOrderWriteStatement(d1, userId, item)),
+    incrementPersonalDataRevisionStatement(d1, userId, now),
+  ]);
+  return prepared.map((item) => item.order);
 }
 
 export async function refreshOrderOdds(
@@ -592,7 +630,8 @@ export async function refreshOrderOdds(
   let matchedOptionCount = 0;
   let changedOptionCount = 0;
   let unmatchedOptionCount = 0;
-  const updated: CompactOrder[] = [];
+  const now = new Date().toISOString();
+  const prepared: ReturnType<typeof prepareStoredOrder>[] = [];
   for (const order of orders) {
     if (order.oddsLocked || order.settledAt) continue;
     const slip = compactOrderToSavedSlip(order);
@@ -601,12 +640,20 @@ export async function refreshOrderOdds(
     changedOptionCount += refreshed.changedOptionCount;
     unmatchedOptionCount += refreshed.unmatchedOptionCount;
     if (refreshed.matches === slip.matches) continue;
-    updated.push(await writePreparedOrder(d1, userId, prepareStoredOrder(
+    prepared.push(prepareStoredOrder(
       savedSlipToCompactOrder({ ...slip, matches: refreshed.matches, paymentStatus: order.paymentStatus }),
-    )));
+      now,
+    ));
+  }
+  if (prepared.length > 0) {
+    await ensurePersonalDataRevision(d1, userId, now);
+    await d1.batch([
+      ...prepared.map((item) => preparedOrderWriteStatement(d1, userId, item)),
+      incrementPersonalDataRevisionStatement(d1, userId, now),
+    ]);
   }
   return {
-    orders: updated,
+    orders: prepared.map((item) => item.order),
     matchedOptionCount,
     changedOptionCount,
     unmatchedOptionCount,

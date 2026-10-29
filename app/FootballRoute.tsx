@@ -35,7 +35,19 @@ import {
   saveTeamTag,
   saveTeamTagMemberNote,
 } from "./api-client/team-tags";
-import { getFinance, updateFinanceCorrections, type FinanceResponse } from "./api-client/finance";
+import {
+  createFinanceCorrection,
+  getFinance,
+  getFinanceCorrections,
+  type FinanceResponse,
+} from "./api-client/finance";
+import {
+  commitCloudFullDataImport,
+  exportCloudFullDataBackup,
+  previewCloudFullDataImport,
+} from "./api-client/data-backup";
+import type { BackupImportStrategy, BackupInitialBalanceStrategy } from "./data-backup";
+import type { CreateFinanceCorrectionInput, FinanceCorrectionKind } from "./finance-corrections";
 import { bulkUpdateOrders, createOrder, deleteOrder, fetchOrders, type OrderQuery, type OrdersResponse } from "./api-client/orders";
 import { isOrderPendingSettlement, isOrderUnpaidHopeful } from "./order-model";
 import {
@@ -45,7 +57,7 @@ import {
   updateMatches,
 } from "./api-client/matches";
 import type { AppSettings } from "./settings";
-import type { SportteryMatchSnapshot } from "./sporttery";
+import { unionSportteryMatchCache, type SportteryMatchSnapshot } from "./sporttery";
 import { upsertTeamNameGroupAtPosition, type TeamNameGroup, type TeamNameGroupDraft } from "./team-aliases";
 import { upsertTeamTag, type TeamTag, type TeamTagDraft } from "./team-tags";
 
@@ -96,6 +108,8 @@ function cloudFinanceFromResponse(finance: FinanceResponse): CloudPersonalData["
     expenseCorrection: finance.expense.correction,
     incomeCorrection: finance.income.correction,
     revision: finance.revision,
+    activeLedgerId: finance.activeLedgerId,
+    dataRevision: finance.dataRevision,
   };
 }
 
@@ -396,19 +410,115 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
     return imported.tag;
   }, []);
 
-  const syncFinanceCorrections = useCallback(async (correction: { expenseCorrection: number; incomeCorrection: number }) => {
+  const addFinanceCorrection = useCallback(async (input: CreateFinanceCorrectionInput) => {
     const accountId = accountIdRef.current;
-    const previous = clientPersonalRef.current;
-    if (!accountId || !previous) throw new Error("请先输入账号登录");
-    const response = await enqueueWrite(() => updateFinanceCorrections(correction, previous.finance.revision));
-    const nextPersonal: CloudPersonalData = {
-      ...(clientPersonalRef.current ?? previous),
-      finance: cloudFinanceFromResponse(response),
-    };
-    clientPersonalRef.current = nextPersonal;
-    setCloudPersonal(nextPersonal);
-    return nextPersonal.finance;
+    if (!accountId) throw new Error("请先输入账号登录");
+    return enqueueWrite(async () => {
+      const latest = clientPersonalRef.current;
+      if (!latest || accountIdRef.current !== accountId) throw new Error("账号已切换，不能保存旧账号的纠错");
+      let response: Awaited<ReturnType<typeof createFinanceCorrection>>;
+      try {
+        response = await createFinanceCorrection({
+          ...input,
+          expectedRevision: latest.finance.revision ?? 0,
+        });
+      } catch (error) {
+        if (Number((error as Error & { status?: unknown }).status) === 409 && accountIdRef.current === accountId) {
+          const refreshed = await getFinance();
+          const current = clientPersonalRef.current ?? latest;
+          const refreshedPersonal: CloudPersonalData = { ...current, finance: cloudFinanceFromResponse(refreshed) };
+          clientPersonalRef.current = refreshedPersonal;
+          setCloudPersonal(refreshedPersonal);
+        }
+        throw error;
+      }
+      if (accountIdRef.current !== accountId) throw new Error("账号已切换，已忽略旧账号的纠错响应");
+      const nextPersonal: CloudPersonalData = {
+        ...(clientPersonalRef.current ?? latest),
+        finance: cloudFinanceFromResponse(response.finance),
+      };
+      clientPersonalRef.current = nextPersonal;
+      setCloudPersonal(nextPersonal);
+      return nextPersonal.finance;
+    });
   }, [enqueueWrite]);
+
+  const loadFinanceCorrections = useCallback(async (query: {
+    kind?: FinanceCorrectionKind;
+    ledgerId?: string;
+    cursor?: string;
+    limit?: number;
+  }) => {
+    const accountId = accountIdRef.current;
+    if (!accountId) throw new Error("请先输入账号登录");
+    const page = await getFinanceCorrections(query);
+    if (accountIdRef.current !== accountId) throw new Error("账号已切换，已忽略旧账号的纠错记录");
+    return page;
+  }, []);
+
+  const exportFullBackup = useCallback(async () => {
+    if (!accountIdRef.current) throw new Error("请先输入账号登录");
+    return exportCloudFullDataBackup();
+  }, []);
+
+  const previewFullBackupImport = useCallback(async (backup: unknown, strategy: BackupImportStrategy) => {
+    if (!accountIdRef.current) throw new Error("请先输入账号登录");
+    return previewCloudFullDataImport(backup, strategy);
+  }, []);
+
+  const importFullBackup = useCallback(async (input: {
+    backup: unknown;
+    strategy: BackupImportStrategy;
+    initialBalanceStrategy: BackupInitialBalanceStrategy;
+    requestId: string;
+    expectedDataRevision: number;
+    backupDigest: string;
+  }) => {
+    const accountId = accountIdRef.current;
+    if (!accountId) throw new Error("请先输入账号登录");
+    return enqueueWrite(async () => {
+      if (accountIdRef.current !== accountId) throw new Error("账号已切换，不能恢复旧账号的数据");
+      const committed = await commitCloudFullDataImport(input);
+      let restoredMatches: MatchItem[] = [];
+      let matchesError = "";
+      try {
+        const incoming = clearMatchSelections(committed.matches);
+        if (input.strategy === "merge") {
+          const current = await getCloudCurrentMatches();
+          restoredMatches = unionSportteryMatchCache(current.matches, incoming, new Date());
+        } else {
+          restoredMatches = incoming;
+        }
+        await saveMatchesImmediately(restoredMatches);
+      } catch (error) {
+        matchesError = error instanceof Error ? error.message : "公共比赛恢复失败";
+      }
+      const [ordersResult, financeResult, settingsResult] = await Promise.all([
+        fetchOrders({ limit: 500 }),
+        getFinance(),
+        getUserSettings(),
+      ]);
+      if (accountIdRef.current !== accountId) throw new Error("账号已切换，已忽略旧账号的恢复响应");
+      const nextPersonal: CloudPersonalData = {
+        orders: ensureOrderIds(ordersResult.orders),
+        orderTotal: ordersResult.total,
+        unsettledOrderCount: ordersResult.unsettledCount,
+        unpaidHopefulCount: ordersResult.unpaidHopefulCount,
+        pendingSettlementCount: ordersResult.pendingSettlementCount,
+        finance: cloudFinanceFromResponse(financeResult),
+        settings: settingsResult.settings,
+        settingsRevision: settingsResult.revision,
+      };
+      clientPersonalRef.current = nextPersonal;
+      setCloudPersonal(nextPersonal);
+      return {
+        ...committed,
+        personal: nextPersonal,
+        restoredMatches,
+        matchesError,
+      };
+    });
+  }, [enqueueWrite, saveMatchesImmediately]);
 
   const syncOrders = useCallback(async (orderIntent: OrderSyncIntent): Promise<CloudOrderMutationResult> => {
     const accountId = accountIdRef.current;
@@ -648,7 +758,11 @@ export default function FootballRoute({ initialView }: { initialView: AppView })
         onTeamTagMemberNoteSave={savePersonalTeamTagMemberNote}
         onTeamTagShare={sharePersonalTeamTag}
         onTeamTagImport={importPersonalTeamTag}
-        onCloudFinanceCorrectionChange={syncFinanceCorrections}
+        onCloudFinanceCorrectionCreate={addFinanceCorrection}
+        onCloudFinanceCorrectionsLoad={loadFinanceCorrections}
+        onCloudFullBackupExport={exportFullBackup}
+        onCloudFullBackupPreview={previewFullBackupImport}
+        onCloudFullBackupImport={importFullBackup}
         onCloudOrderMutation={syncOrders}
         onCloudOrdersQueryChange={queryCloudOrders}
         onCloudMatchesChange={syncMatches}

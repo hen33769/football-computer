@@ -82,7 +82,14 @@ function chartOption(points: FinanceTrendPoint[]): EChartsOption {
         const date = String(params[0]?.axisValue ?? "");
         const point = points.find((item) => item.date === date);
         const taxLines = point
-          ? [`当日税额<b>¥${currency(point.tax)}</b>`, `累计税额<b>¥${currency(point.cumulativeTax)}</b>`]
+          ? [
+            `订单支出<b>¥${currency(point.orderExpense ?? point.expense)}</b>`,
+            `支出纠错<b>${(point.expenseCorrection ?? 0) >= 0 ? "+" : "−"}¥${currency(Math.abs(point.expenseCorrection ?? 0))}</b>`,
+            `订单税后收入<b>¥${currency(point.orderIncome ?? point.income)}</b>`,
+            `收入纠错<b>${(point.incomeCorrection ?? 0) >= 0 ? "+" : "−"}¥${currency(Math.abs(point.incomeCorrection ?? 0))}</b>`,
+            `当日税额<b>¥${currency(point.tax)}</b>`,
+            `累计税额<b>¥${currency(point.cumulativeTax)}</b>`,
+          ]
           : [];
         return `<div class="finance-trend-tooltip"><strong>${monthDay(date)}</strong>${lines.map((line) => `<span>${line}</span>`).join("")}${taxLines.map((line) => `<span class="tax-line">${line}</span>`).join("")}</div>`;
       },
@@ -222,7 +229,7 @@ export function FinanceTrendModal({ open, onClose, loadTrend }: FinanceTrendModa
       className="finance-trend-modal"
       destroyOnHidden
     >
-      <p className="finance-trend-note">累计支出与累计税后收入分别以对应纠错值为初始值，并按日累加订单支出与已结账成功订单的税后收入；tooltip 同时显示当日与累计税额。</p>
+      <p className="finance-trend-note">无归属日期的纠错计入累计初值；有日期的纠错计入对应日支出或税后收入。tooltip 会拆分订单金额、纠错、税额与累计值。</p>
       {loading ? (
         <div className="finance-trend-loading"><Spin size="large" description="正在加载趋势数据…" /></div>
       ) : error ? (

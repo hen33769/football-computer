@@ -8,6 +8,8 @@ import {
   unionAppSettings,
   withLeagueTagColor,
 } from "../app/settings";
+import { getUserSettings, updateUserSettings } from "../app/server/settings-service";
+import { SqliteD1 } from "./helpers/sqlite-d1";
 
 test("默认联赛颜色与接口简称别名保持一致", () => {
   const settings = createDefaultSettings();
@@ -51,4 +53,25 @@ test("新增导入设置以新颜色更新冲突项，并保留文件缺少的�
 test("浅色与深色标签会得到可读文字颜色", () => {
   assert.equal(readableTagTextColor("#d5ec76"), "#26383d");
   assert.equal(readableTagTextColor("#660033"), "#ffffff");
+});
+
+test("设置成功写入增加一次个人数据版本，revision 冲突不增加", async () => {
+  const db = new SqliteD1();
+  db.database.exec(`INSERT INTO users (id,auth_subject,account,normalized_account)
+    VALUES ('settings-user','settings-subject','settings','settings')`);
+  const current = await getUserSettings(db.asD1(), "settings-user");
+  await updateUserSettings(
+    db.asD1(),
+    "settings-user",
+    withLeagueTagColor(current.settings, "欧冠", "#112233"),
+    current.revision,
+  );
+  const afterSuccess = db.database.prepare(`SELECT revision FROM user_personal_data_revisions WHERE user_id = 'settings-user'`).get() as { revision: number };
+  assert.equal(afterSuccess.revision, 1);
+  await assert.rejects(
+    updateUserSettings(db.asD1(), "settings-user", current.settings, current.revision),
+    (error: Error & { status?: number }) => error.status === 409,
+  );
+  const afterConflict = db.database.prepare(`SELECT revision FROM user_personal_data_revisions WHERE user_id = 'settings-user'`).get() as { revision: number };
+  assert.equal(afterConflict.revision, 1);
 });

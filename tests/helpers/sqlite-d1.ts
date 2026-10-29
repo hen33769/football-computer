@@ -5,10 +5,12 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 export class SqliteD1 {
   readonly database = new DatabaseSync(":memory:");
   beforeBatch?: () => void;
+  private batchQueue: Promise<void> = Promise.resolve();
 
   constructor() {
     for (const migration of [
       "0000_white_iron_lad",
+      "0001_colorful_franklin_richards",
       "0002_modular_cloud_data",
       "0003_order_payment_status",
       "0004_shared_team_names",
@@ -20,6 +22,7 @@ export class SqliteD1 {
       "0010_team_tag_mutation_tokens",
       "0011_order_tax",
       "0012_order_confirmation",
+      "0013_finance_correction_ledger",
     ]) {
       this.database.exec(readFileSync(new URL(`../../drizzle/${migration}.sql`, import.meta.url), "utf8"));
     }
@@ -47,17 +50,22 @@ export class SqliteD1 {
   }
 
   async batch(statements: ReturnType<SqliteD1["prepare"]>[]) {
-    this.beforeBatch?.();
-    this.database.exec("BEGIN");
-    try {
-      const results = [];
-      for (const statement of statements) results.push(await statement.all());
-      this.database.exec("COMMIT");
-      return results;
-    } catch (error) {
-      this.database.exec("ROLLBACK");
-      throw error;
-    }
+    const execute = async () => {
+      this.beforeBatch?.();
+      this.database.exec("BEGIN");
+      try {
+        const results = [];
+        for (const statement of statements) results.push(await statement.all());
+        this.database.exec("COMMIT");
+        return results;
+      } catch (error) {
+        this.database.exec("ROLLBACK");
+        throw error;
+      }
+    };
+    const pending = this.batchQueue.then(execute, execute);
+    this.batchQueue = pending.then(() => undefined, () => undefined);
+    return pending;
   }
 
   asD1() {

@@ -2,6 +2,12 @@
 
 import { requestJson } from "./http";
 import type { FinanceTrendDateRange, FinanceTrendResponse } from "../finance-trend";
+import type {
+  CreateFinanceCorrectionInput,
+  FinanceCorrectionKind,
+  FinanceCorrectionPage,
+  FinanceCorrectionEntry,
+} from "../finance-corrections";
 
 export type FinanceResponse = {
   expense: {
@@ -18,6 +24,13 @@ export type FinanceResponse = {
   };
   revision: number;
   updatedAt: string;
+  activeLedgerId: string;
+  dataRevision: number;
+};
+
+export type FinanceCorrectionMutationResponse = {
+  finance: FinanceResponse;
+  entry: FinanceCorrectionEntry;
 };
 
 export function getFinance() {
@@ -40,4 +53,26 @@ export function updateFinanceCorrections(
     method: "PATCH",
     body: JSON.stringify({ ...correction, expectedRevision }),
   });
+}
+
+export function createFinanceCorrection(input: CreateFinanceCorrectionInput) {
+  return requestJson<FinanceCorrectionMutationResponse>("/api/finance/corrections", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function getFinanceCorrections(query: {
+  kind?: FinanceCorrectionKind;
+  ledgerId?: string;
+  cursor?: string;
+  limit?: number;
+} = {}) {
+  const search = new URLSearchParams();
+  if (query.kind) search.set("kind", query.kind);
+  if (query.ledgerId) search.set("ledger_id", query.ledgerId);
+  if (query.cursor) search.set("cursor", query.cursor);
+  if (query.limit) search.set("limit", String(query.limit));
+  const suffix = search.toString();
+  return requestJson<FinanceCorrectionPage>(`/api/finance/corrections${suffix ? `?${suffix}` : ""}`);
 }

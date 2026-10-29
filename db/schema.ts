@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, sqliteTable, text, uniqueIndex, type AnySQLiteColumn } from "drizzle-orm/sqlite-core";
 
 export const users = sqliteTable("users", {
   id: text("id").primaryKey(),
@@ -56,7 +56,82 @@ export const userFinanceCorrections = sqliteTable("user_finance_corrections", {
   incomeCorrectionCents: integer("income_correction_cents").notNull().default(0),
   revision: integer("revision").notNull().default(0),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  activeLedgerId: text("active_ledger_id"),
 });
+
+export const userPersonalDataRevisions = sqliteTable("user_personal_data_revisions", {
+  userId: text("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  revision: integer("revision").notNull().default(0),
+  originId: text("origin_id").notNull().unique(),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const userFinanceLedgers = sqliteTable("user_finance_ledgers", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  status: text("status", { enum: ["active", "archived"] }).notNull().default("active"),
+  source: text("source").notNull().default("native"),
+  restoreOperationId: text("restore_operation_id"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  archivedAt: text("archived_at"),
+}, (table) => [
+  index("user_finance_ledgers_user_status_idx").on(table.userId, table.status, table.createdAt),
+  uniqueIndex("user_finance_ledgers_active_unique").on(table.userId).where(sql`${table.status} = 'active'`),
+]);
+
+export const userFinanceCorrectionEntries = sqliteTable("user_finance_correction_entries", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  ledgerId: text("ledger_id").notNull().references(() => userFinanceLedgers.id, { onDelete: "cascade" }),
+  originId: text("origin_id").notNull(),
+  originEntryId: text("origin_entry_id").notNull(),
+  kind: text("kind", { enum: ["expense", "income"] }).notNull(),
+  deltaCents: integer("delta_cents").notNull(),
+  effectiveDate: text("effective_date"),
+  note: text("note").notNull().default(""),
+  source: text("source").notNull().default("manual"),
+  requestId: text("request_id"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  sourceCreatedAt: text("source_created_at"),
+  correctionBeforeCents: integer("correction_before_cents").notNull(),
+  correctionAfterCents: integer("correction_after_cents").notNull(),
+  revisionAfter: integer("revision_after").notNull(),
+  adjustsEntryId: text("adjusts_entry_id").references(
+    (): AnySQLiteColumn => userFinanceCorrectionEntries.id,
+    { onDelete: "restrict" },
+  ),
+}, (table) => [
+  uniqueIndex("user_finance_entries_origin_unique").on(table.ledgerId, table.originId, table.originEntryId),
+  uniqueIndex("user_finance_entries_request_unique").on(table.userId, table.requestId).where(sql`${table.requestId} IS NOT NULL`),
+  index("user_finance_entries_history_idx").on(table.userId, table.ledgerId, table.createdAt, table.id),
+  index("user_finance_entries_trend_idx").on(table.ledgerId, table.effectiveDate, table.kind),
+]);
+
+export const userDataImportOperations = sqliteTable("user_data_import_operations", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  requestId: text("request_id").notNull(),
+  payloadDigest: text("payload_digest").notNull(),
+  strategy: text("strategy", { enum: ["merge", "replace"] }).notNull(),
+  expectedDataRevision: integer("expected_data_revision").notNull(),
+  status: text("status", { enum: ["staging", "completed", "failed"] }).notNull().default("staging"),
+  resultJson: text("result_json"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("user_data_import_operations_request_unique").on(table.userId, table.requestId),
+  index("user_data_import_operations_status_idx").on(table.status, table.updatedAt),
+]);
+
+export const userDataImportStaging = sqliteTable("user_data_import_staging", {
+  operationId: text("operation_id").notNull().references(() => userDataImportOperations.id, { onDelete: "cascade" }),
+  recordKind: text("record_kind").notNull(),
+  recordKey: text("record_key").notNull(),
+  payloadJson: text("payload_json").notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.operationId, table.recordKind, table.recordKey] }),
+  index("user_data_import_staging_operation_idx").on(table.operationId, table.recordKind),
+]);
 
 export const userMatchNotes = sqliteTable("user_match_notes", {
   userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),

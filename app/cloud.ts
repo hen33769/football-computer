@@ -41,6 +41,8 @@ export type CloudPersonalData = {
     expenseCorrection?: number;
     incomeCorrection?: number;
     revision?: number;
+    activeLedgerId?: string;
+    dataRevision?: number;
   };
   settings: AppSettings;
   settingsRevision?: number;

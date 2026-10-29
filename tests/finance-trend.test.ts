@@ -6,8 +6,9 @@ import {
   isFinanceTrendDate,
   normalizeFinanceTrendDateRange,
 } from "../app/finance-trend";
-import { getFinanceTrend } from "../app/server/finance-service";
+import { createFinanceCorrectionEntry, getFinanceTrend } from "../app/server/finance-service";
 import type { SavedSlip } from "../app/types";
+import { SqliteD1 } from "./helpers/sqlite-d1";
 
 const paidOrder = (overrides: Partial<SavedSlip> = {}): SavedSlip => ({
   id: "order-1",
@@ -153,49 +154,45 @@ test("仅有纠错值时也返回累计初始点", () => {
 });
 
 test("云端趋势查询绑定用户和截止日期，并把纠错值计入累计初值", async () => {
-  let eventSql = "";
-  const boundArgs: unknown[][] = [];
-  const d1 = {
-    prepare: (value: string) => {
-      const isCorrection = value.includes("FROM user_finance_corrections");
-      if (!isCorrection) eventSql = value;
-      const statement = {
-        bind: (...values: unknown[]) => {
-          boundArgs.push(values);
-          return statement;
-        },
-        all: async () => ({ results: [{ date: "2026-08-25", expense_cents: 1234, tax_cents: 678, income_cents: 5000 }] }),
-        first: async () => ({
-          expense_correction_cents: 125,
-          income_correction_cents: 275,
-          revision: 1,
-          updated_at: "2026-08-24T16:00:00.000Z",
-        }),
-      };
-      return statement;
-    },
-  };
+  const db = new SqliteD1();
+  db.database.exec(`
+    INSERT INTO users (id, auth_subject, account, normalized_account)
+    VALUES ('user-1','subject-1','user-1','user-1');
+    INSERT INTO user_orders (
+      user_id, order_id, name, saved_at, settled_at, settled_prize_cents, tax_cents,
+      payment_status, stake_cents, status, match_ids_json, data_json, updated_at
+    ) VALUES (
+      'user-1','order-1','测试','2026-08-24T16:30:00.000Z','2026-08-24T17:00:00.000Z',5678,678,
+      'paid',1234,'success','[]','{}','2026-08-24T17:00:00.000Z'
+    )
+  `);
+  const expense = await createFinanceCorrectionEntry(db.asD1(), "user-1", {
+    kind: "expense", deltaCents: 125, effectiveDate: null, note: "", requestId: "expense", expectedRevision: 0,
+  }, new Date("2026-08-24T16:00:00.000Z"));
+  await createFinanceCorrectionEntry(db.asD1(), "user-1", {
+    kind: "income", deltaCents: 275, effectiveDate: null, note: "", requestId: "income", expectedRevision: expense.finance.revision,
+  }, new Date("2026-08-24T16:00:00.000Z"));
 
-  const response = await getFinanceTrend(d1 as unknown as D1Database, "user-1", {
+  const response = await getFinanceTrend(db.asD1(), "user-1", {
     startDate: "2026-08-25",
     endDate: "2026-08-25",
   });
 
-  assert.match(eventSql, /date\(saved_at, '\+8 hours'\)/);
-  assert.match(eventSql, /date\(settled_at, '\+8 hours'\)/);
-  assert.doesNotMatch(eventSql, /event_date >=/);
-  assert.deepEqual(boundArgs, [["user-1", "2026-08-25"], ["user-1"]]);
   assert.deepEqual(response, {
     points: [{
       date: "2026-08-25",
       expense: 12.34,
-      tax: 6.78,
-      income: 50,
-      profit: 37.66,
+      orderExpense: 12.34,
+      expenseCorrection: 0,
+      tax: 0,
+      income: 56.78,
+      orderIncome: 56.78,
+      incomeCorrection: 0,
+      profit: 44.44,
       cumulativeExpense: 13.59,
-      cumulativeTax: 6.78,
-      cumulativeIncome: 52.75,
-      cumulativeProfit: 39.16,
+      cumulativeTax: 0,
+      cumulativeIncome: 59.53,
+      cumulativeProfit: 45.94,
     }],
   });
 });

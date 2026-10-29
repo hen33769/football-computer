@@ -102,10 +102,33 @@ import { applyOrderSyncIntent, type CloudOrderMutationResult, type OrderSyncInte
 import { localCache, sessionCache } from "./browser-storage";
 import { MatchPreviewModal, OfficialTrendModal } from "./FootballInsights";
 import { FinanceTrendModal } from "./FinanceTrendModal";
+import { FinanceCorrectionsModal } from "./components/FinanceCorrectionsModal";
 import { LeagueAccuracyModal } from "./LeagueAccuracyModal";
 import { buildLeagueAccuracyStats, formatLeagueHitRate, summarizeOrderHitRate } from "./league-accuracy";
 import { buildFinanceTrendFromOrders, shanghaiDateKey } from "./finance-trend";
 import { getFinanceTrend } from "./api-client/finance";
+import type {
+  CreateFinanceCorrectionInput,
+  FinanceCorrectionKind,
+  FinanceCorrectionPage,
+} from "./finance-corrections";
+import type {
+  BackupImportPreview,
+  BackupImportStrategy,
+  BackupInitialBalanceStrategy,
+  FullDataBackupV6,
+} from "./data-backup";
+import {
+  applyGuestFullDataImport,
+  createGuestFinanceCorrection,
+  exportGuestFullDataBackup,
+  GUEST_FINANCE_LEDGER_KEY,
+  guestCorrectionCents,
+  listGuestFinanceCorrections,
+  loadGuestFinanceLedger,
+  previewGuestFullDataImport,
+  type GuestFinanceLedgerState,
+} from "./guest-finance-ledger";
 import { orderFilterIncomeBreakdown, orderLedgerBreakdown, orderLedgerIncome, orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "./imports";
 import {
   getOrderWithdrawalType,
@@ -208,6 +231,20 @@ const RESPONSIVE_DATE_PICKER_CLASS_NAMES = { popup: { root: "responsive-date-pic
 export type AppView = "betting" | "orders" | "settings";
 type DataTransferMode = "orders" | "settings" | "matches" | "full";
 type ImportStrategy = "merge" | "replace";
+type FullBackupImportResult = {
+  orders: number;
+  correctionsAdded: number;
+  personal: CloudPersonalData;
+  restoredMatches: MatchItem[];
+  matchesError: string;
+};
+type BackupImportDialogState = {
+  backup: unknown;
+  fileName: string;
+  requestId: string;
+  preview: BackupImportPreview;
+  initialBalanceStrategy: BackupInitialBalanceStrategy;
+};
 type OrderStatusFilter = "success" | "hopeful" | "failed";
 type CloudOrderQuery = {
   from?: string | null;
@@ -1189,7 +1226,11 @@ function InnerFootballApp({
   onTeamTagMemberNoteSave,
   onTeamTagShare,
   onTeamTagImport,
-  onCloudFinanceCorrectionChange,
+  onCloudFinanceCorrectionCreate,
+  onCloudFinanceCorrectionsLoad,
+  onCloudFullBackupExport,
+  onCloudFullBackupPreview,
+  onCloudFullBackupImport,
   onCloudOrderMutation,
   onCloudOrdersQueryChange,
   onCloudMatchesChange,
@@ -1216,7 +1257,18 @@ function InnerFootballApp({
   onTeamTagMemberNoteSave: (tagId: string, memberId: string, note: string, expectedRevision: number) => Promise<TeamTag>;
   onTeamTagShare: (tag: Pick<TeamTag, "id" | "revision">) => Promise<TeamTagShare>;
   onTeamTagImport: (code: string, requestId: string) => Promise<TeamTag>;
-  onCloudFinanceCorrectionChange: (correction: { expenseCorrection: number; incomeCorrection: number }) => Promise<CloudPersonalData["finance"]>;
+  onCloudFinanceCorrectionCreate: (input: CreateFinanceCorrectionInput) => Promise<CloudPersonalData["finance"]>;
+  onCloudFinanceCorrectionsLoad: (query: { kind?: FinanceCorrectionKind; ledgerId?: string; cursor?: string; limit?: number }) => Promise<FinanceCorrectionPage>;
+  onCloudFullBackupExport: () => Promise<FullDataBackupV6>;
+  onCloudFullBackupPreview: (backup: unknown, strategy: BackupImportStrategy) => Promise<BackupImportPreview>;
+  onCloudFullBackupImport: (input: {
+    backup: unknown;
+    strategy: BackupImportStrategy;
+    initialBalanceStrategy: BackupInitialBalanceStrategy;
+    requestId: string;
+    expectedDataRevision: number;
+    backupDigest: string;
+  }) => Promise<FullBackupImportResult>;
   onCloudOrderMutation: (intent: OrderSyncIntent) => Promise<CloudOrderMutationResult>;
   onCloudOrdersQueryChange: (query: CloudOrderQuery) => Promise<CloudOrderQueryResult>;
   onCloudMatchesChange: (matches: MatchItem[]) => void;
@@ -1305,6 +1357,12 @@ function InnerFootballApp({
   const [moreMatchId, setMoreMatchId] = useState<string | null>(null);
   const [trendMatchId, setTrendMatchId] = useState<string | null>(null);
   const [financeTrendOpen, setFinanceTrendOpen] = useState(false);
+  const [financeCorrectionsModal, setFinanceCorrectionsModal] = useState<{
+    view: "create" | "history";
+    kind: FinanceCorrectionKind;
+  } | null>(null);
+  const [backupImportDialog, setBackupImportDialog] = useState<BackupImportDialogState | null>(null);
+  const [backupImporting, setBackupImporting] = useState(false);
   const [leagueAccuracyOpen, setLeagueAccuracyOpen] = useState(false);
   const [leagueAccuracyExcludeScore, setLeagueAccuracyExcludeScore] = useState(true);
   const [leagueAccuracyCountDuplicates, setLeagueAccuracyCountDuplicates] = useState(true);
@@ -1374,8 +1432,6 @@ function InnerFootballApp({
   const [payingOrderIds, setPayingOrderIds] = useState<string[]>([]);
   const [withdrawingOrderIds, setWithdrawingOrderIds] = useState<string[]>([]);
   const [deletingOrderIds, setDeletingOrderIds] = useState<string[]>([]);
-  const [expenseSaving, setExpenseSaving] = useState(false);
-  const [incomeSaving, setIncomeSaving] = useState(false);
   const repairedOrdersSentRef = useRef(false);
   const [matchResults, setMatchResults] = useState<MatchResults>({});
   const [bettingResultFetchingMatchIds, setBettingResultFetchingMatchIds] = useState<string[]>([]);
@@ -1418,17 +1474,33 @@ function InnerFootballApp({
     if (localCache.getItem(PROFIT_KEY) !== null && Number.isFinite(oldProfit)) return Math.max(0, oldProfit + derivedExpense);
     return orderLedgerTotals(savedSlips).income;
   });
+  const [guestFinanceLedger, setGuestFinanceLedger] = useState<GuestFinanceLedgerState | null>(() => {
+    if (!isGuestMode) return null;
+    const orders = orderLedgerTotals(savedSlips);
+    return loadGuestFinanceLedger({
+      expenseCorrectionCents: Math.round((expenseTotal - orders.expense) * 100),
+      incomeCorrectionCents: Math.round((incomeTotal - orders.income) * 100),
+    });
+  });
   const [expenseCorrection, setExpenseCorrection] = useState(() => (
-    isCloudMode && cloudPersonal ? cloudPersonal.finance.expenseCorrection ?? 0 : 0
+    isCloudMode && cloudPersonal
+      ? cloudPersonal.finance.expenseCorrection ?? 0
+      : guestFinanceLedger ? guestCorrectionCents(guestFinanceLedger, "expense") / 100 : 0
   ));
   const [incomeCorrection, setIncomeCorrection] = useState(() => (
-    isCloudMode && cloudPersonal ? cloudPersonal.finance.incomeCorrection ?? 0 : 0
+    isCloudMode && cloudPersonal
+      ? cloudPersonal.finance.incomeCorrection ?? 0
+      : guestFinanceLedger ? guestCorrectionCents(guestFinanceLedger, "income") / 100 : 0
   ));
   const [expenseOrdersTotal, setExpenseOrdersTotal] = useState(() => (
-    isCloudMode && cloudPersonal ? cloudPersonal.finance.expenseOrders ?? Math.max(0, cloudPersonal.finance.expenseTotal - (cloudPersonal.finance.expenseCorrection ?? 0)) : 0
+    isCloudMode && cloudPersonal
+      ? cloudPersonal.finance.expenseOrders ?? Math.max(0, cloudPersonal.finance.expenseTotal - (cloudPersonal.finance.expenseCorrection ?? 0))
+      : orderLedgerTotals(savedSlips).expense
   ));
   const [incomeOrdersTotal, setIncomeOrdersTotal] = useState(() => (
-    isCloudMode && cloudPersonal ? cloudPersonal.finance.incomeOrders ?? Math.max(0, cloudPersonal.finance.incomeTotal - (cloudPersonal.finance.incomeCorrection ?? 0)) : 0
+    isCloudMode && cloudPersonal
+      ? cloudPersonal.finance.incomeOrders ?? Math.max(0, cloudPersonal.finance.incomeTotal - (cloudPersonal.finance.incomeCorrection ?? 0))
+      : orderLedgerTotals(savedSlips).income
   ));
   const [incomeGrossOrdersTotal, setIncomeGrossOrdersTotal] = useState(() => (
     isCloudMode && cloudPersonal ? cloudPersonal.finance.incomeGrossOrders ?? cloudPersonal.finance.incomeOrders ?? 0 : 0
@@ -1436,10 +1508,6 @@ function InnerFootballApp({
   const [incomeTaxTotal, setIncomeTaxTotal] = useState(() => (
     isCloudMode && cloudPersonal ? cloudPersonal.finance.incomeTax ?? 0 : 0
   ));
-  const [expenseEditing, setExpenseEditing] = useState(false);
-  const [incomeEditing, setIncomeEditing] = useState(false);
-  const [expenseDraft, setExpenseDraft] = useState(0);
-  const [incomeDraft, setIncomeDraft] = useState(0);
   const [saveOpen, setSaveOpen] = useState(() => Boolean(accountLoginBetDraft && cloudAccount));
   const [saveName, setSaveName] = useState("");
   const saveNameInputRef = useRef<InputRef>(null);
@@ -1562,6 +1630,52 @@ function InnerFootballApp({
     setIncomeGrossOrdersTotal(finance.incomeGrossOrders ?? finance.incomeOrders ?? 0);
     setIncomeTaxTotal(finance.incomeTax ?? 0);
   }, []);
+
+  useEffect(() => {
+    if (!isCloudMode || !cloudPersonal) return;
+    let cancelled = false;
+    queueMicrotask(() => { if (!cancelled) applyCloudFinance(cloudPersonal.finance); });
+    return () => { cancelled = true; };
+  }, [applyCloudFinance, cloudPersonal, isCloudMode]);
+
+  const applyGuestFinance = useCallback((state: GuestFinanceLedgerState) => {
+    const orders = orderLedgerBreakdown(savedSlips);
+    const nextExpenseCorrection = guestCorrectionCents(state, "expense") / 100;
+    const nextIncomeCorrection = guestCorrectionCents(state, "income") / 100;
+    setGuestFinanceLedger(state);
+    setExpenseCorrection(nextExpenseCorrection);
+    setIncomeCorrection(nextIncomeCorrection);
+    setExpenseOrdersTotal(orders.expense);
+    setIncomeOrdersTotal(orders.income);
+    setIncomeGrossOrdersTotal(orders.grossIncome);
+    setIncomeTaxTotal(orders.tax);
+    setExpenseTotal(orders.expense + nextExpenseCorrection);
+    setIncomeTotal(orders.income + nextIncomeCorrection);
+  }, [savedSlips]);
+
+  useEffect(() => {
+    if (!isGuestMode) return;
+    let cancelled = false;
+    const syncFromStorage = () => {
+      if (cancelled) return;
+      const orders = orderLedgerTotals(savedSlips);
+      applyGuestFinance(loadGuestFinanceLedger({
+        expenseCorrectionCents: Math.round((expenseTotal - orders.expense) * 100),
+        incomeCorrectionCents: Math.round((incomeTotal - orders.income) * 100),
+      }));
+    };
+    queueMicrotask(syncFromStorage);
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === GUEST_FINANCE_LEDGER_KEY) syncFromStorage();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("storage", onStorage);
+    };
+    // 初次迁移才读取旧累计值；之后由版本化账本和 storage 事件驱动。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applyGuestFinance, isGuestMode, savedSlips]);
 
   const currentCloudOrderQuery = useCallback((): CloudOrderQuery => ({
     from: orderDateRange?.[0] ?? null,
@@ -1688,16 +1802,6 @@ function InnerFootballApp({
     sessionCache.removeItem(CLOUD_STORAGE_KEYS.loginBetDraft);
     message.success("账号已登录，刚才选择的比赛和串关已保留");
   }, [accountLoginBetDraft, cloudAccount, message]);
-
-  useEffect(() => {
-    if (!isGuestMode) return;
-    localCache.setItem(EXPENSE_KEY, String(expenseTotal));
-  }, [expenseTotal, isGuestMode]);
-
-  useEffect(() => {
-    if (!isGuestMode) return;
-    localCache.setItem(INCOME_KEY, String(incomeTotal));
-  }, [incomeTotal, isGuestMode]);
 
   useEffect(() => {
     if (!isGuestMode || repairedOrdersSentRef.current || initialSavedSlipLoad.repairedOrders.length === 0) return;
@@ -2009,18 +2113,21 @@ function InnerFootballApp({
   const prizeRangeMetrics = useMemo(() => calculatePrizeRangeMetrics(prizeRange, stake, multiple), [prizeRange, stake, multiple]);
   const currentPrize = useMemo(() => calculateCurrentPrize(matches, activePasses, multiple, hits), [matches, activePasses, multiple, hits]);
   const currentProfit = currentPrize - stake;
+  const currentOrderLedgerTotals = useMemo(() => orderLedgerTotals(savedSlips), [savedSlips]);
   const netProfit = incomeTotal - expenseTotal;
   const loadFinanceTrend = useCallback(() => {
     if (isCloudMode) return getFinanceTrend();
-    const orderTotals = orderLedgerTotals(savedSlips);
+    const activeEntries = guestFinanceLedger?.entries.filter((entry) => entry.ledgerId === guestFinanceLedger.activeLedgerId) ?? [];
+    const initialExpenseCents = activeEntries.filter((entry) => entry.kind === "expense" && !entry.effectiveDate).reduce((total, entry) => total + entry.deltaCents, 0);
+    const initialIncomeCents = activeEntries.filter((entry) => entry.kind === "income" && !entry.effectiveDate).reduce((total, entry) => total + entry.deltaCents, 0);
     return Promise.resolve({
       points: buildFinanceTrendFromOrders(savedSlips, {
-        expenseCorrection: expenseTotal - orderTotals.expense,
-        incomeCorrection: incomeTotal - orderTotals.income,
+        expenseCorrection: initialExpenseCents / 100,
+        incomeCorrection: initialIncomeCents / 100,
         date: shanghaiDateKey(new Date().toISOString()),
-      }),
+      }, {}, activeEntries),
     });
-  }, [expenseTotal, incomeTotal, isCloudMode, savedSlips]);
+  }, [guestFinanceLedger, isCloudMode, savedSlips]);
   const orderDetailStake = orderDetail ? calculateStake(orderDetail.matches, orderDetail.passes, orderDetail.multiple) : 0;
   const orderDetailPrize = orderDetail ? calculateCurrentPrize(orderDetail.matches, orderDetail.passes, orderDetail.multiple, orderHits) : 0;
   const orderDetailTaxBase = orderDetail?.settledAt ? orderDetail.settledPrize ?? orderDetailPrize : orderDetailPrize;
@@ -3558,40 +3665,49 @@ function InnerFootballApp({
     message.success("页面已保存，打开 HTML 文件即可进入在线正式版");
   };
 
-  const exportData = (mode: DataTransferMode) => {
-    const exportedAt = new Date().toISOString();
-    const cachedMatches = loadCachedMatches();
-    const data = mode === "orders"
+  const exportData = async (mode: DataTransferMode) => {
+    try {
+      const exportedAt = new Date().toISOString();
+      const cachedMatches = loadCachedMatches();
+      if (mode === "full") {
+        const payload = isCloudMode
+          ? await onCloudFullBackupExport()
+          : guestFinanceLedger
+            ? exportGuestFullDataBackup(guestFinanceLedger, savedSlips, appSettings, cachedMatches)
+            : null;
+        if (!payload) throw new Error("游客账本尚未初始化");
+        downloadJson(payload, `SMGR-完整数据-${payload.exportedAt.slice(0, 10)}.json`);
+        notification.success({
+          title: "完整数据导出完成",
+          description: `已导出 ${payload.data.orders.length} 个订单、${payload.data.matches.length} 场比赛、设置与 ${payload.data.finance.entries.length} 条纠错记录`,
+          placement: "bottomRight",
+        });
+        return;
+      }
+      const data = mode === "orders"
       ? { orders: JSON.parse(JSON.stringify(savedSlips)) as SavedSlip[] }
       : mode === "settings"
         ? { settings: normalizeAppSettings(appSettings) }
-        : mode === "matches"
-          ? { matches: cachedMatches }
-        : {
-            orders: JSON.parse(JSON.stringify(savedSlips)) as SavedSlip[],
-            settings: normalizeAppSettings(appSettings),
-            finance: { expenseTotal, incomeTotal },
-            matches: cachedMatches,
-          };
-    const payload = {
-      version: 5,
-      kind: mode,
-      exportedAt,
-      data,
-    };
-    const label = mode === "orders" ? "订单" : mode === "settings" ? "设置" : mode === "matches" ? "比赛数据" : "完整数据";
-    downloadJson(payload, `SMGR-${label}-${exportedAt.slice(0, 10)}.json`);
-    notification.success({
-      message: `${label}导出完成`,
-      description: mode === "orders"
-        ? `已导出 ${savedSlips.length} 个订单`
-        : mode === "settings"
-          ? "已导出当前应用设置"
-          : mode === "matches"
-            ? `已导出 ${cachedMatches.length} 场比赛`
-            : `已导出 ${savedSlips.length} 个订单、${cachedMatches.length} 场比赛、设置与账本`,
-      placement: "bottomRight",
-    });
+        : { matches: cachedMatches };
+      const payload = { version: 5, kind: mode, exportedAt, data };
+      const label = mode === "orders" ? "订单" : mode === "settings" ? "设置" : "比赛数据";
+      downloadJson(payload, `SMGR-${label}-${exportedAt.slice(0, 10)}.json`);
+      notification.success({
+        title: `${label}导出完成`,
+        description: mode === "orders"
+          ? `已导出 ${savedSlips.length} 个订单`
+          : mode === "settings"
+            ? "已导出当前应用设置"
+            : `已导出 ${cachedMatches.length} 场比赛`,
+        placement: "bottomRight",
+      });
+    } catch (error) {
+      notification.error({
+        title: "数据导出失败",
+        description: error instanceof Error ? error.message : "无法生成备份文件",
+        placement: "bottomRight",
+      });
+    }
   };
 
   const importDataJson = async (file: File, mode: DataTransferMode, strategy: ImportStrategy) => {
@@ -3662,58 +3778,18 @@ function InnerFootballApp({
       });
 
       if (mode === "full") {
-        if (!data.settings || typeof data.settings !== "object") throw new Error("完整数据中缺少 settings 对象");
-        const finance = data.finance && typeof data.finance === "object" ? data.finance as Record<string, unknown> : null;
-        const importedExpense = Number(finance?.expenseTotal);
-        const importedIncome = Number(finance?.incomeTotal);
-        if (!finance || !Number.isFinite(importedExpense) || !Number.isFinite(importedIncome) || importedExpense < 0 || importedIncome < 0) {
-          throw new Error("完整数据中的 finance 账本无效");
-        }
-        const orderMerge = unionSavedOrders(savedSlips, incomingOrders);
-        const restoredOrders = withCurrentOrderVersions(strategy === "merge" ? orderMerge.nextOrders : sortSavedOrders(incomingOrders));
-        const restoredSettings = strategy === "merge"
-          ? unionAppSettings(appSettings, data.settings)
-          : normalizeAppSettings(data.settings);
-        const canImportMatches = Boolean(cloudAccount);
-        const rawMatches = data.matches;
-        if (canImportMatches && (!Array.isArray(rawMatches) || !rawMatches.every(isExportedMatch))) throw new Error("完整数据中的 matches 比赛数据无效");
-        const restoredMatches = canImportMatches ? prepareMatches(strategy) : loadCachedMatches();
-        const nextExpense = strategy === "merge" ? Math.max(0, expenseTotal + orderMerge.expenseDelta) : importedExpense;
-        const nextIncome = strategy === "merge" ? Math.max(0, incomeTotal + orderMerge.incomeDelta) : importedIncome;
-        modal.confirm({
-          title: strategy === "merge" ? "新增完整数据？" : "覆盖完整数据？",
-          content: strategy === "merge"
-            ? `将新增 ${orderMerge.added} 个、更新 ${orderMerge.updated} 个订单，并以 JSON 数据更新设置${canImportMatches ? isGuestMode ? "与本地比赛" : "与公共比赛" : ""}；文件缺项继续使用现有数据。`
-            : `将覆盖当前${isGuestMode ? "游客" : "账号"}的订单、设置和账本，恢复 ${restoredOrders.length} 个订单${canImportMatches ? `与 ${restoredMatches.length} 场${isGuestMode ? "本地" : "公共"}比赛` : "；比赛保持不变"}。`,
-          okText: strategy === "merge" ? "新增合并" : "覆盖恢复",
-          cancelText: "取消",
-          okButtonProps: { danger: strategy === "replace" },
-          onOk: async () => {
-            const restoredOrderIds = new Set(restoredOrders.flatMap((order) => order.id ? [order.id] : []));
-            const incomingOrderIds = new Set(incomingOrders.flatMap((order) => order.id ? [order.id] : []));
-            const committedOrders = await commitOrderMutation({
-              upsertOrders: strategy === "merge"
-                ? restoredOrders.filter((order) => Boolean(order.id && incomingOrderIds.has(order.id)))
-                : restoredOrders,
-              deleteOrderIds: strategy === "replace"
-                ? savedSlips.flatMap((order) => order.id && !restoredOrderIds.has(order.id) ? [order.id] : [])
-                : [],
-            });
-            if (!committedOrders) throw new Error("订单同步失败");
-            setAppSettings(persistAppSettings(restoredSettings));
-            if (isGuestMode) {
-              setExpenseTotal(nextExpense);
-              setIncomeTotal(nextIncome);
-            }
-            if (canImportMatches) applyMatches(restoredMatches);
-            notification.success({
-              message: strategy === "merge" ? "完整数据合并完成" : "完整数据覆盖完成",
-              description: strategy === "merge"
-                ? `新增 ${orderMerge.added} 个、更新 ${orderMerge.updated} 个订单，当前${isGuestMode ? "游客" : "账号"}共有 ${restoredOrders.length} 个订单`
-                : `已恢复当前${isGuestMode ? "游客" : "账号"}的 ${restoredOrders.length} 个订单、设置与账本${canImportMatches ? `，并更新 ${restoredMatches.length} 场${isGuestMode ? "本地" : "公共"}比赛` : ""}`,
-              placement: "bottomRight",
-            });
-          },
+        const preview = isCloudMode
+          ? await onCloudFullBackupPreview(rawPayload, strategy)
+          : guestFinanceLedger
+            ? await previewGuestFullDataImport(guestFinanceLedger, savedSlips, appSettings, rawPayload, strategy)
+            : null;
+        if (!preview) throw new Error("游客账本尚未初始化");
+        setBackupImportDialog({
+          backup: rawPayload,
+          fileName: file.name,
+          requestId: crypto.randomUUID(),
+          preview,
+          initialBalanceStrategy: "keep-current",
         });
         return;
       }
@@ -3757,6 +3833,115 @@ function InnerFootballApp({
     }
   };
 
+  const commitFullBackupImport = async () => {
+    const dialog = backupImportDialog;
+    if (!dialog || backupImporting) return;
+    if (dialog.preview.finance.conflicts > 0) {
+      message.error("备份中存在同 ID 但内容不同的纠错记录，不能导入");
+      return;
+    }
+    setBackupImporting(true);
+    try {
+      if (isCloudMode) {
+        const result = await onCloudFullBackupImport({
+          backup: dialog.backup,
+          strategy: dialog.preview.strategy,
+          initialBalanceStrategy: dialog.initialBalanceStrategy,
+          requestId: dialog.requestId,
+          expectedDataRevision: dialog.preview.expectedDataRevision,
+          backupDigest: dialog.preview.backupDigest,
+        });
+        const personal = result.personal;
+        const nextOrders = ensureOrderIds(personal.orders);
+        setSavedSlips(nextOrders);
+        setCloudOrderTotal(personal.orderTotal ?? nextOrders.length);
+        setCloudUnpaidHopefulCount(personal.unpaidHopefulCount ?? nextOrders.filter(isOrderUnpaidHopeful).length);
+        setCloudPendingSettlementCount(personal.pendingSettlementCount ?? nextOrders.filter(isOrderPendingSettlement).length);
+        setAppSettings(normalizeAppSettings(personal.settings));
+        applyCloudFinance(personal.finance);
+        if (!result.matchesError) {
+          saveCachedMatches(result.restoredMatches);
+          matchesRef.current = result.restoredMatches;
+          if (!temporaryOrder) setMatches(result.restoredMatches);
+          setMatchDates(cachedMatchDates(result.restoredMatches));
+          setLeagueOptions(cachedLeagueOptions(result.restoredMatches));
+        }
+        setBackupImportDialog(null);
+        notification.success({
+          title: dialog.preview.strategy === "merge" ? "个人数据合并完成" : "个人数据覆盖完成",
+          description: `当前账号共有 ${personal.orderTotal ?? nextOrders.length} 个订单，本次新增 ${result.correctionsAdded} 条纠错记录。`,
+          placement: "bottomRight",
+        });
+        if (result.matchesError) {
+          notification.warning({
+            title: "公共比赛未能恢复",
+            description: `个人订单、设置和账本已成功恢复；公共比赛失败：${result.matchesError}`,
+            placement: "bottomRight",
+          });
+        } else {
+          notification.success({
+            title: "公共比赛恢复完成",
+            description: `当前共有 ${result.restoredMatches.length} 场公共比赛`,
+            placement: "bottomRight",
+          });
+        }
+        return;
+      }
+      if (!guestFinanceLedger) throw new Error("游客账本尚未初始化");
+      const restored = applyGuestFullDataImport(
+        guestFinanceLedger,
+        savedSlips,
+        appSettings,
+        dialog.backup,
+        dialog.preview.strategy,
+        dialog.initialBalanceStrategy,
+        dialog.preview.expectedDataRevision,
+        dialog.preview.backupDigest,
+      );
+      const currentMatches = temporaryOrder ? loadCachedMatches() : matchesRef.current;
+      const restoredMatches = dialog.preview.strategy === "merge"
+        ? unionSportteryMatchCache(currentMatches, restored.matches, new Date())
+        : mergeSportteryMatchCache([], restored.matches, new Date());
+      const orderBreakdown = orderLedgerBreakdown(restored.orders);
+      const expenseCorrectionValue = guestCorrectionCents(restored.state, "expense") / 100;
+      const incomeCorrectionValue = guestCorrectionCents(restored.state, "income") / 100;
+      setGuestFinanceLedger(restored.state);
+      setSavedSlips(restored.orders);
+      localCache.setItem(SAVED_KEY, JSON.stringify(restored.orders));
+      setCloudOrderTotal(restored.orders.length);
+      setCloudUnpaidHopefulCount(restored.orders.filter(isOrderUnpaidHopeful).length);
+      setCloudPendingSettlementCount(restored.orders.filter(isOrderPendingSettlement).length);
+      setAppSettings(persistAppSettings(restored.settings));
+      setExpenseOrdersTotal(orderBreakdown.expense);
+      setIncomeOrdersTotal(orderBreakdown.income);
+      setIncomeGrossOrdersTotal(orderBreakdown.grossIncome);
+      setIncomeTaxTotal(orderBreakdown.tax);
+      setExpenseCorrection(expenseCorrectionValue);
+      setIncomeCorrection(incomeCorrectionValue);
+      setExpenseTotal(orderBreakdown.expense + expenseCorrectionValue);
+      setIncomeTotal(orderBreakdown.income + incomeCorrectionValue);
+      saveCachedMatches(restoredMatches);
+      matchesRef.current = restoredMatches;
+      if (!temporaryOrder) setMatches(restoredMatches);
+      setMatchDates(cachedMatchDates(restoredMatches));
+      setLeagueOptions(cachedLeagueOptions(restoredMatches));
+      setBackupImportDialog(null);
+      notification.success({
+        title: dialog.preview.strategy === "merge" ? "游客完整数据合并完成" : "游客完整数据覆盖完成",
+        description: `已恢复 ${restored.orders.length} 个订单、${restoredMatches.length} 场比赛，本次新增 ${restored.correctionsAdded} 条纠错记录`,
+        placement: "bottomRight",
+      });
+    } catch (error) {
+      notification.error({
+        title: "完整数据导入失败",
+        description: error instanceof Error ? error.message : "无法提交该备份",
+        placement: "bottomRight",
+      });
+    } finally {
+      setBackupImporting(false);
+    }
+  };
+
   const toggleHit = (matchId: string, type: MarketType, optionId: string) => {
     setHits((current) => {
       const previous = current[matchId]?.[type];
@@ -3773,71 +3958,45 @@ function InnerFootballApp({
     message.success("已清空当前选择，比赛数据保留");
   };
 
-  const unlockExpenseEditor = () => {
-    setExpenseDraft(isCloudMode ? expenseCorrection : expenseTotal);
-    setExpenseEditing(true);
-  };
+  const unlockExpenseEditor = () => setFinanceCorrectionsModal({ view: "create", kind: "expense" });
 
-  const unlockIncomeEditor = () => {
-    setIncomeDraft(isCloudMode ? incomeCorrection : incomeTotal);
-    setIncomeEditing(true);
-  };
+  const unlockIncomeEditor = () => setFinanceCorrectionsModal({ view: "create", kind: "income" });
 
-  const saveExpenseCorrection = async () => {
-    if (expenseSaving) return;
-    const next = Number(expenseDraft || 0);
-    if (!Number.isFinite(next)) {
-      message.error("支出纠错值无效");
-      return;
-    }
+  const loadFinanceCorrections = useCallback((query: {
+    kind?: FinanceCorrectionKind;
+    ledgerId?: string;
+    cursor?: string;
+    limit?: number;
+  }) => {
+    if (isCloudMode) return onCloudFinanceCorrectionsLoad(query);
+    if (!guestFinanceLedger) return Promise.reject(new Error("游客账本尚未初始化"));
+    return Promise.resolve(listGuestFinanceCorrections(guestFinanceLedger, query));
+  }, [guestFinanceLedger, isCloudMode, onCloudFinanceCorrectionsLoad]);
+
+  const addFinanceCorrection = useCallback(async (input: CreateFinanceCorrectionInput) => {
     if (isCloudMode) {
-      setExpenseSaving(true);
-      try {
-        const finance = await onCloudFinanceCorrectionChange({ expenseCorrection: next, incomeCorrection });
-        applyCloudFinance(finance);
-        setExpenseEditing(false);
-        message.success("支出纠错值已保存");
-      } catch (error) {
-        message.error(error instanceof Error ? error.message : "支出纠错值保存失败");
-      } finally {
-        setExpenseSaving(false);
-      }
+      const finance = await onCloudFinanceCorrectionCreate(input);
+      applyCloudFinance(finance);
+      message.success("纠错记录已保存");
       return;
     }
-    setExpenseSaving(true);
-    setExpenseTotal(Math.max(0, next));
-    setExpenseEditing(false);
-    setExpenseSaving(false);
-    message.success("累计支出已保存并锁定");
-  };
-
-  const saveIncomeCorrection = async () => {
-    if (incomeSaving) return;
-    const next = Number(incomeDraft || 0);
-    if (!Number.isFinite(next)) {
-      message.error("收入纠错值无效");
-      return;
+    if (!guestFinanceLedger) throw new Error("游客账本尚未初始化");
+    const orders = orderLedgerTotals(savedSlips);
+    const latestLedger = loadGuestFinanceLedger({
+      expenseCorrectionCents: guestCorrectionCents(guestFinanceLedger, "expense"),
+      incomeCorrectionCents: guestCorrectionCents(guestFinanceLedger, "income"),
+    });
+    if (latestLedger.revision !== guestFinanceLedger.revision) {
+      applyGuestFinance(latestLedger);
+      throw new Error("游客账本已在其他标签页更新，请核对后重试");
     }
-    if (isCloudMode) {
-      setIncomeSaving(true);
-      try {
-        const finance = await onCloudFinanceCorrectionChange({ expenseCorrection, incomeCorrection: next });
-        applyCloudFinance(finance);
-        setIncomeEditing(false);
-        message.success("收入纠错值已保存");
-      } catch (error) {
-        message.error(error instanceof Error ? error.message : "收入纠错值保存失败");
-      } finally {
-        setIncomeSaving(false);
-      }
-      return;
-    }
-    setIncomeSaving(true);
-    setIncomeTotal(Math.max(0, next));
-    setIncomeEditing(false);
-    setIncomeSaving(false);
-    message.success("累计税后收入已保存并锁定");
-  };
+    const result = createGuestFinanceCorrection(latestLedger, input, {
+      expense: Math.round(orders.expense * 100),
+      income: Math.round(orders.income * 100),
+    });
+    applyGuestFinance(result.state);
+    message.success("纠错记录已保存");
+  }, [applyCloudFinance, applyGuestFinance, guestFinanceLedger, isCloudMode, message, onCloudFinanceCorrectionCreate, savedSlips]);
 
   const toggleLeagueFilter = (leagueName: string) => {
     setSelectedLeagueNames((current) => current.includes(leagueName)
@@ -4705,6 +4864,14 @@ function InnerFootballApp({
                           onClick={() => setFinanceTrendOpen(true)}
                         />
                       </Tooltip>
+                      <Tooltip title="查看财务纠错记录">
+                        <Button
+                          type="text"
+                          aria-label="查看财务纠错记录"
+                          icon={<DollarOutlined />}
+                          onClick={() => setFinanceCorrectionsModal({ view: "history", kind: "expense" })}
+                        />
+                      </Tooltip>
                     </div>
                   </div>
                   <Tag color={netProfit >= 0 ? "green" : "red"}>{netProfit >= 0 ? "当前盈利" : "当前亏损"}</Tag>
@@ -4712,40 +4879,24 @@ function InnerFootballApp({
                 <div className="order-statistics-grid">
 	                  <div className="order-stat-item order-money-card expense-card">
 	                    <span>累计支出</span>
-	                    {expenseEditing ? (
-	                      <div className="order-money-editor">
-		                        <InputNumber autoFocus aria-label={isCloudMode ? "支出纠错值" : "累计支出校正"} controls={false} min={isCloudMode ? undefined : 0} precision={2} prefix="¥" value={expenseDraft} disabled={expenseSaving} onChange={(value) => setExpenseDraft(Number(value ?? 0))} onPressEnter={() => { if (!expenseSaving) void saveExpenseCorrection(); }} />
-		                        <Button type="primary" aria-label={isCloudMode ? "保存支出纠错值" : "保存累计支出"} icon={<CheckOutlined />} loading={expenseSaving} disabled={expenseSaving} onClick={() => { void saveExpenseCorrection(); }} />
-		                        <Button aria-label={isCloudMode ? "取消编辑支出纠错值" : "取消编辑累计支出"} icon={<CloseOutlined />} disabled={expenseSaving} onClick={() => setExpenseEditing(false)} />
-	                        {isCloudMode && <small className="order-money-editor-preview">预览最终支出：¥{currency(expenseOrdersTotal)} {Number(expenseDraft || 0) >= 0 ? "+" : "−"} ¥{currency(Math.abs(Number(expenseDraft || 0)))} = ¥{currency(expenseOrdersTotal + Number(expenseDraft || 0))}</small>}
-	                      </div>
-	                    ) : (
-	                      <div className="order-money-locked">
-	                        <strong>¥{currency(expenseTotal)}</strong>
-	                        <Tooltip title={isCloudMode ? "编辑支出纠错值" : "解锁编辑累计支出"}><Button type="text" aria-label={isCloudMode ? "编辑支出纠错值" : "解锁编辑累计支出"} icon={<EditOutlined />} onClick={unlockExpenseEditor} /></Tooltip>
-	                      </div>
-	                    )}
+	                    <div className="order-money-locked">
+	                      <strong>¥{currency(expenseTotal)}</strong>
+	                      <Tooltip title="新增支出纠错"><Button type="text" aria-label="新增支出纠错" icon={<EditOutlined />} onClick={unlockExpenseEditor} /></Tooltip>
+	                    </div>
                       <div style={{display: 'flex',flexDirection: 'column'}}>
-                        {isCloudMode ? <><small>{`订单支出 ¥${currency(expenseOrdersTotal)}`}</small><small>{`纠错 ${expenseCorrection >= 0 ? "+" : "−"}¥${currency(Math.abs(expenseCorrection))}`}</small></> : <small>订单投入自动计入</small>}
+                        <small>{`订单支出 ¥${currency(isCloudMode ? expenseOrdersTotal : currentOrderLedgerTotals.expense)}`}</small>
+                        <small>{`累计纠错 ${expenseCorrection >= 0 ? "+" : "−"}¥${currency(Math.abs(expenseCorrection))}`}</small>
                       </div>
 	                  </div>
 	                  <div className="order-stat-item order-money-card income-card">
                     <span>累计税后收入</span>
-	                    {incomeEditing ? (
-	                      <div className="order-money-editor">
-	                        <InputNumber autoFocus aria-label={isCloudMode ? "收入纠错值" : "累计税后收入校正"} controls={false} min={isCloudMode ? undefined : 0} precision={2} prefix="¥" value={incomeDraft} disabled={incomeSaving} onChange={(value) => setIncomeDraft(Number(value ?? 0))} onPressEnter={() => { if (!incomeSaving) void saveIncomeCorrection(); }} />
-	                        <Button type="primary" aria-label={isCloudMode ? "保存收入纠错值" : "保存累计税后收入"} icon={<CheckOutlined />} loading={incomeSaving} disabled={incomeSaving} onClick={() => { void saveIncomeCorrection(); }} />
-	                        <Button aria-label={isCloudMode ? "取消编辑收入纠错值" : "取消编辑累计税后收入"} icon={<CloseOutlined />} disabled={incomeSaving} onClick={() => setIncomeEditing(false)} />
-	                        {isCloudMode && <small className='order-money-editor-preview'>预览最终税后收入：¥{currency(incomeOrdersTotal)} {Number(incomeDraft || 0) >= 0 ? "+" : "−"} ¥{currency(Math.abs(Number(incomeDraft || 0)))} = ¥{currency(incomeOrdersTotal + Number(incomeDraft || 0))}</small>}
-	                      </div>
-	                    ) : (
-	                      <div className="order-money-locked">
-	                        <strong>¥{currency(incomeTotal)}</strong>
-	                        <Tooltip title={isCloudMode ? "编辑收入纠错值" : "解锁编辑累计税后收入"}><Button type="text" aria-label={isCloudMode ? "编辑收入纠错值" : "解锁编辑累计税后收入"} icon={<EditOutlined />} onClick={unlockIncomeEditor} /></Tooltip>
-	                      </div>
-	                    )}
+	                    <div className="order-money-locked">
+	                      <strong>¥{currency(incomeTotal)}</strong>
+	                      <Tooltip title="新增收入纠错"><Button type="text" aria-label="新增收入纠错" icon={<EditOutlined />} onClick={unlockIncomeEditor} /></Tooltip>
+	                    </div>
                       <div style={{display: 'flex',flexDirection: 'column'}}>
-                        {isCloudMode ? <><small>{`订单税后收入 ¥${currency(incomeOrdersTotal)}`}</small><small>{`纠错 ${incomeCorrection >= 0 ? "+" : "−"}¥${currency(Math.abs(incomeCorrection))}`}</small></> : <small>已结账成功订单的税后奖金自动计入</small>}
+                        <small>{`订单税后收入 ¥${currency(isCloudMode ? incomeOrdersTotal : currentOrderLedgerTotals.income)}`}</small>
+                        <small>{`累计纠错 ${incomeCorrection >= 0 ? "+" : "−"}¥${currency(Math.abs(incomeCorrection))}`}</small>
                         <small>税前奖金 ¥{currency(displayedOrderGrossIncome)}</small>
                         <small>订单税额 ¥{currency(displayedOrderTax)}</small>
                       </div>
@@ -5227,6 +5378,79 @@ function InnerFootballApp({
       )}
 
       <Modal
+        open={Boolean(backupImportDialog)}
+        width={680}
+        className="backup-import-preview-modal"
+        title={backupImportDialog?.preview.strategy === "replace" ? "预览完整数据覆盖" : "预览完整数据合并"}
+        okText={backupImportDialog?.preview.strategy === "replace" ? "确认覆盖恢复" : "确认新增合并"}
+        cancelText="取消"
+        confirmLoading={backupImporting}
+        okButtonProps={{
+          danger: backupImportDialog?.preview.strategy === "replace",
+          disabled: Boolean(backupImportDialog?.preview.finance.conflicts),
+        }}
+        mask={{ closable: !backupImporting }}
+        closable={!backupImporting}
+        onCancel={() => { if (!backupImporting) setBackupImportDialog(null); }}
+        onOk={() => { void commitFullBackupImport(); }}
+        destroyOnHidden
+      >
+        {backupImportDialog && (
+          <div className="backup-import-preview">
+            <p className="backup-import-file"><b>{backupImportDialog.fileName}</b><span>备份格式 v{backupImportDialog.preview.version}</span></p>
+            <div className="backup-import-summary-grid">
+              <section>
+                <b>订单</b>
+                <span>新增 {backupImportDialog.preview.orders.add} · 更新 {backupImportDialog.preview.orders.update}</span>
+                <small>{backupImportDialog.preview.strategy === "replace" ? `移除 ${backupImportDialog.preview.orders.remove} 个文件外订单` : "文件未包含的订单继续保留"}</small>
+              </section>
+              <section>
+                <b>纠错流水</b>
+                <span>新增 {backupImportDialog.preview.finance.add + (backupImportDialog.initialBalanceStrategy === "use-backup" ? backupImportDialog.preview.finance.initialBalanceAdjustments : 0)} · 跳过 {backupImportDialog.preview.finance.skip}</span>
+                <small className={backupImportDialog.preview.finance.conflicts ? "is-error" : ""}>冲突 {backupImportDialog.preview.finance.conflicts}</small>
+              </section>
+              <section>
+                <b>文件账本汇总</b>
+                <span>支出纠错 {(backupImportDialog.preview.finance.expenseCorrectionCents / 100).toLocaleString("zh-CN", { style: "currency", currency: "CNY" })}</span>
+                <small>收入纠错 {(backupImportDialog.preview.finance.incomeCorrectionCents / 100).toLocaleString("zh-CN", { style: "currency", currency: "CNY" })}</small>
+              </section>
+              <section>
+                <b>设置与比赛</b>
+                <span>{backupImportDialog.preview.settingsChanged ? "应用设置将更新" : "应用设置无变化"}</span>
+                <small>{backupImportDialog.preview.matches.count} 场{backupImportDialog.preview.matches.separateScope ? "公共比赛（单独恢复）" : "本地比赛"}</small>
+              </section>
+            </div>
+            {backupImportDialog.preview.strategy === "merge" && backupImportDialog.preview.finance.backupLegacyInitialCount > 0 && (
+              <section className="backup-initial-strategy">
+                <div><b>旧版历史初值</b><small>文件含 {backupImportDialog.preview.finance.backupLegacyInitialCount} 条不可拆分初值</small></div>
+                <Segmented
+                  block
+                  value={backupImportDialog.initialBalanceStrategy}
+                  options={[
+                    { label: "保留当前初值", value: "keep-current" },
+                    { label: "使用备份初值", value: "use-backup" },
+                  ]}
+                  onChange={(value) => setBackupImportDialog((current) => current ? {
+                    ...current,
+                    initialBalanceStrategy: value as BackupInitialBalanceStrategy,
+                  } : current)}
+                />
+                <p>{backupImportDialog.initialBalanceStrategy === "keep-current"
+                  ? "不会再次叠加备份中的旧累计值；有明细的新纠错仍按稳定 ID 合并。"
+                  : "通过新增一笔无日期差额把历史初值补到备份值，现有记录不会删除。"}</p>
+              </section>
+            )}
+            <div className={`backup-import-notice ${backupImportDialog.preview.strategy === "replace" ? "is-danger" : ""}`}>
+              {backupImportDialog.preview.strategy === "replace"
+                ? "覆盖恢复会替换当前订单、设置和有效账本；原账本会归档，可在纠错记录中只读查看。"
+                : "相同来源的纠错记录会跳过，不会因重复导入再次累计。"}
+            </div>
+            {backupImportDialog.preview.warnings.map((warning) => <p className="backup-import-warning" key={warning}>{warning}</p>)}
+          </div>
+        )}
+      </Modal>
+
+      <Modal
         open={startReminderItems.length > 0}
         zIndex={1200}
         width={560}
@@ -5257,6 +5481,19 @@ function InnerFootballApp({
         onClose={() => setFinanceTrendOpen(false)}
         loadTrend={loadFinanceTrend}
       />
+      {financeCorrectionsModal && (
+        <FinanceCorrectionsModal
+          open
+          initialView={financeCorrectionsModal.view}
+          initialKind={financeCorrectionsModal.kind}
+          revision={isCloudMode ? cloudPersonal?.finance.revision ?? 0 : guestFinanceLedger?.revision ?? 0}
+          totals={{ expense: expenseTotal, income: incomeTotal }}
+          corrections={{ expense: expenseCorrection, income: incomeCorrection }}
+          onClose={() => setFinanceCorrectionsModal(null)}
+          onCreate={addFinanceCorrection}
+          onLoad={loadFinanceCorrections}
+        />
+      )}
       <LeagueAccuracyModal
         open={leagueAccuracyOpen}
         onClose={() => setLeagueAccuracyOpen(false)}
@@ -5801,12 +6038,13 @@ const ignoreTeamTagDelete = async () => undefined;
 const ignoreTeamTagMemberNoteSave = async () => { throw new Error("游客模式不保存个人球队标签"); };
 const ignoreTeamTagShare = async (): Promise<TeamTagShare> => { throw new Error("请先登录账号"); };
 const ignoreTeamTagImport = async (): Promise<TeamTag> => { throw new Error("请先登录账号"); };
-const ignoreCloudFinanceCorrectionChange = async (correction: { expenseCorrection: number; incomeCorrection: number }) => ({
-  expenseTotal: Math.max(0, correction.expenseCorrection),
-  incomeTotal: Math.max(0, correction.incomeCorrection),
-  expenseCorrection: correction.expenseCorrection,
-  incomeCorrection: correction.incomeCorrection,
+const ignoreCloudFinanceCorrectionCreate = async () => { throw new Error("游客模式使用本地纠错账本"); };
+const ignoreCloudFinanceCorrectionsLoad = async (): Promise<FinanceCorrectionPage> => ({
+  entries: [], nextCursor: null, activeLedgerId: "", ledgers: [],
 });
+const ignoreCloudFullBackupExport = async (): Promise<FullDataBackupV6> => { throw new Error("游客模式使用本地完整备份"); };
+const ignoreCloudFullBackupPreview = async (): Promise<BackupImportPreview> => { throw new Error("游客模式使用本地完整备份"); };
+const ignoreCloudFullBackupImport = async (): Promise<FullBackupImportResult> => { throw new Error("游客模式使用本地完整备份"); };
 const ignoreCloudOrderMutation = async () => ({
   orders: [],
   upsertedOrders: [],
@@ -5847,7 +6085,11 @@ export default function FootballApp({
   onTeamTagMemberNoteSave = ignoreTeamTagMemberNoteSave,
   onTeamTagShare = ignoreTeamTagShare,
   onTeamTagImport = ignoreTeamTagImport,
-  onCloudFinanceCorrectionChange = ignoreCloudFinanceCorrectionChange,
+  onCloudFinanceCorrectionCreate = ignoreCloudFinanceCorrectionCreate,
+  onCloudFinanceCorrectionsLoad = ignoreCloudFinanceCorrectionsLoad,
+  onCloudFullBackupExport = ignoreCloudFullBackupExport,
+  onCloudFullBackupPreview = ignoreCloudFullBackupPreview,
+  onCloudFullBackupImport = ignoreCloudFullBackupImport,
   onCloudOrderMutation = ignoreCloudOrderMutation,
   onCloudOrdersQueryChange = ignoreCloudOrdersQueryChange,
   onCloudMatchesChange = ignoreCloudMatchesChange,
@@ -5874,7 +6116,18 @@ export default function FootballApp({
   onTeamTagMemberNoteSave?: (tagId: string, memberId: string, note: string, expectedRevision: number) => Promise<TeamTag>;
   onTeamTagShare?: (tag: Pick<TeamTag, "id" | "revision">) => Promise<TeamTagShare>;
   onTeamTagImport?: (code: string, requestId: string) => Promise<TeamTag>;
-  onCloudFinanceCorrectionChange?: (correction: { expenseCorrection: number; incomeCorrection: number }) => Promise<CloudPersonalData["finance"]>;
+  onCloudFinanceCorrectionCreate?: (input: CreateFinanceCorrectionInput) => Promise<CloudPersonalData["finance"]>;
+  onCloudFinanceCorrectionsLoad?: (query: { kind?: FinanceCorrectionKind; ledgerId?: string; cursor?: string; limit?: number }) => Promise<FinanceCorrectionPage>;
+  onCloudFullBackupExport?: () => Promise<FullDataBackupV6>;
+  onCloudFullBackupPreview?: (backup: unknown, strategy: BackupImportStrategy) => Promise<BackupImportPreview>;
+  onCloudFullBackupImport?: (input: {
+    backup: unknown;
+    strategy: BackupImportStrategy;
+    initialBalanceStrategy: BackupInitialBalanceStrategy;
+    requestId: string;
+    expectedDataRevision: number;
+    backupDigest: string;
+  }) => Promise<FullBackupImportResult>;
   onCloudOrderMutation?: (intent: OrderSyncIntent) => Promise<CloudOrderMutationResult>;
   onCloudOrdersQueryChange?: (query: CloudOrderQuery) => Promise<CloudOrderQueryResult>;
   onCloudMatchesChange?: (matches: MatchItem[]) => void;
@@ -5923,7 +6176,11 @@ export default function FootballApp({
           onTeamTagMemberNoteSave={onTeamTagMemberNoteSave}
           onTeamTagShare={onTeamTagShare}
           onTeamTagImport={onTeamTagImport}
-          onCloudFinanceCorrectionChange={onCloudFinanceCorrectionChange}
+          onCloudFinanceCorrectionCreate={onCloudFinanceCorrectionCreate}
+          onCloudFinanceCorrectionsLoad={onCloudFinanceCorrectionsLoad}
+          onCloudFullBackupExport={onCloudFullBackupExport}
+          onCloudFullBackupPreview={onCloudFullBackupPreview}
+          onCloudFullBackupImport={onCloudFullBackupImport}
           onCloudOrderMutation={onCloudOrderMutation}
           onCloudOrdersQueryChange={onCloudOrdersQueryChange}
           onCloudMatchesChange={onCloudMatchesChange}
