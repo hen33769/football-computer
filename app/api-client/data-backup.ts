@@ -4,13 +4,13 @@ import type {
   BackupImportPreview,
   BackupImportStrategy,
   BackupInitialBalanceStrategy,
-  FullDataBackupV6,
+  FullDataBackupV7,
 } from "../data-backup";
 import type { MatchItem } from "../types";
 import { requestJson } from "./http";
 
 export function exportCloudFullDataBackup() {
-  return requestJson<FullDataBackupV6>("/api/users/me/backup");
+  return requestJson<FullDataBackupV7>("/api/users/me/backup");
 }
 
 export function previewCloudFullDataImport(backup: unknown, strategy: BackupImportStrategy) {

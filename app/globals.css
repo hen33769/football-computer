@@ -855,6 +855,7 @@ button, input, textarea { font: inherit; }
 .finance-correction-form, .finance-correction-history { display: flex; flex-direction: column; gap: 14px; margin-top: 18px; }
 .finance-correction-form > label { display: grid; grid-template-columns: 150px minmax(0, 1fr); align-items: start; gap: 12px; color: #526c72; }
 .finance-correction-form > label > span:first-child { padding-top: 9px; font-weight: 700; }
+.finance-correction-form > label > small { grid-column: 2; color: #70858a; line-height: 1.55; }
 .finance-correction-preview { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; padding: 14px; border: 1px solid #dce8e9; border-radius: 14px; background: #f7fbfb; }
 .finance-correction-preview > span { display: flex; flex-direction: column; gap: 4px; color: #70858a; font-size: 12px; }
 .finance-correction-preview b { color: #203d44; font-size: 16px; font-variant-numeric: tabular-nums; }
@@ -865,6 +866,7 @@ button, input, textarea { font: inherit; }
 .finance-correction-record-description { margin-top: 7px; color: #829399; font-size: 13px; }
 .finance-correction-record-description p { margin: 5px 0; color: #475f65; white-space: pre-wrap; }
 .finance-correction-record-description small { color: #7a9095; }
+.finance-correction-record-description > small { display: block; margin-top: 4px; }
 .finance-correction-history .positive { color: #128767; }
 .finance-correction-history .negative { color: #c9494f; }
 .finance-correction-loading { min-height: 220px; display: grid; place-items: center; }
@@ -1210,6 +1212,7 @@ button, input, textarea { font: inherit; }
   .backup-initial-strategy > div { flex-direction: column; gap: 3px; }
   .finance-correction-form > label { grid-template-columns: 1fr; gap: 5px; }
   .finance-correction-form > label > span:first-child { padding-top: 0; }
+  .finance-correction-form > label > small { grid-column: auto; }
   .finance-correction-preview { grid-template-columns: 1fr; }
   .finance-correction-preview small { grid-column: auto; }
   .personal-match-note-editor { width: min(320px, calc(100vw - 96px)); }

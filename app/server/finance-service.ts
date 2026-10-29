@@ -2,7 +2,7 @@ import { fromCents, toCents } from "./money";
 import { httpError } from "./errors";
 import {
   isFinanceCorrectionKind,
-  normalizeCorrectionDeltaCents,
+  normalizeFinanceCorrectionAmounts,
   normalizeFinanceCorrectionDate,
   normalizeFinanceCorrectionNote,
   type CreateFinanceCorrectionInput,
@@ -34,7 +34,11 @@ export type FinanceState = {
     grossOrders: number;
     tax: number;
     orders: number;
+    grossCorrection: number;
+    taxCorrection: number;
     correction: number;
+    grossTotal: number;
+    taxTotal: number;
     total: number;
   };
   revision: number;
@@ -46,6 +50,7 @@ export type FinanceState = {
 type FinanceCorrectionRow = {
   expense_correction_cents: number;
   income_correction_cents: number;
+  income_tax_correction_cents: number;
   revision: number;
   updated_at: string;
   active_ledger_id: string | null;
@@ -56,6 +61,7 @@ type FinanceCorrectionEntryRow = {
   ledger_id: string;
   kind: FinanceCorrectionKind;
   delta_cents: number;
+  tax_delta_cents: number;
   effective_date: string | null;
   note: string;
   source: string;
@@ -63,6 +69,8 @@ type FinanceCorrectionEntryRow = {
   source_created_at: string | null;
   correction_before_cents: number;
   correction_after_cents: number;
+  tax_correction_before_cents: number;
+  tax_correction_after_cents: number;
   revision_after: number;
   adjusts_entry_id: string | null;
 };
@@ -85,6 +93,7 @@ type OrderFinanceRow = {
 type FinanceTrendRow = {
   date: string;
   expense_cents: number | null;
+  gross_income_cents: number | null;
   tax_cents: number | null;
   income_cents: number | null;
 };
@@ -93,11 +102,13 @@ type FinanceTrendCorrectionRow = {
   date: string;
   expense_correction_cents: number | null;
   income_correction_cents: number | null;
+  tax_correction_cents: number | null;
 };
 
 type FinanceTrendInitialRow = {
   expense_correction_cents: number | null;
   income_correction_cents: number | null;
+  tax_correction_cents: number | null;
 };
 
 export async function ensureFinanceCorrections(d1: D1Database, userId: string, now = new Date().toISOString()) {
@@ -162,7 +173,8 @@ export async function getFinanceState(d1: D1Database, userId: string): Promise<F
   const [orders, correction, dataRevision] = await Promise.all([
     getOrderFinanceCents(d1, userId),
     d1.prepare(`
-      SELECT expense_correction_cents, income_correction_cents, revision, updated_at, active_ledger_id
+      SELECT expense_correction_cents, income_correction_cents, income_tax_correction_cents,
+             revision, updated_at, active_ledger_id
       FROM user_finance_corrections
       WHERE user_id = ?1
     `).bind(userId).first<FinanceCorrectionRow>(),
@@ -170,6 +182,8 @@ export async function getFinanceState(d1: D1Database, userId: string): Promise<F
   ]);
   const expenseCorrectionCents = Math.round(Number(correction?.expense_correction_cents ?? 0));
   const incomeCorrectionCents = Math.round(Number(correction?.income_correction_cents ?? 0));
+  const incomeTaxCorrectionCents = Math.round(Number(correction?.income_tax_correction_cents ?? 0));
+  const incomeGrossCorrectionCents = incomeCorrectionCents + incomeTaxCorrectionCents;
   return {
     expense: {
       orders: fromCents(orders.expenseCents),
@@ -180,7 +194,11 @@ export async function getFinanceState(d1: D1Database, userId: string): Promise<F
       grossOrders: fromCents(orders.grossIncomeCents),
       tax: fromCents(orders.taxCents),
       orders: fromCents(orders.incomeCents),
+      grossCorrection: fromCents(incomeGrossCorrectionCents),
+      taxCorrection: fromCents(incomeTaxCorrectionCents),
       correction: fromCents(incomeCorrectionCents),
+      grossTotal: fromCents(orders.grossIncomeCents + incomeGrossCorrectionCents),
+      taxTotal: fromCents(orders.taxCents + incomeTaxCorrectionCents),
       total: fromCents(orders.incomeCents + incomeCorrectionCents),
     },
     revision: correction?.revision ?? 0,
@@ -194,6 +212,11 @@ const correctionEntryFromRow = (row: FinanceCorrectionEntryRow): FinanceCorrecti
   id: row.id,
   ledgerId: row.ledger_id,
   kind: row.kind,
+  amountDeltaCents: row.kind === "income"
+    ? Math.round(Number(row.delta_cents)) + Math.round(Number(row.tax_delta_cents ?? 0))
+    : Math.round(Number(row.delta_cents)),
+  taxDeltaCents: Math.round(Number(row.tax_delta_cents ?? 0)),
+  netDeltaCents: Math.round(Number(row.delta_cents)),
   deltaCents: Math.round(Number(row.delta_cents)),
   effectiveDate: row.effective_date,
   note: row.note,
@@ -202,6 +225,8 @@ const correctionEntryFromRow = (row: FinanceCorrectionEntryRow): FinanceCorrecti
   sourceCreatedAt: row.source_created_at,
   correctionBeforeCents: Math.round(Number(row.correction_before_cents)),
   correctionAfterCents: Math.round(Number(row.correction_after_cents)),
+  taxCorrectionBeforeCents: Math.round(Number(row.tax_correction_before_cents ?? 0)),
+  taxCorrectionAfterCents: Math.round(Number(row.tax_correction_after_cents ?? 0)),
   revisionAfter: Math.round(Number(row.revision_after)),
   adjustsEntryId: row.adjusts_entry_id,
 });
@@ -251,9 +276,9 @@ export async function listFinanceCorrectionEntries(
   if (!ledger) throw httpError("找不到财务账本", 404);
   const [rows, ledgerRows] = await Promise.all([
     d1.prepare(`
-      SELECT id, ledger_id, kind, delta_cents, effective_date, note, source, created_at,
+      SELECT id, ledger_id, kind, delta_cents, tax_delta_cents, effective_date, note, source, created_at,
              source_created_at, correction_before_cents, correction_after_cents,
-             revision_after, adjusts_entry_id
+             tax_correction_before_cents, tax_correction_after_cents, revision_after, adjusts_entry_id
       FROM user_finance_correction_entries
       WHERE user_id = ?1 AND ledger_id = ?2
         AND (?3 IS NULL OR kind = ?3)
@@ -282,9 +307,9 @@ export async function listFinanceCorrectionEntries(
 
 async function financeCorrectionEntryByRequest(d1: D1Database, userId: string, requestId: string) {
   const row = await d1.prepare(`
-    SELECT id, ledger_id, kind, delta_cents, effective_date, note, source, created_at,
+    SELECT id, ledger_id, kind, delta_cents, tax_delta_cents, effective_date, note, source, created_at,
            source_created_at, correction_before_cents, correction_after_cents,
-           revision_after, adjusts_entry_id
+           tax_correction_before_cents, tax_correction_after_cents, revision_after, adjusts_entry_id
     FROM user_finance_correction_entries
     WHERE user_id = ?1 AND request_id = ?2
   `).bind(userId, requestId).first<FinanceCorrectionEntryRow>();
@@ -293,7 +318,9 @@ async function financeCorrectionEntryByRequest(d1: D1Database, userId: string, r
 
 function sameCorrectionRequest(entry: FinanceCorrectionEntry, input: CreateFinanceCorrectionInput) {
   return entry.kind === input.kind
-    && entry.deltaCents === input.deltaCents
+    && entry.amountDeltaCents === input.amountDeltaCents
+    && entry.taxDeltaCents === input.taxDeltaCents
+    && entry.netDeltaCents === input.deltaCents
     && entry.effectiveDate === input.effectiveDate
     && entry.note === input.note
     && entry.adjustsEntryId === (input.adjustsEntryId ?? null);
@@ -307,7 +334,8 @@ export async function createFinanceCorrectionEntry(
 ) {
   const kind = rawInput.kind;
   if (!isFinanceCorrectionKind(kind)) throw httpError("纠错类型无效", 400);
-  const deltaCents = normalizeCorrectionDeltaCents(rawInput.deltaCents);
+  const amounts = normalizeFinanceCorrectionAmounts(kind, rawInput);
+  const { amountDeltaCents, taxDeltaCents, netDeltaCents } = amounts;
   const effectiveDate = normalizeFinanceCorrectionDate(rawInput.effectiveDate, now);
   const note = normalizeFinanceCorrectionNote(rawInput.note);
   const requestId = String(rawInput.requestId ?? "").trim();
@@ -317,7 +345,11 @@ export async function createFinanceCorrectionEntry(
   }
   const adjustsEntryId = rawInput.adjustsEntryId?.trim() || null;
   const input: CreateFinanceCorrectionInput = {
-    kind, deltaCents, effectiveDate, note, requestId,
+    kind,
+    amountDeltaCents,
+    taxDeltaCents,
+    deltaCents: netDeltaCents,
+    effectiveDate, note, requestId,
     expectedRevision: rawInput.expectedRevision,
     adjustsEntryId,
   };
@@ -329,7 +361,8 @@ export async function createFinanceCorrectionEntry(
   }
   const [correction, personal] = await Promise.all([
     d1.prepare(`
-      SELECT expense_correction_cents, income_correction_cents, revision, updated_at, active_ledger_id
+      SELECT expense_correction_cents, income_correction_cents, income_tax_correction_cents,
+             revision, updated_at, active_ledger_id
       FROM user_finance_corrections WHERE user_id = ?1
     `).bind(userId).first<FinanceCorrectionRow>(),
     getPersonalDataRevision(d1, userId),
@@ -349,9 +382,18 @@ export async function createFinanceCorrectionEntry(
   const beforeCents = kind === "expense"
     ? Math.round(Number(correction.expense_correction_cents))
     : Math.round(Number(correction.income_correction_cents));
-  const afterCents = beforeCents + deltaCents;
-  const orderCents = kind === "expense" ? orders.expenseCents : orders.incomeCents;
-  if (orderCents + afterCents < 0) throw httpError("纠错后的最终收入或支出不能小于 0", 400);
+  const afterCents = beforeCents + netDeltaCents;
+  const taxBeforeCents = kind === "income" ? Math.round(Number(correction.income_tax_correction_cents ?? 0)) : 0;
+  const taxAfterCents = taxBeforeCents + taxDeltaCents;
+  const grossBeforeCents = beforeCents + taxBeforeCents;
+  const grossAfterCents = grossBeforeCents + amountDeltaCents;
+  if (kind === "expense") {
+    if (orders.expenseCents + afterCents < 0) throw httpError("纠错后的最终支出不能小于 0", 400);
+  } else if (orders.grossIncomeCents + grossAfterCents < 0
+    || orders.taxCents + taxAfterCents < 0
+    || orders.incomeCents + afterCents < 0) {
+    throw httpError("纠错后的最终税前收入、税额或税后收入不能小于 0", 400);
+  }
   const entryId = crypto.randomUUID();
   const createdAt = now.toISOString();
   const nextRevision = correction.revision + 1;
@@ -363,15 +405,40 @@ export async function createFinanceCorrectionEntry(
       + ?2
     ) >= 0 THEN json('null') ELSE json('') END
   ` : `
-    SELECT CASE WHEN (
-      COALESCE((SELECT SUM(CASE WHEN settled_at IS NOT NULL AND status = 'success'
+    SELECT CASE WHEN
+      (COALESCE((SELECT SUM(CASE WHEN settled_at IS NOT NULL AND status = 'success'
+        THEN COALESCE(settled_prize_cents, 0) ELSE 0 END) FROM user_orders WHERE user_id = ?1), 0)
+        + (SELECT income_correction_cents + income_tax_correction_cents
+           FROM user_finance_corrections WHERE user_id = ?1) + ?2) >= 0
+      AND (COALESCE((SELECT SUM(CASE WHEN settled_at IS NOT NULL AND status = 'success'
+        AND COALESCE(settled_prize_cents, 0) > 1000000
+        THEN COALESCE(tax_cents, CAST(ROUND(settled_prize_cents * 0.2) AS INTEGER)) ELSE 0 END)
+        FROM user_orders WHERE user_id = ?1), 0)
+        + (SELECT income_tax_correction_cents FROM user_finance_corrections WHERE user_id = ?1) + ?3) >= 0
+      AND (COALESCE((SELECT SUM(CASE WHEN settled_at IS NOT NULL AND status = 'success'
         THEN COALESCE(settled_prize_cents, 0) - CASE WHEN COALESCE(settled_prize_cents, 0) > 1000000
           THEN COALESCE(tax_cents, CAST(ROUND(settled_prize_cents * 0.2) AS INTEGER)) ELSE 0 END
         ELSE 0 END) FROM user_orders WHERE user_id = ?1), 0)
-      + (SELECT income_correction_cents FROM user_finance_corrections WHERE user_id = ?1)
-      + ?2
-    ) >= 0 THEN json('null') ELSE json('') END
+        + (SELECT income_correction_cents FROM user_finance_corrections WHERE user_id = ?1) + ?4) >= 0
+      THEN json('null') ELSE json('') END
   `;
+  const guardTotalStatement = kind === "expense"
+    ? d1.prepare(guardTotalSql).bind(userId, netDeltaCents)
+    : d1.prepare(guardTotalSql).bind(userId, amountDeltaCents, taxDeltaCents, netDeltaCents);
+  const updateSummaryStatement = kind === "expense"
+    ? d1.prepare(`
+        UPDATE user_finance_corrections
+        SET expense_correction_cents = expense_correction_cents + ?1,
+            revision = revision + 1, updated_at = ?2
+        WHERE user_id = ?3 AND revision = ?4
+      `).bind(netDeltaCents, createdAt, userId, input.expectedRevision)
+    : d1.prepare(`
+        UPDATE user_finance_corrections
+        SET income_correction_cents = income_correction_cents + ?1,
+            income_tax_correction_cents = income_tax_correction_cents + ?2,
+            revision = revision + 1, updated_at = ?3
+        WHERE user_id = ?4 AND revision = ?5
+      `).bind(netDeltaCents, taxDeltaCents, createdAt, userId, input.expectedRevision);
   try {
     await d1.batch([
       d1.prepare(`
@@ -380,28 +447,20 @@ export async function createFinanceCorrectionEntry(
           WHERE user_id = ?1 AND revision = ?2 AND active_ledger_id = ?3
         ) THEN json('null') ELSE json('') END
       `).bind(userId, input.expectedRevision, correction.active_ledger_id),
-      d1.prepare(guardTotalSql).bind(userId, deltaCents),
+      guardTotalStatement,
       d1.prepare(`
         INSERT INTO user_finance_correction_entries (
-          id, user_id, ledger_id, origin_id, origin_entry_id, kind, delta_cents,
+          id, user_id, ledger_id, origin_id, origin_entry_id, kind, delta_cents, tax_delta_cents,
           effective_date, note, source, request_id, created_at, source_created_at,
-          correction_before_cents, correction_after_cents, revision_after, adjusts_entry_id
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'manual', ?10, ?11, NULL, ?12, ?13, ?14, ?15)
+          correction_before_cents, correction_after_cents, tax_correction_before_cents,
+          tax_correction_after_cents, revision_after, adjusts_entry_id
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'manual', ?11, ?12, NULL, ?13, ?14, ?15, ?16, ?17, ?18)
       `).bind(
-        entryId, userId, correction.active_ledger_id, personal.originId, entryId, kind, deltaCents,
-        effectiveDate, note, requestId, createdAt, beforeCents, afterCents, nextRevision, adjustsEntryId,
+        entryId, userId, correction.active_ledger_id, personal.originId, entryId, kind, netDeltaCents,
+        taxDeltaCents, effectiveDate, note, requestId, createdAt, beforeCents, afterCents,
+        taxBeforeCents, taxAfterCents, nextRevision, adjustsEntryId,
       ),
-      d1.prepare(kind === "expense" ? `
-        UPDATE user_finance_corrections
-        SET expense_correction_cents = expense_correction_cents + ?1,
-            revision = revision + 1, updated_at = ?2
-        WHERE user_id = ?3 AND revision = ?4
-      ` : `
-        UPDATE user_finance_corrections
-        SET income_correction_cents = income_correction_cents + ?1,
-            revision = revision + 1, updated_at = ?2
-        WHERE user_id = ?3 AND revision = ?4
-      `).bind(deltaCents, createdAt, userId, input.expectedRevision),
+      updateSummaryStatement,
       incrementPersonalDataRevisionStatement(d1, userId, createdAt),
     ]);
   } catch (error) {
@@ -414,17 +473,20 @@ export async function createFinanceCorrectionEntry(
     if (latest.revision !== input.expectedRevision) {
       throw httpError("云端财务已被其他设备更新，请刷新后重试", 409, { revision: latest.revision });
     }
-    const latestOrderCents = kind === "expense" ? toCents(latest.expense.orders) : toCents(latest.income.orders);
-    const latestCorrectionCents = kind === "expense" ? toCents(latest.expense.correction) : toCents(latest.income.correction);
-    if (latestOrderCents + latestCorrectionCents + deltaCents < 0) {
-      throw httpError("纠错后的最终收入或支出不能小于 0", 400);
+    if (kind === "expense" && toCents(latest.expense.total) + netDeltaCents < 0) {
+      throw httpError("纠错后的最终支出不能小于 0", 400);
+    }
+    if (kind === "income" && (toCents(latest.income.grossTotal) + amountDeltaCents < 0
+      || toCents(latest.income.taxTotal) + taxDeltaCents < 0
+      || toCents(latest.income.total) + netDeltaCents < 0)) {
+      throw httpError("纠错后的最终税前收入、税额或税后收入不能小于 0", 400);
     }
     throw error;
   }
   const entry = await d1.prepare(`
-    SELECT id, ledger_id, kind, delta_cents, effective_date, note, source, created_at,
+    SELECT id, ledger_id, kind, delta_cents, tax_delta_cents, effective_date, note, source, created_at,
            source_created_at, correction_before_cents, correction_after_cents,
-           revision_after, adjusts_entry_id
+           tax_correction_before_cents, tax_correction_after_cents, revision_after, adjusts_entry_id
     FROM user_finance_correction_entries WHERE id = ?1 AND user_id = ?2
   `).bind(entryId, userId).first<FinanceCorrectionEntryRow>();
   if (!entry) throw new Error("纠错记录保存后无法读取");
@@ -443,12 +505,14 @@ export async function getFinanceTrend(
       SELECT
         event_date AS date,
         COALESCE(SUM(expense_cents), 0) AS expense_cents,
+        COALESCE(SUM(gross_income_cents), 0) AS gross_income_cents,
         COALESCE(SUM(tax_cents), 0) AS tax_cents,
         COALESCE(SUM(income_cents), 0) AS income_cents
       FROM (
         SELECT
           date(saved_at, '+8 hours') AS event_date,
           stake_cents AS expense_cents,
+          0 AS gross_income_cents,
           0 AS tax_cents,
           0 AS income_cents
         FROM user_orders
@@ -457,6 +521,7 @@ export async function getFinanceTrend(
         SELECT
           date(settled_at, '+8 hours') AS event_date,
           0 AS expense_cents,
+          CASE WHEN status = 'success' THEN COALESCE(settled_prize_cents, 0) ELSE 0 END AS gross_income_cents,
           CASE
             WHEN status = 'success' AND COALESCE(settled_prize_cents, 0) > 1000000
               THEN COALESCE(tax_cents, CAST(ROUND(settled_prize_cents * 0.2) AS INTEGER))
@@ -479,7 +544,8 @@ export async function getFinanceTrend(
       SELECT
         effective_date AS date,
         COALESCE(SUM(CASE WHEN kind = 'expense' THEN delta_cents ELSE 0 END), 0) AS expense_correction_cents,
-        COALESCE(SUM(CASE WHEN kind = 'income' THEN delta_cents ELSE 0 END), 0) AS income_correction_cents
+        COALESCE(SUM(CASE WHEN kind = 'income' THEN delta_cents ELSE 0 END), 0) AS income_correction_cents,
+        COALESCE(SUM(CASE WHEN kind = 'income' THEN tax_delta_cents ELSE 0 END), 0) AS tax_correction_cents
       FROM user_finance_correction_entries
       WHERE ledger_id = (
         SELECT active_ledger_id FROM user_finance_corrections WHERE user_id = ?1
@@ -492,7 +558,8 @@ export async function getFinanceTrend(
     d1.prepare(`
       SELECT
         COALESCE(SUM(CASE WHEN kind = 'expense' THEN delta_cents ELSE 0 END), 0) AS expense_correction_cents,
-        COALESCE(SUM(CASE WHEN kind = 'income' THEN delta_cents ELSE 0 END), 0) AS income_correction_cents
+        COALESCE(SUM(CASE WHEN kind = 'income' THEN delta_cents ELSE 0 END), 0) AS income_correction_cents,
+        COALESCE(SUM(CASE WHEN kind = 'income' THEN tax_delta_cents ELSE 0 END), 0) AS tax_correction_cents
       FROM user_finance_correction_entries
       WHERE ledger_id = (
         SELECT active_ledger_id FROM user_finance_corrections WHERE user_id = ?1
@@ -506,7 +573,9 @@ export async function getFinanceTrend(
   const amounts = new Map<string, {
     orderExpenseCents: number;
     expenseCorrectionCents: number;
-    taxCents: number;
+    orderGrossIncomeCents: number;
+    orderTaxCents: number;
+    taxCorrectionCents: number;
     orderIncomeCents: number;
     incomeCorrectionCents: number;
   }>();
@@ -514,7 +583,9 @@ export async function getFinanceTrend(
     const current = amounts.get(date) ?? {
       orderExpenseCents: 0,
       expenseCorrectionCents: 0,
-      taxCents: 0,
+      orderGrossIncomeCents: 0,
+      orderTaxCents: 0,
+      taxCorrectionCents: 0,
       orderIncomeCents: 0,
       incomeCorrectionCents: 0,
     };
@@ -524,16 +595,19 @@ export async function getFinanceTrend(
   for (const row of rows.results ?? []) {
     const current = amountsFor(row.date);
     current.orderExpenseCents += Math.round(Number(row.expense_cents ?? 0));
-    current.taxCents += Math.round(Number(row.tax_cents ?? 0));
+    current.orderGrossIncomeCents += Math.round(Number(row.gross_income_cents ?? 0));
+    current.orderTaxCents += Math.round(Number(row.tax_cents ?? 0));
     current.orderIncomeCents += Math.round(Number(row.income_cents ?? 0));
   }
   for (const row of datedCorrections.results ?? []) {
     const current = amountsFor(row.date);
     current.expenseCorrectionCents += Math.round(Number(row.expense_correction_cents ?? 0));
     current.incomeCorrectionCents += Math.round(Number(row.income_correction_cents ?? 0));
+    current.taxCorrectionCents += Math.round(Number(row.tax_correction_cents ?? 0));
   }
   const initialExpense = Math.round(Number(initialCorrection?.expense_correction_cents ?? 0));
   const initialIncome = Math.round(Number(initialCorrection?.income_correction_cents ?? 0));
+  const initialTax = Math.round(Number(initialCorrection?.tax_correction_cents ?? 0));
 
   return {
     points: buildCumulativeFinanceTrend(
@@ -542,7 +616,11 @@ export async function getFinanceTrend(
         expense: fromCents(amount.orderExpenseCents + amount.expenseCorrectionCents),
         orderExpense: fromCents(amount.orderExpenseCents),
         expenseCorrection: fromCents(amount.expenseCorrectionCents),
-        tax: fromCents(amount.taxCents),
+        orderGrossIncome: fromCents(amount.orderGrossIncomeCents),
+        grossIncomeCorrection: fromCents(amount.incomeCorrectionCents + amount.taxCorrectionCents),
+        tax: fromCents(amount.orderTaxCents + amount.taxCorrectionCents),
+        orderTax: fromCents(amount.orderTaxCents),
+        taxCorrection: fromCents(amount.taxCorrectionCents),
         income: fromCents(amount.orderIncomeCents + amount.incomeCorrectionCents),
         orderIncome: fromCents(amount.orderIncomeCents),
         incomeCorrection: fromCents(amount.incomeCorrectionCents),
@@ -550,7 +628,8 @@ export async function getFinanceTrend(
       {
         expenseCorrection: fromCents(initialExpense),
         incomeCorrection: fromCents(initialIncome),
-        date: initialExpense !== 0 || initialIncome !== 0
+        taxCorrection: fromCents(initialTax),
+        date: initialExpense !== 0 || initialIncome !== 0 || initialTax !== 0
           ? shanghaiDateKey(summary?.updated_at || new Date().toISOString())
           : undefined,
       },

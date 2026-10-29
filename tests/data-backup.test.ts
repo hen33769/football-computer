@@ -28,17 +28,21 @@ function setup() {
   return db;
 }
 
-test("v6 完整备份导出全部当前账本并可重复合并去重", async () => {
+test("v7 完整备份导出收入纠错税额并可重复合并去重", async () => {
   const db = setup();
   await createOrder(db.asD1(), "user-a", order("order-1"));
   await createFinanceCorrectionEntry(db.asD1(), "user-a", {
-    kind: "income", deltaCents: 20_000, effectiveDate: "2026-10-20", note: "奖金修正",
+    kind: "income", amountDeltaCents: 20_000, taxDeltaCents: 2_000,
+    effectiveDate: "2026-10-20", note: "奖金修正",
     requestId: "correction-1", expectedRevision: 0,
   }, new Date("2026-10-28T01:00:00.000Z"));
   const backup = await exportFullDataBackup(db.asD1(), "user-a");
-  assert.equal(backup.version, 6);
+  assert.equal(backup.version, 7);
   assert.equal(backup.data.orders.length, 1);
   assert.equal(backup.data.finance.entries.length, 1);
+  assert.equal(backup.data.finance.entries[0].deltaCents, 18_000);
+  assert.equal(backup.data.finance.entries[0].taxDeltaCents, 2_000);
+  assert.equal(backup.data.finance.incomeTaxCorrectionCents, 2_000);
 
   const preview = await previewFullDataImport(db.asD1(), "user-a", backup, "merge");
   assert.equal(preview.finance.add, 0);
@@ -118,6 +122,7 @@ test("合并可用稳定差额切换旧版历史初值且重复导入不叠加",
       originEntryId: "legacy-expense",
       kind: "expense",
       deltaCents: 2_000,
+      taxDeltaCents: 0,
       effectiveDate: null,
       note: "备份初值",
       source: "legacy-migration",
@@ -129,6 +134,7 @@ test("合并可用稳定差额切换旧版历史初值且重复导入不叠加",
       originEntryId: "legacy-adjustment",
       kind: "expense",
       deltaCents: -200,
+      taxDeltaCents: 0,
       effectiveDate: null,
       note: "备份补差",
       source: "manual",
@@ -256,6 +262,7 @@ test("覆盖恢复拒绝让最终收入或支出变成负数的账本", async ()
     originEntryId: "negative-expense",
     kind: "expense",
     deltaCents: -100,
+    taxDeltaCents: 0,
     effectiveDate: null,
     note: "非法最终余额",
     source: "manual",
@@ -273,6 +280,40 @@ test("覆盖恢复拒绝让最终收入或支出变成负数的账本", async ()
     backupDigest: preview.backupDigest,
   }), /不能小于 0/);
   assert.equal((await listFinanceCorrectionEntries(db.asD1(), "user-a")).entries.length, 0);
+});
+
+test("v6 备份导入按纠错税额 0 升级为 v7", () => {
+  const converted = normalizeFullDataBackup({
+    version: 6,
+    kind: "full",
+    exportedAt: "2026-10-01T00:00:00.000Z",
+    originId: "v6-origin",
+    dataRevision: 1,
+    data: {
+      orders: [],
+      settings: {},
+      finance: {
+        ledgerSource: "cloud-active",
+        entries: [{
+          originId: "v6-origin",
+          originEntryId: "v6-income",
+          kind: "income",
+          deltaCents: 1_800,
+          effectiveDate: null,
+          note: "旧收入纠错",
+          source: "manual",
+          createdAt: "2026-10-01T00:00:00.000Z",
+          adjusts: null,
+        }],
+        expenseCorrectionCents: 0,
+        incomeCorrectionCents: 1_800,
+      },
+      matches: [],
+    },
+  });
+  assert.equal(converted.version, 7);
+  assert.equal(converted.data.finance.entries[0].taxDeltaCents, 0);
+  assert.equal(converted.data.finance.incomeTaxCorrectionCents, 0);
 });
 
 test("v5 覆盖兼容把最终总额还原成无日期初值", () => {

@@ -38,7 +38,9 @@ export async function POST(request: Request) {
       authenticated.value.account.id,
       {
         kind: payload.kind as FinanceCorrectionKind,
-        deltaCents: Number(payload.deltaCents),
+        amountDeltaCents: payload.amountDeltaCents === undefined ? undefined : Number(payload.amountDeltaCents),
+        taxDeltaCents: payload.taxDeltaCents === undefined ? undefined : Number(payload.taxDeltaCents),
+        deltaCents: payload.deltaCents === undefined ? undefined : Number(payload.deltaCents),
         effectiveDate: payload.effectiveDate === null ? null : String(payload.effectiveDate ?? ""),
         note: String(payload.note ?? ""),
         requestId: String(payload.requestId ?? ""),

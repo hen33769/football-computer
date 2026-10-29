@@ -14,7 +14,11 @@ export type FinanceTrendPoint = {
   orderExpense?: number;
   expenseCorrection?: number;
   tax: number;
+  orderTax?: number;
+  taxCorrection?: number;
   income: number;
+  orderGrossIncome?: number;
+  grossIncomeCorrection?: number;
   orderIncome?: number;
   incomeCorrection?: number;
   profit: number;
@@ -31,6 +35,7 @@ export type FinanceTrendResponse = {
 export type FinanceTrendCorrections = {
   expenseCorrection?: number;
   incomeCorrection?: number;
+  taxCorrection?: number;
   date?: string;
 };
 
@@ -40,7 +45,11 @@ export type FinanceTrendDailyAmount = {
   orderExpense?: number;
   expenseCorrection?: number;
   tax?: number;
+  orderTax?: number;
+  taxCorrection?: number;
   income: number;
+  orderGrossIncome?: number;
+  grossIncomeCorrection?: number;
   orderIncome?: number;
   incomeCorrection?: number;
 };
@@ -99,6 +108,10 @@ export function buildCumulativeFinanceTrend(
   const range = normalizeFinanceTrendDateRange(rawRange);
   const hasBreakdown = dailyAmounts.some((amount) => amount.orderExpense !== undefined
     || amount.expenseCorrection !== undefined
+    || amount.orderTax !== undefined
+    || amount.taxCorrection !== undefined
+    || amount.orderGrossIncome !== undefined
+    || amount.grossIncomeCorrection !== undefined
     || amount.orderIncome !== undefined
     || amount.incomeCorrection !== undefined);
   const amountsByDate = new Map<string, {
@@ -106,7 +119,11 @@ export function buildCumulativeFinanceTrend(
     orderExpenseCents: number;
     expenseCorrectionCents: number;
     taxCents: number;
+    orderTaxCents: number;
+    taxCorrectionCents: number;
     incomeCents: number;
+    orderGrossIncomeCents: number;
+    grossIncomeCorrectionCents: number;
     orderIncomeCents: number;
     incomeCorrectionCents: number;
   }>();
@@ -117,7 +134,11 @@ export function buildCumulativeFinanceTrend(
       orderExpenseCents: 0,
       expenseCorrectionCents: 0,
       taxCents: 0,
+      orderTaxCents: 0,
+      taxCorrectionCents: 0,
       incomeCents: 0,
+      orderGrossIncomeCents: 0,
+      grossIncomeCorrectionCents: 0,
       orderIncomeCents: 0,
       incomeCorrectionCents: 0,
     };
@@ -125,10 +146,18 @@ export function buildCumulativeFinanceTrend(
     const expenseCorrectionCents = toCents(amount.expenseCorrection ?? 0);
     const orderIncomeCents = toCents(amount.orderIncome ?? amount.income);
     const incomeCorrectionCents = toCents(amount.incomeCorrection ?? 0);
+    const orderTaxCents = toCents(amount.orderTax ?? amount.tax ?? 0);
+    const taxCorrectionCents = toCents(amount.taxCorrection ?? 0);
+    const orderGrossIncomeCents = toCents(amount.orderGrossIncome ?? ((amount.orderIncome ?? amount.income) + (amount.orderTax ?? amount.tax ?? 0)));
+    const grossIncomeCorrectionCents = toCents(amount.grossIncomeCorrection ?? ((amount.incomeCorrection ?? 0) + (amount.taxCorrection ?? 0)));
     current.orderExpenseCents += orderExpenseCents;
     current.expenseCorrectionCents += expenseCorrectionCents;
     current.expenseCents += orderExpenseCents + expenseCorrectionCents;
-    current.taxCents += toCents(amount.tax ?? 0);
+    current.orderTaxCents += orderTaxCents;
+    current.taxCorrectionCents += taxCorrectionCents;
+    current.taxCents += orderTaxCents + taxCorrectionCents;
+    current.orderGrossIncomeCents += orderGrossIncomeCents;
+    current.grossIncomeCorrectionCents += grossIncomeCorrectionCents;
     current.orderIncomeCents += orderIncomeCents;
     current.incomeCorrectionCents += incomeCorrectionCents;
     current.incomeCents += orderIncomeCents + incomeCorrectionCents;
@@ -139,7 +168,8 @@ export function buildCumulativeFinanceTrend(
   const correctionDate = corrections.date && isFinanceTrendDate(corrections.date) ? corrections.date : undefined;
   if (eventDates.length === 0
     && toCents(corrections.expenseCorrection ?? 0) === 0
-    && toCents(corrections.incomeCorrection ?? 0) === 0) return [];
+    && toCents(corrections.incomeCorrection ?? 0) === 0
+    && toCents(corrections.taxCorrection ?? 0) === 0) return [];
 
   const startDate = range.startDate
     ?? (eventDates[0] ? addCalendarDays(eventDates[0], -1) : correctionDate);
@@ -149,7 +179,7 @@ export function buildCumulativeFinanceTrend(
   if (!startDate || !endDate || startDate > endDate) return [];
 
   let expenseCents = toCents(corrections.expenseCorrection ?? 0);
-  let taxCents = 0;
+  let taxCents = toCents(corrections.taxCorrection ?? 0);
   let incomeCents = toCents(corrections.incomeCorrection ?? 0);
   for (const date of eventDates) {
     if (date >= startDate) break;
@@ -171,6 +201,10 @@ export function buildCumulativeFinanceTrend(
     const breakdown = hasBreakdown ? {
       orderExpense: fromCents(amountsByDate.get(date)?.orderExpenseCents ?? 0),
       expenseCorrection: fromCents(amountsByDate.get(date)?.expenseCorrectionCents ?? 0),
+      orderTax: fromCents(amountsByDate.get(date)?.orderTaxCents ?? 0),
+      taxCorrection: fromCents(amountsByDate.get(date)?.taxCorrectionCents ?? 0),
+      orderGrossIncome: fromCents(amountsByDate.get(date)?.orderGrossIncomeCents ?? 0),
+      grossIncomeCorrection: fromCents(amountsByDate.get(date)?.grossIncomeCorrectionCents ?? 0),
       orderIncome: fromCents(amountsByDate.get(date)?.orderIncomeCents ?? 0),
       incomeCorrection: fromCents(amountsByDate.get(date)?.incomeCorrectionCents ?? 0),
     } : {};
@@ -197,13 +231,17 @@ export function buildFinanceTrendFromOrders(
   datedCorrections: Array<{
     kind: "expense" | "income";
     deltaCents: number;
+    taxDeltaCents?: number;
     effectiveDate: string | null;
   }> = [],
 ): FinanceTrendPoint[] {
   const totals = new Map<string, {
     expenseCents: number;
     expenseCorrectionCents: number;
-    taxCents: number;
+    orderTaxCents: number;
+    taxCorrectionCents: number;
+    orderGrossIncomeCents: number;
+    grossIncomeCorrectionCents: number;
     incomeCents: number;
     incomeCorrectionCents: number;
   }>();
@@ -211,7 +249,10 @@ export function buildFinanceTrendFromOrders(
     const current = totals.get(date) ?? {
       expenseCents: 0,
       expenseCorrectionCents: 0,
-      taxCents: 0,
+      orderTaxCents: 0,
+      taxCorrectionCents: 0,
+      orderGrossIncomeCents: 0,
+      grossIncomeCorrectionCents: 0,
       incomeCents: 0,
       incomeCorrectionCents: 0,
     };
@@ -230,7 +271,8 @@ export function buildFinanceTrendFromOrders(
       const grossIncome = status === "success" ? order.settledPrize ?? 0 : 0;
       const tax = appliedOrderTax(order, status);
       if (date) {
-        totalsFor(date).taxCents += toCents(tax);
+        totalsFor(date).orderGrossIncomeCents += toCents(grossIncome);
+        totalsFor(date).orderTaxCents += toCents(tax);
         totalsFor(date).incomeCents += toCents(afterTaxPrize(grossIncome, tax));
       }
     }
@@ -239,7 +281,12 @@ export function buildFinanceTrendFromOrders(
   for (const correction of datedCorrections) {
     if (!correction.effectiveDate || !isFinanceTrendDate(correction.effectiveDate)) continue;
     if (correction.kind === "expense") totalsFor(correction.effectiveDate).expenseCorrectionCents += correction.deltaCents;
-    else totalsFor(correction.effectiveDate).incomeCorrectionCents += correction.deltaCents;
+    else {
+      const taxDeltaCents = Math.round(Number(correction.taxDeltaCents ?? 0));
+      totalsFor(correction.effectiveDate).taxCorrectionCents += taxDeltaCents;
+      totalsFor(correction.effectiveDate).grossIncomeCorrectionCents += correction.deltaCents + taxDeltaCents;
+      totalsFor(correction.effectiveDate).incomeCorrectionCents += correction.deltaCents;
+    }
   }
 
   const includeBreakdown = datedCorrections.length > 0;
@@ -250,10 +297,14 @@ export function buildFinanceTrendFromOrders(
       ...(includeBreakdown ? {
         orderExpense: fromCents(values.expenseCents),
         expenseCorrection: fromCents(values.expenseCorrectionCents),
+        orderTax: fromCents(values.orderTaxCents),
+        taxCorrection: fromCents(values.taxCorrectionCents),
+        orderGrossIncome: fromCents(values.orderGrossIncomeCents),
+        grossIncomeCorrection: fromCents(values.grossIncomeCorrectionCents),
         orderIncome: fromCents(values.incomeCents),
         incomeCorrection: fromCents(values.incomeCorrectionCents),
       } : {}),
-      tax: fromCents(values.taxCents),
+      tax: fromCents(values.orderTaxCents + values.taxCorrectionCents),
       income: fromCents(values.incomeCents + values.incomeCorrectionCents),
     })),
     corrections,

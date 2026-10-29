@@ -184,7 +184,11 @@ test("云端趋势查询绑定用户和截止日期，并把纠错值计入累�
       expense: 12.34,
       orderExpense: 12.34,
       expenseCorrection: 0,
+      orderGrossIncome: 56.78,
+      grossIncomeCorrection: 0,
       tax: 0,
+      orderTax: 0,
+      taxCorrection: 0,
       income: 56.78,
       orderIncome: 56.78,
       incomeCorrection: 0,
@@ -194,6 +198,47 @@ test("云端趋势查询绑定用户和截止日期，并把纠错值计入累�
       cumulativeIncome: 59.53,
       cumulativeProfit: 45.94,
     }],
+  });
+});
+
+test("有日期收入纠错把税前收入、税额和税后净值归入同一天", async () => {
+  const db = new SqliteD1();
+  db.database.exec(`
+    INSERT INTO users (id, auth_subject, account, normalized_account)
+    VALUES ('user-tax','subject-tax','user-tax','user-tax')
+  `);
+  await createFinanceCorrectionEntry(db.asD1(), "user-tax", {
+    kind: "income",
+    amountDeltaCents: 20_000,
+    taxDeltaCents: 2_000,
+    effectiveDate: "2026-08-25",
+    note: "税额趋势",
+    requestId: "tax-trend",
+    expectedRevision: 0,
+  }, new Date("2026-08-25T12:00:00.000Z"));
+
+  const response = await getFinanceTrend(db.asD1(), "user-tax", {
+    startDate: "2026-08-25",
+    endDate: "2026-08-25",
+  });
+  assert.deepEqual(response.points[0], {
+    date: "2026-08-25",
+    expense: 0,
+    orderExpense: 0,
+    expenseCorrection: 0,
+    orderTax: 0,
+    taxCorrection: 20,
+    orderGrossIncome: 0,
+    grossIncomeCorrection: 200,
+    orderIncome: 0,
+    incomeCorrection: 180,
+    tax: 20,
+    income: 180,
+    profit: 180,
+    cumulativeExpense: 0,
+    cumulativeTax: 20,
+    cumulativeIncome: 180,
+    cumulativeProfit: 180,
   });
 });
 

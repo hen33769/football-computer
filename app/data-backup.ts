@@ -4,7 +4,7 @@ import { normalizeAppSettings, type AppSettings } from "./settings";
 import type { FinanceCorrectionKind } from "./finance-corrections";
 import type { MatchItem, SavedSlip } from "./types";
 
-export const FULL_DATA_BACKUP_VERSION = 6;
+export const FULL_DATA_BACKUP_VERSION = 7;
 
 export type BackupCorrectionRef = { originId: string; originEntryId: string };
 
@@ -12,7 +12,9 @@ export type BackupFinanceCorrectionEntry = {
   originId: string;
   originEntryId: string;
   kind: FinanceCorrectionKind;
+  /** 支出差值或收入税后净差值。 */
   deltaCents: number;
+  taxDeltaCents: number;
   effectiveDate: string | null;
   note: string;
   source: string;
@@ -20,8 +22,8 @@ export type BackupFinanceCorrectionEntry = {
   adjusts: BackupCorrectionRef | null;
 };
 
-export type FullDataBackupV6 = {
-  version: 6;
+export type FullDataBackupV7 = {
+  version: 7;
   kind: "full";
   exportedAt: string;
   originId: string;
@@ -34,6 +36,7 @@ export type FullDataBackupV6 = {
       entries: BackupFinanceCorrectionEntry[];
       expenseCorrectionCents: number;
       incomeCorrectionCents: number;
+      incomeTaxCorrectionCents: number;
     };
     matches: MatchItem[];
   };
@@ -57,6 +60,7 @@ export type BackupImportPreview = {
     initialBalanceAdjustments: number;
     expenseCorrectionCents: number;
     incomeCorrectionCents: number;
+    incomeTaxCorrectionCents: number;
   };
   matches: { count: number; separateScope: boolean };
   warnings: string[];
@@ -108,7 +112,7 @@ function shanghaiToday() {
   return `${values.year}-${values.month}-${values.day}`;
 }
 
-function correctionEntry(value: unknown): BackupFinanceCorrectionEntry {
+function correctionEntry(value: unknown, sourceVersion: number): BackupFinanceCorrectionEntry {
   if (!value || typeof value !== "object") throw new Error("纠错记录结构无效");
   const entry = value as Partial<BackupFinanceCorrectionEntry>;
   if (typeof entry.originId !== "string" || !entry.originId.trim() || typeof entry.originEntryId !== "string" || !entry.originEntryId.trim()) {
@@ -116,7 +120,9 @@ function correctionEntry(value: unknown): BackupFinanceCorrectionEntry {
   }
   if (entry.kind !== "expense" && entry.kind !== "income") throw new Error("纠错记录类型无效");
   const deltaCents = safeInteger(entry.deltaCents, "纠错差值");
-  if (deltaCents === 0) throw new Error("纠错差值不能为 0");
+  const taxDeltaCents = sourceVersion >= 7 ? safeInteger(entry.taxDeltaCents, "纠错税额差值") : 0;
+  if (entry.kind === "expense" && taxDeltaCents !== 0) throw new Error("支出纠错不能包含税额");
+  if (deltaCents === 0 && taxDeltaCents === 0) throw new Error("纠错净差值和税额差值不能同时为 0");
   const effectiveDate = entry.effectiveDate == null ? null : String(entry.effectiveDate);
   if (effectiveDate !== null && (!isRealIsoDate(effectiveDate) || effectiveDate > shanghaiToday())) throw new Error("纠错归属日期无效");
   const note = String(entry.note ?? "").normalize("NFKC").trim();
@@ -135,6 +141,7 @@ function correctionEntry(value: unknown): BackupFinanceCorrectionEntry {
     originEntryId: String(entry.originEntryId),
     kind: entry.kind,
     deltaCents,
+    taxDeltaCents,
     effectiveDate,
     note,
     source,
@@ -153,7 +160,7 @@ function validateEntries(entries: BackupFinanceCorrectionEntry[]) {
   }
 }
 
-export function normalizeFullDataBackup(value: unknown, legacyOriginId = crypto.randomUUID()): FullDataBackupV6 {
+export function normalizeFullDataBackup(value: unknown, legacyOriginId = crypto.randomUUID()): FullDataBackupV7 {
   if (!value || typeof value !== "object") throw new Error("完整备份结构无效");
   const backup = value as Record<string, unknown>;
   const data = backup.data && typeof backup.data === "object" ? backup.data as Record<string, unknown> : null;
@@ -163,16 +170,23 @@ export function normalizeFullDataBackup(value: unknown, legacyOriginId = crypto.
   if (orderIds.some((id) => !id) || new Set(orderIds).size !== orderIds.length) throw new Error("完整备份中包含空或重复订单 ID");
   if (!data.settings || typeof data.settings !== "object") throw new Error("完整备份中的设置无效");
   const matches = Array.isArray(data.matches) && data.matches.every(isMatchItem) ? data.matches : [];
-  if (backup.version === 6) {
+  if (backup.version === 6 || backup.version === 7) {
     const finance = data.finance && typeof data.finance === "object" ? data.finance as Record<string, unknown> : null;
     if (!finance || !Array.isArray(finance.entries)) throw new Error("完整备份中的纠错记录无效");
-    const entries = finance.entries.map(correctionEntry);
+    const sourceVersion = Number(backup.version);
+    const entries = finance.entries.map((entry) => correctionEntry(entry, sourceVersion));
     validateEntries(entries);
     const expenseCorrectionCents = safeInteger(finance.expenseCorrectionCents, "支出纠错汇总");
     const incomeCorrectionCents = safeInteger(finance.incomeCorrectionCents, "收入纠错汇总");
+    const incomeTaxCorrectionCents = sourceVersion >= 7
+      ? safeInteger(finance.incomeTaxCorrectionCents, "收入纠错税额汇总")
+      : 0;
     const calculatedExpense = entries.filter((entry) => entry.kind === "expense").reduce((total, entry) => total + entry.deltaCents, 0);
     const calculatedIncome = entries.filter((entry) => entry.kind === "income").reduce((total, entry) => total + entry.deltaCents, 0);
-    if (calculatedExpense !== expenseCorrectionCents || calculatedIncome !== incomeCorrectionCents) {
+    const calculatedIncomeTax = entries.filter((entry) => entry.kind === "income").reduce((total, entry) => total + entry.taxDeltaCents, 0);
+    if (calculatedExpense !== expenseCorrectionCents
+      || calculatedIncome !== incomeCorrectionCents
+      || calculatedIncomeTax !== incomeTaxCorrectionCents) {
       throw new Error("完整备份中的纠错汇总与记录不一致");
     }
     const originId = String(backup.originId ?? "").trim();
@@ -180,7 +194,7 @@ export function normalizeFullDataBackup(value: unknown, legacyOriginId = crypto.
     const exportedAt = String(backup.exportedAt ?? "");
     if (!exportedAt || Number.isNaN(Date.parse(exportedAt))) throw new Error("完整备份导出时间无效");
     return {
-      version: 6,
+      version: 7,
       kind: "full",
       exportedAt,
       originId,
@@ -189,10 +203,11 @@ export function normalizeFullDataBackup(value: unknown, legacyOriginId = crypto.
         orders: structuredClone(data.orders as SavedSlip[]),
         settings: normalizeAppSettings(data.settings),
         finance: {
-          ledgerSource: String(finance.ledgerSource ?? "backup-v6"),
+          ledgerSource: String(finance.ledgerSource ?? `backup-v${sourceVersion}`),
           entries,
           expenseCorrectionCents,
           incomeCorrectionCents,
+          incomeTaxCorrectionCents,
         },
         matches: structuredClone(matches),
       },
@@ -217,6 +232,7 @@ export function normalizeFullDataBackup(value: unknown, legacyOriginId = crypto.
     originEntryId: "legacy-expense",
     kind: "expense",
     deltaCents: expenseCorrectionCents,
+    taxDeltaCents: 0,
     effectiveDate: null,
     note: "旧版备份累计值，原始明细不可追溯",
     source: "legacy-backup",
@@ -228,6 +244,7 @@ export function normalizeFullDataBackup(value: unknown, legacyOriginId = crypto.
     originEntryId: "legacy-income",
     kind: "income",
     deltaCents: incomeCorrectionCents,
+    taxDeltaCents: 0,
     effectiveDate: null,
     note: "旧版备份累计值，原始明细不可追溯",
     source: "legacy-backup",
@@ -235,7 +252,7 @@ export function normalizeFullDataBackup(value: unknown, legacyOriginId = crypto.
     adjusts: null,
   });
   return {
-    version: 6,
+    version: 7,
     kind: "full",
     exportedAt,
     originId: legacyOriginId,
@@ -243,7 +260,13 @@ export function normalizeFullDataBackup(value: unknown, legacyOriginId = crypto.
     data: {
       orders,
       settings: normalizeAppSettings(data.settings),
-      finance: { ledgerSource: "legacy-backup", entries, expenseCorrectionCents, incomeCorrectionCents },
+      finance: {
+        ledgerSource: "legacy-backup",
+        entries,
+        expenseCorrectionCents,
+        incomeCorrectionCents,
+        incomeTaxCorrectionCents: 0,
+      },
       matches: structuredClone(matches),
     },
   };

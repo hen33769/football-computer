@@ -3,7 +3,7 @@
 import { localCache } from "./browser-storage";
 import {
   isFinanceCorrectionKind,
-  normalizeCorrectionDeltaCents,
+  normalizeFinanceCorrectionAmounts,
   normalizeFinanceCorrectionDate,
   normalizeFinanceCorrectionNote,
   type CreateFinanceCorrectionInput,
@@ -19,13 +19,14 @@ import {
   type BackupImportPreview,
   type BackupImportStrategy,
   type BackupInitialBalanceStrategy,
-  type FullDataBackupV6,
+  type FullDataBackupV7,
 } from "./data-backup";
-import { orderLedgerTotals, unionSavedOrders } from "./imports";
+import { orderLedgerBreakdown, unionSavedOrders } from "./imports";
 import { normalizeAppSettings, unionAppSettings, type AppSettings } from "./settings";
 import type { MatchItem, SavedSlip } from "./types";
 
-export const GUEST_FINANCE_LEDGER_KEY = "football-simulator-finance-ledger-v2";
+export const GUEST_FINANCE_LEDGER_KEY = "football-simulator-finance-ledger-v3";
+const LEGACY_GUEST_FINANCE_LEDGER_KEY = "football-simulator-finance-ledger-v2";
 
 export type GuestStoredEntry = FinanceCorrectionEntry & {
   originId: string;
@@ -33,14 +34,15 @@ export type GuestStoredEntry = FinanceCorrectionEntry & {
   requestId: string | null;
 };
 
-const sourceKey = (entry: Pick<GuestStoredEntry, "originId" | "originEntryId">) => `${entry.originId}\u0000${entry.originEntryId}`;
-const isLegacyInitial = (entry: Pick<GuestStoredEntry, "source" | "effectiveDate">) => entry.effectiveDate === null
+const sourceKey = (entry: { originId: string; originEntryId: string }) => `${entry.originId}\u0000${entry.originEntryId}`;
+const isLegacyInitial = (entry: { source: string; effectiveDate: string | null }) => entry.effectiveDate === null
   && ["legacy-migration", "legacy-backup", "imported-initial-balance"].includes(entry.source);
 
-function backupContent(entry: Pick<BackupFinanceCorrectionEntry, "kind" | "deltaCents" | "effectiveDate" | "note" | "source" | "adjusts">) {
+function backupContent(entry: Pick<BackupFinanceCorrectionEntry, "kind" | "deltaCents" | "taxDeltaCents" | "effectiveDate" | "note" | "source" | "adjusts">) {
   return JSON.stringify({
     kind: entry.kind,
     deltaCents: entry.deltaCents,
+    taxDeltaCents: entry.taxDeltaCents,
     effectiveDate: entry.effectiveDate,
     note: entry.note,
     source: entry.source === "imported" ? "manual" : entry.source,
@@ -55,6 +57,7 @@ function guestEntryAsBackup(entry: GuestStoredEntry, byId: Map<string, GuestStor
     originEntryId: entry.originEntryId,
     kind: entry.kind,
     deltaCents: entry.deltaCents,
+    taxDeltaCents: entry.taxDeltaCents,
     effectiveDate: entry.effectiveDate,
     note: entry.note,
     source: entry.source,
@@ -68,12 +71,12 @@ export function exportGuestFullDataBackup(
   orders: SavedSlip[],
   settings: AppSettings,
   matches: MatchItem[],
-): FullDataBackupV6 {
+): FullDataBackupV7 {
   const activeEntries = state.entries.filter((entry) => entry.ledgerId === state.activeLedgerId);
   const byId = new Map(activeEntries.map((entry) => [entry.id, entry]));
   const entries = activeEntries.map((entry) => guestEntryAsBackup(entry, byId));
   return {
-    version: 6,
+    version: 7,
     kind: "full",
     exportedAt: new Date().toISOString(),
     originId: state.originId,
@@ -86,6 +89,7 @@ export function exportGuestFullDataBackup(
         entries,
         expenseCorrectionCents: entries.filter((entry) => entry.kind === "expense").reduce((sum, entry) => sum + entry.deltaCents, 0),
         incomeCorrectionCents: entries.filter((entry) => entry.kind === "income").reduce((sum, entry) => sum + entry.deltaCents, 0),
+        incomeTaxCorrectionCents: entries.filter((entry) => entry.kind === "income").reduce((sum, entry) => sum + entry.taxDeltaCents, 0),
       },
       matches: structuredClone(matches),
     },
@@ -106,21 +110,23 @@ export async function previewGuestFullDataImport(
   const activeEntries = state.entries.filter((entry) => entry.ledgerId === state.activeLedgerId);
   const byId = new Map(activeEntries.map((entry) => [entry.id, entry]));
   const current = activeEntries.map((entry) => guestEntryAsBackup(entry, byId));
-  const currentBySource = new Map(current.map((entry) => [sourceKey(entry as GuestStoredEntry), entry]));
+  const currentBySource = new Map(current.map((entry) => [sourceKey(entry), entry]));
   const initialBalanceAdjustments = (["expense", "income"] as const).filter((kind) => {
-    const currentValue = current.filter((entry) => entry.kind === kind && isLegacyInitial(entry as GuestStoredEntry)).reduce((sum, entry) => sum + entry.deltaCents, 0);
-    const backupValue = backup.data.finance.entries.filter((entry) => entry.kind === kind && isLegacyInitial(entry as GuestStoredEntry)).reduce((sum, entry) => sum + entry.deltaCents, 0);
-    return currentValue !== backupValue;
+    const currentValue = current.filter((entry) => entry.kind === kind && isLegacyInitial(entry)).reduce((sum, entry) => sum + entry.deltaCents, 0);
+    const backupValue = backup.data.finance.entries.filter((entry) => entry.kind === kind && isLegacyInitial(entry)).reduce((sum, entry) => sum + entry.deltaCents, 0);
+    const currentTax = current.filter((entry) => entry.kind === kind && isLegacyInitial(entry)).reduce((sum, entry) => sum + entry.taxDeltaCents, 0);
+    const backupTax = backup.data.finance.entries.filter((entry) => entry.kind === kind && isLegacyInitial(entry)).reduce((sum, entry) => sum + entry.taxDeltaCents, 0);
+    return currentValue !== backupValue || currentTax !== backupTax;
   }).length;
   let add = 0;
   let skip = 0;
   let conflicts = 0;
   for (const entry of backup.data.finance.entries) {
-    if (strategy === "merge" && isLegacyInitial(entry as GuestStoredEntry)) {
+    if (strategy === "merge" && isLegacyInitial(entry)) {
       skip += 1;
       continue;
     }
-    const existing = currentBySource.get(sourceKey(entry as GuestStoredEntry));
+    const existing = currentBySource.get(sourceKey(entry));
     if (!existing) add += 1;
     else if (backupContent(existing) === backupContent(entry)) skip += 1;
     else conflicts += 1;
@@ -147,11 +153,17 @@ export async function previewGuestFullDataImport(
       initialBalanceAdjustments: strategy === "merge" ? initialBalanceAdjustments : 0,
       expenseCorrectionCents: backup.data.finance.expenseCorrectionCents,
       incomeCorrectionCents: backup.data.finance.incomeCorrectionCents,
+      incomeTaxCorrectionCents: backup.data.finance.incomeTaxCorrectionCents,
     },
     matches: { count: backup.data.matches.length, separateScope: false },
-    warnings: Number((raw as { version?: unknown })?.version) === 5
-      ? ["旧版备份没有纠错明细；合并默认保留当前初值，覆盖会恢复为无日期初值。"]
-      : [],
+    warnings: [
+      ...(Number((raw as { version?: unknown })?.version) === 5
+        ? ["旧版备份没有纠错明细；合并默认保留当前初值，覆盖会恢复为无日期初值。"]
+        : []),
+      ...(Number((raw as { version?: unknown })?.version) === 6
+        ? ["v6 备份没有收入纠错税额字段，导入时按税额差值 0 处理。"]
+        : []),
+    ],
   };
 }
 
@@ -178,57 +190,71 @@ export function applyGuestFullDataImport(
   const activeEntries = state.entries.filter((entry) => entry.ledgerId === state.activeLedgerId);
   const currentById = new Map(activeEntries.map((entry) => [entry.id, entry]));
   const currentBackupEntries = activeEntries.map((entry) => guestEntryAsBackup(entry, currentById));
-  const currentBySource = new Map(currentBackupEntries.map((entry) => [sourceKey(entry as GuestStoredEntry), entry]));
+  const currentBySource = new Map(currentBackupEntries.map((entry) => [sourceKey(entry), entry]));
   const targetIdBySource = new Map(activeEntries.map((entry) => [sourceKey(entry), entry.id]));
   const importCandidates = backup.data.finance.entries.filter((entry) => {
     if (strategy === "replace") return true;
-    if (isLegacyInitial(entry as GuestStoredEntry)) return false;
-    const existing = currentBySource.get(sourceKey(entry as GuestStoredEntry));
+    if (isLegacyInitial(entry)) return false;
+    const existing = currentBySource.get(sourceKey(entry));
     if (existing && backupContent(existing) !== backupContent(entry)) throw new Error("备份中存在同 ID 但内容不同的纠错记录");
     return !existing;
   });
   if (strategy === "merge" && initialBalanceStrategy === "use-backup") {
     for (const kind of ["expense", "income"] as const) {
       const currentInitial = activeEntries.filter((entry) => entry.kind === kind && isLegacyInitial(entry)).reduce((sum, entry) => sum + entry.deltaCents, 0);
-      const backupInitial = backup.data.finance.entries.filter((entry) => entry.kind === kind && isLegacyInitial(entry as GuestStoredEntry)).reduce((sum, entry) => sum + entry.deltaCents, 0);
+      const backupInitial = backup.data.finance.entries.filter((entry) => entry.kind === kind && isLegacyInitial(entry)).reduce((sum, entry) => sum + entry.deltaCents, 0);
       const deltaCents = backupInitial - currentInitial;
-      const backupInitialSource = backup.data.finance.entries.find((entry) => entry.kind === kind && isLegacyInitial(entry as GuestStoredEntry));
-      if (deltaCents !== 0) importCandidates.push({
+      const currentInitialTax = activeEntries.filter((entry) => entry.kind === kind && isLegacyInitial(entry)).reduce((sum, entry) => sum + entry.taxDeltaCents, 0);
+      const backupInitialTax = backup.data.finance.entries.filter((entry) => entry.kind === kind && isLegacyInitial(entry)).reduce((sum, entry) => sum + entry.taxDeltaCents, 0);
+      const taxDeltaCents = backupInitialTax - currentInitialTax;
+      const backupInitialSource = backup.data.finance.entries.find((entry) => entry.kind === kind && isLegacyInitial(entry));
+      if (deltaCents === 0 && taxDeltaCents === 0) continue;
+      const initialEntry: BackupFinanceCorrectionEntry = {
         originId: backupInitialSource?.originId ?? backup.originId,
         originEntryId: backupInitialSource?.originEntryId ?? `imported-initial-balance:${kind}:${backup.dataRevision}`,
         kind,
         deltaCents,
+        taxDeltaCents,
         effectiveDate: null,
         note: "合并备份时补齐历史初值",
         source: "imported-initial-balance",
         createdAt: backup.exportedAt,
         adjusts: null,
-      });
+      };
+      const existing = currentBySource.get(sourceKey(initialEntry));
+      if (!existing) importCandidates.push(initialEntry);
+      else if (backupContent(existing) !== backupContent(initialEntry)) throw new Error("历史初值调整记录冲突");
     }
   }
-  for (const entry of importCandidates) targetIdBySource.set(sourceKey(entry as GuestStoredEntry), crypto.randomUUID());
-  for (const legacyEntry of backup.data.finance.entries.filter((entry) => isLegacyInitial(entry as GuestStoredEntry))) {
-    if (targetIdBySource.has(sourceKey(legacyEntry as GuestStoredEntry))) continue;
+  for (const entry of importCandidates) targetIdBySource.set(sourceKey(entry), crypto.randomUUID());
+  for (const legacyEntry of backup.data.finance.entries.filter((entry) => isLegacyInitial(entry))) {
+    if (targetIdBySource.has(sourceKey(legacyEntry))) continue;
     const importedInitial = importCandidates.find((entry) => entry.kind === legacyEntry.kind && entry.source === "imported-initial-balance");
     const currentInitial = activeEntries.find((entry) => entry.kind === legacyEntry.kind && isLegacyInitial(entry));
     const replacementId = importedInitial
-      ? targetIdBySource.get(sourceKey(importedInitial as GuestStoredEntry))
+      ? targetIdBySource.get(sourceKey(importedInitial))
       : currentInitial?.id;
-    if (replacementId) targetIdBySource.set(sourceKey(legacyEntry as GuestStoredEntry), replacementId);
+    if (replacementId) targetIdBySource.set(sourceKey(legacyEntry), replacementId);
   }
   for (const entry of importCandidates) {
-    if (entry.adjusts && !targetIdBySource.has(sourceKey(entry.adjusts as GuestStoredEntry))) {
+    if (entry.adjusts && !targetIdBySource.has(sourceKey(entry.adjusts))) {
       throw new Error("补差关联目标未导入，无法保留审计关系");
     }
   }
   let expense = strategy === "replace" ? 0 : guestCorrectionCents(state, "expense");
   let income = strategy === "replace" ? 0 : guestCorrectionCents(state, "income");
+  let incomeTax = strategy === "replace" ? 0 : guestTaxCorrectionCents(state);
   const imported: GuestStoredEntry[] = importCandidates.map((entry, index) => {
     const before = entry.kind === "expense" ? expense : income;
     const after = before + entry.deltaCents;
+    const taxBefore = entry.kind === "income" ? incomeTax : 0;
+    const taxAfter = taxBefore + entry.taxDeltaCents;
     if (entry.kind === "expense") expense = after;
-    else income = after;
-    const id = targetIdBySource.get(sourceKey(entry as GuestStoredEntry))!;
+    else {
+      income = after;
+      incomeTax = taxAfter;
+    }
+    const id = targetIdBySource.get(sourceKey(entry))!;
     return {
       id,
       ledgerId: targetLedgerId,
@@ -236,6 +262,9 @@ export function applyGuestFullDataImport(
       originEntryId: entry.originEntryId,
       requestId: null,
       kind: entry.kind,
+      amountDeltaCents: entry.kind === "income" ? entry.deltaCents + entry.taxDeltaCents : entry.deltaCents,
+      taxDeltaCents: entry.taxDeltaCents,
+      netDeltaCents: entry.deltaCents,
       deltaCents: entry.deltaCents,
       effectiveDate: entry.effectiveDate,
       note: entry.note,
@@ -244,8 +273,10 @@ export function applyGuestFullDataImport(
       sourceCreatedAt: entry.createdAt || null,
       correctionBeforeCents: before,
       correctionAfterCents: after,
+      taxCorrectionBeforeCents: taxBefore,
+      taxCorrectionAfterCents: taxAfter,
       revisionAfter: state.revision + 1,
-      adjustsEntryId: entry.adjusts ? targetIdBySource.get(sourceKey(entry.adjusts as GuestStoredEntry)) ?? null : null,
+      adjustsEntryId: entry.adjusts ? targetIdBySource.get(sourceKey(entry.adjusts)) ?? null : null,
     };
   });
   const ledgers = strategy === "replace"
@@ -261,9 +292,12 @@ export function applyGuestFullDataImport(
     ledgers,
     entries: strategy === "replace" ? [...state.entries, ...imported] : [...state.entries, ...imported],
   };
-  const orderTotals = orderLedgerTotals(targetOrders);
-  if (Math.round(orderTotals.expense * 100) + expense < 0 || Math.round(orderTotals.income * 100) + income < 0) {
-    throw new Error("恢复后的最终收入或支出不能小于 0");
+  const orderTotals = orderLedgerBreakdown(targetOrders);
+  if (Math.round(orderTotals.expense * 100) + expense < 0
+    || Math.round(orderTotals.grossIncome * 100) + income + incomeTax < 0
+    || Math.round(orderTotals.tax * 100) + incomeTax < 0
+    || Math.round(orderTotals.income * 100) + income < 0) {
+    throw new Error("恢复后的最终支出、税前收入、税额或税后收入不能小于 0");
   }
   saveGuestFinanceLedger(next);
   return {
@@ -276,7 +310,7 @@ export function applyGuestFullDataImport(
 }
 
 export type GuestFinanceLedgerState = {
-  version: 2;
+  version: 3;
   originId: string;
   revision: number;
   activeLedgerId: string;
@@ -289,7 +323,7 @@ const emptyState = (): GuestFinanceLedgerState => {
   const activeLedgerId = crypto.randomUUID();
   const createdAt = new Date().toISOString();
   return {
-    version: 2,
+    version: 3,
     originId,
     revision: 0,
     activeLedgerId,
@@ -298,15 +332,35 @@ const emptyState = (): GuestFinanceLedgerState => {
   };
 };
 
-function isStoredState(value: unknown): value is GuestFinanceLedgerState {
-  if (!value || typeof value !== "object") return false;
-  const state = value as Partial<GuestFinanceLedgerState>;
-  return state.version === 2
-    && typeof state.originId === "string"
-    && Number.isSafeInteger(state.revision)
-    && typeof state.activeLedgerId === "string"
-    && Array.isArray(state.ledgers)
-    && Array.isArray(state.entries);
+function normalizeStoredState(value: unknown): GuestFinanceLedgerState | null {
+  if (!value || typeof value !== "object") return null;
+  const state = value as Partial<GuestFinanceLedgerState> & { version?: number; entries?: Array<Partial<GuestStoredEntry>> };
+  if (!([2, 3].includes(Number(state.version)))
+    || typeof state.originId !== "string"
+    || !Number.isSafeInteger(state.revision)
+    || typeof state.activeLedgerId !== "string"
+    || !Array.isArray(state.ledgers)
+    || !Array.isArray(state.entries)) return null;
+  return {
+    version: 3,
+    originId: state.originId,
+    revision: Number(state.revision),
+    activeLedgerId: state.activeLedgerId,
+    ledgers: state.ledgers,
+    entries: state.entries.map((entry) => {
+      const netDeltaCents = Math.round(Number(entry.netDeltaCents ?? entry.deltaCents ?? 0));
+      const taxDeltaCents = Math.round(Number(entry.taxDeltaCents ?? 0));
+      return {
+        ...(entry as GuestStoredEntry),
+        amountDeltaCents: entry.kind === "income" ? netDeltaCents + taxDeltaCents : netDeltaCents,
+        taxDeltaCents,
+        netDeltaCents,
+        deltaCents: netDeltaCents,
+        taxCorrectionBeforeCents: Math.round(Number(entry.taxCorrectionBeforeCents ?? 0)),
+        taxCorrectionAfterCents: Math.round(Number(entry.taxCorrectionAfterCents ?? 0)),
+      };
+    }),
+  };
 }
 
 export function saveGuestFinanceLedger(state: GuestFinanceLedgerState) {
@@ -314,11 +368,15 @@ export function saveGuestFinanceLedger(state: GuestFinanceLedgerState) {
 }
 
 export function loadGuestFinanceLedger(initial: { expenseCorrectionCents: number; incomeCorrectionCents: number }) {
-  const raw = localCache.getItem(GUEST_FINANCE_LEDGER_KEY);
+  const raw = localCache.getItem(GUEST_FINANCE_LEDGER_KEY) ?? localCache.getItem(LEGACY_GUEST_FINANCE_LEDGER_KEY);
   if (raw) {
     try {
       const parsed = JSON.parse(raw) as unknown;
-      if (isStoredState(parsed)) return parsed;
+      const normalized = normalizeStoredState(parsed);
+      if (normalized) {
+        saveGuestFinanceLedger(normalized);
+        return normalized;
+      }
     } catch {
       // 旧值损坏时以现有累计总额重新建立迁移基线。
     }
@@ -335,6 +393,9 @@ export function loadGuestFinanceLedger(initial: { expenseCorrectionCents: number
       originEntryId: id,
       requestId: null,
       kind,
+      amountDeltaCents: deltaCents,
+      taxDeltaCents: 0,
+      netDeltaCents: deltaCents,
       deltaCents,
       effectiveDate: null,
       note: "升级前累计值，原始明细不可追溯",
@@ -343,6 +404,8 @@ export function loadGuestFinanceLedger(initial: { expenseCorrectionCents: number
       sourceCreatedAt: null,
       correctionBeforeCents: 0,
       correctionAfterCents: deltaCents,
+      taxCorrectionBeforeCents: 0,
+      taxCorrectionAfterCents: 0,
       revisionAfter: 0,
       adjustsEntryId: null,
     });
@@ -357,6 +420,16 @@ export function guestCorrectionCents(state: GuestFinanceLedgerState, kind: Finan
   return state.entries
     .filter((entry) => entry.ledgerId === state.activeLedgerId && entry.kind === kind)
     .reduce((total, entry) => total + entry.deltaCents, 0);
+}
+
+export function guestTaxCorrectionCents(state: GuestFinanceLedgerState) {
+  return state.entries
+    .filter((entry) => entry.ledgerId === state.activeLedgerId && entry.kind === "income")
+    .reduce((total, entry) => total + entry.taxDeltaCents, 0);
+}
+
+export function guestGrossIncomeCorrectionCents(state: GuestFinanceLedgerState) {
+  return guestCorrectionCents(state, "income") + guestTaxCorrectionCents(state);
 }
 
 export function listGuestFinanceCorrections(
@@ -374,6 +447,9 @@ export function listGuestFinanceCorrections(
       id: entry.id,
       ledgerId: entry.ledgerId,
       kind: entry.kind,
+      amountDeltaCents: entry.amountDeltaCents,
+      taxDeltaCents: entry.taxDeltaCents,
+      netDeltaCents: entry.netDeltaCents,
       deltaCents: entry.deltaCents,
       effectiveDate: entry.effectiveDate,
       note: entry.note,
@@ -382,6 +458,8 @@ export function listGuestFinanceCorrections(
       sourceCreatedAt: entry.sourceCreatedAt,
       correctionBeforeCents: entry.correctionBeforeCents,
       correctionAfterCents: entry.correctionAfterCents,
+      taxCorrectionBeforeCents: entry.taxCorrectionBeforeCents,
+      taxCorrectionAfterCents: entry.taxCorrectionAfterCents,
       revisionAfter: entry.revisionAfter,
       adjustsEntryId: entry.adjustsEntryId,
     })),
@@ -394,11 +472,11 @@ export function listGuestFinanceCorrections(
 export function createGuestFinanceCorrection(
   state: GuestFinanceLedgerState,
   rawInput: CreateFinanceCorrectionInput,
-  orderCents: { expense: number; income: number },
+  orderCents: { expense: number; income: number; grossIncome?: number; tax?: number },
   now = new Date(),
 ) {
   if (!isFinanceCorrectionKind(rawInput.kind)) throw new Error("纠错类型无效");
-  const deltaCents = normalizeCorrectionDeltaCents(rawInput.deltaCents);
+  const { amountDeltaCents, taxDeltaCents, netDeltaCents } = normalizeFinanceCorrectionAmounts(rawInput.kind, rawInput);
   const effectiveDate = normalizeFinanceCorrectionDate(rawInput.effectiveDate, now);
   const note = normalizeFinanceCorrectionNote(rawInput.note);
   const requestId = rawInput.requestId.trim();
@@ -406,7 +484,9 @@ export function createGuestFinanceCorrection(
   const repeated = state.entries.find((entry) => entry.requestId === requestId);
   if (repeated) {
     const same = repeated.kind === rawInput.kind
-      && repeated.deltaCents === deltaCents
+      && repeated.amountDeltaCents === amountDeltaCents
+      && repeated.taxDeltaCents === taxDeltaCents
+      && repeated.netDeltaCents === netDeltaCents
       && repeated.effectiveDate === effectiveDate
       && repeated.note === note
       && repeated.adjustsEntryId === (rawInput.adjustsEntryId ?? null);
@@ -422,8 +502,22 @@ export function createGuestFinanceCorrection(
     if (!adjusted) throw new Error("补差关联的原纠错记录无效");
   }
   const beforeCents = guestCorrectionCents(state, rawInput.kind);
-  const afterCents = beforeCents + deltaCents;
-  if (orderCents[rawInput.kind] + afterCents < 0) throw new Error("纠错后的最终收入或支出不能小于 0");
+  const afterCents = beforeCents + netDeltaCents;
+  const taxBeforeCents = rawInput.kind === "income" ? guestTaxCorrectionCents(state) : 0;
+  const taxAfterCents = taxBeforeCents + taxDeltaCents;
+  if (rawInput.kind === "expense" && orderCents.expense + afterCents < 0) {
+    throw new Error("纠错后的最终支出不能小于 0");
+  }
+  if (rawInput.kind === "income") {
+    const orderGrossIncomeCents = orderCents.grossIncome ?? orderCents.income;
+    const orderTaxCents = orderCents.tax ?? 0;
+    const grossAfterCents = beforeCents + taxBeforeCents + amountDeltaCents;
+    if (orderGrossIncomeCents + grossAfterCents < 0
+      || orderTaxCents + taxAfterCents < 0
+      || orderCents.income + afterCents < 0) {
+      throw new Error("纠错后的最终税前收入、税额或税后收入不能小于 0");
+    }
+  }
   const id = crypto.randomUUID();
   const createdAt = now.toISOString();
   const entry: GuestStoredEntry = {
@@ -433,7 +527,10 @@ export function createGuestFinanceCorrection(
     originEntryId: id,
     requestId,
     kind: rawInput.kind,
-    deltaCents,
+    amountDeltaCents,
+    taxDeltaCents,
+    netDeltaCents,
+    deltaCents: netDeltaCents,
     effectiveDate,
     note,
     source: "manual",
@@ -441,6 +538,8 @@ export function createGuestFinanceCorrection(
     sourceCreatedAt: null,
     correctionBeforeCents: beforeCents,
     correctionAfterCents: afterCents,
+    taxCorrectionBeforeCents: taxBeforeCents,
+    taxCorrectionAfterCents: taxAfterCents,
     revisionAfter: state.revision + 1,
     adjustsEntryId,
   };

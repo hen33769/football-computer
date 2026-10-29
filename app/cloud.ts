@@ -38,6 +38,10 @@ export type CloudPersonalData = {
     incomeOrders?: number;
     incomeGrossOrders?: number;
     incomeTax?: number;
+    incomeGrossCorrection?: number;
+    incomeTaxCorrection?: number;
+    incomeGrossTotal?: number;
+    incomeTaxTotal?: number;
     expenseCorrection?: number;
     incomeCorrection?: number;
     revision?: number;

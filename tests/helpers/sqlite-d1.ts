@@ -23,6 +23,7 @@ export class SqliteD1 {
       "0011_order_tax",
       "0012_order_confirmation",
       "0013_finance_correction_ledger",
+      "0014_finance_correction_tax",
     ]) {
       this.database.exec(readFileSync(new URL(`../../drizzle/${migration}.sql`, import.meta.url), "utf8"));
     }

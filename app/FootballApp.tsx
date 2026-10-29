@@ -116,7 +116,7 @@ import type {
   BackupImportPreview,
   BackupImportStrategy,
   BackupInitialBalanceStrategy,
-  FullDataBackupV6,
+  FullDataBackupV7,
 } from "./data-backup";
 import {
   applyGuestFullDataImport,
@@ -124,6 +124,8 @@ import {
   exportGuestFullDataBackup,
   GUEST_FINANCE_LEDGER_KEY,
   guestCorrectionCents,
+  guestGrossIncomeCorrectionCents,
+  guestTaxCorrectionCents,
   listGuestFinanceCorrections,
   loadGuestFinanceLedger,
   previewGuestFullDataImport,
@@ -1259,7 +1261,7 @@ function InnerFootballApp({
   onTeamTagImport: (code: string, requestId: string) => Promise<TeamTag>;
   onCloudFinanceCorrectionCreate: (input: CreateFinanceCorrectionInput) => Promise<CloudPersonalData["finance"]>;
   onCloudFinanceCorrectionsLoad: (query: { kind?: FinanceCorrectionKind; ledgerId?: string; cursor?: string; limit?: number }) => Promise<FinanceCorrectionPage>;
-  onCloudFullBackupExport: () => Promise<FullDataBackupV6>;
+  onCloudFullBackupExport: () => Promise<FullDataBackupV7>;
   onCloudFullBackupPreview: (backup: unknown, strategy: BackupImportStrategy) => Promise<BackupImportPreview>;
   onCloudFullBackupImport: (input: {
     backup: unknown;
@@ -1492,6 +1494,16 @@ function InnerFootballApp({
       ? cloudPersonal.finance.incomeCorrection ?? 0
       : guestFinanceLedger ? guestCorrectionCents(guestFinanceLedger, "income") / 100 : 0
   ));
+  const [incomeGrossCorrection, setIncomeGrossCorrection] = useState(() => (
+    isCloudMode && cloudPersonal
+      ? cloudPersonal.finance.incomeGrossCorrection ?? cloudPersonal.finance.incomeCorrection ?? 0
+      : guestFinanceLedger ? guestGrossIncomeCorrectionCents(guestFinanceLedger) / 100 : 0
+  ));
+  const [incomeTaxCorrection, setIncomeTaxCorrection] = useState(() => (
+    isCloudMode && cloudPersonal
+      ? cloudPersonal.finance.incomeTaxCorrection ?? 0
+      : guestFinanceLedger ? guestTaxCorrectionCents(guestFinanceLedger) / 100 : 0
+  ));
   const [expenseOrdersTotal, setExpenseOrdersTotal] = useState(() => (
     isCloudMode && cloudPersonal
       ? cloudPersonal.finance.expenseOrders ?? Math.max(0, cloudPersonal.finance.expenseTotal - (cloudPersonal.finance.expenseCorrection ?? 0))
@@ -1625,6 +1637,8 @@ function InnerFootballApp({
     setIncomeTotal(Math.max(0, finance.incomeTotal));
     setExpenseCorrection(finance.expenseCorrection ?? 0);
     setIncomeCorrection(finance.incomeCorrection ?? 0);
+    setIncomeGrossCorrection(finance.incomeGrossCorrection ?? finance.incomeCorrection ?? 0);
+    setIncomeTaxCorrection(finance.incomeTaxCorrection ?? 0);
     setExpenseOrdersTotal(finance.expenseOrders ?? Math.max(0, finance.expenseTotal - (finance.expenseCorrection ?? 0)));
     setIncomeOrdersTotal(finance.incomeOrders ?? Math.max(0, finance.incomeTotal - (finance.incomeCorrection ?? 0)));
     setIncomeGrossOrdersTotal(finance.incomeGrossOrders ?? finance.incomeOrders ?? 0);
@@ -1642,9 +1656,13 @@ function InnerFootballApp({
     const orders = orderLedgerBreakdown(savedSlips);
     const nextExpenseCorrection = guestCorrectionCents(state, "expense") / 100;
     const nextIncomeCorrection = guestCorrectionCents(state, "income") / 100;
+    const nextIncomeGrossCorrection = guestGrossIncomeCorrectionCents(state) / 100;
+    const nextIncomeTaxCorrection = guestTaxCorrectionCents(state) / 100;
     setGuestFinanceLedger(state);
     setExpenseCorrection(nextExpenseCorrection);
     setIncomeCorrection(nextIncomeCorrection);
+    setIncomeGrossCorrection(nextIncomeGrossCorrection);
+    setIncomeTaxCorrection(nextIncomeTaxCorrection);
     setExpenseOrdersTotal(orders.expense);
     setIncomeOrdersTotal(orders.income);
     setIncomeGrossOrdersTotal(orders.grossIncome);
@@ -2120,11 +2138,15 @@ function InnerFootballApp({
     const activeEntries = guestFinanceLedger?.entries.filter((entry) => entry.ledgerId === guestFinanceLedger.activeLedgerId) ?? [];
     const initialExpenseCents = activeEntries.filter((entry) => entry.kind === "expense" && !entry.effectiveDate).reduce((total, entry) => total + entry.deltaCents, 0);
     const initialIncomeCents = activeEntries.filter((entry) => entry.kind === "income" && !entry.effectiveDate).reduce((total, entry) => total + entry.deltaCents, 0);
+    const initialIncomeTaxCents = activeEntries.filter((entry) => entry.kind === "income" && !entry.effectiveDate).reduce((total, entry) => total + entry.taxDeltaCents, 0);
     return Promise.resolve({
       points: buildFinanceTrendFromOrders(savedSlips, {
         expenseCorrection: initialExpenseCents / 100,
         incomeCorrection: initialIncomeCents / 100,
-        date: shanghaiDateKey(new Date().toISOString()),
+        taxCorrection: initialIncomeTaxCents / 100,
+        date: initialExpenseCents !== 0 || initialIncomeCents !== 0 || initialIncomeTaxCents !== 0
+          ? shanghaiDateKey(new Date().toISOString())
+          : undefined,
       }, {}, activeEntries),
     });
   }, [guestFinanceLedger, isCloudMode, savedSlips]);
@@ -3905,6 +3927,8 @@ function InnerFootballApp({
       const orderBreakdown = orderLedgerBreakdown(restored.orders);
       const expenseCorrectionValue = guestCorrectionCents(restored.state, "expense") / 100;
       const incomeCorrectionValue = guestCorrectionCents(restored.state, "income") / 100;
+      const incomeGrossCorrectionValue = guestGrossIncomeCorrectionCents(restored.state) / 100;
+      const incomeTaxCorrectionValue = guestTaxCorrectionCents(restored.state) / 100;
       setGuestFinanceLedger(restored.state);
       setSavedSlips(restored.orders);
       localCache.setItem(SAVED_KEY, JSON.stringify(restored.orders));
@@ -3918,6 +3942,8 @@ function InnerFootballApp({
       setIncomeTaxTotal(orderBreakdown.tax);
       setExpenseCorrection(expenseCorrectionValue);
       setIncomeCorrection(incomeCorrectionValue);
+      setIncomeGrossCorrection(incomeGrossCorrectionValue);
+      setIncomeTaxCorrection(incomeTaxCorrectionValue);
       setExpenseTotal(orderBreakdown.expense + expenseCorrectionValue);
       setIncomeTotal(orderBreakdown.income + incomeCorrectionValue);
       saveCachedMatches(restoredMatches);
@@ -3981,7 +4007,7 @@ function InnerFootballApp({
       return;
     }
     if (!guestFinanceLedger) throw new Error("游客账本尚未初始化");
-    const orders = orderLedgerTotals(savedSlips);
+    const orders = orderLedgerBreakdown(savedSlips);
     const latestLedger = loadGuestFinanceLedger({
       expenseCorrectionCents: guestCorrectionCents(guestFinanceLedger, "expense"),
       incomeCorrectionCents: guestCorrectionCents(guestFinanceLedger, "income"),
@@ -3993,6 +4019,8 @@ function InnerFootballApp({
     const result = createGuestFinanceCorrection(latestLedger, input, {
       expense: Math.round(orders.expense * 100),
       income: Math.round(orders.income * 100),
+      grossIncome: Math.round(orders.grossIncome * 100),
+      tax: Math.round(orders.tax * 100),
     });
     applyGuestFinance(result.state);
     message.success("纠错记录已保存");
@@ -4896,9 +4924,11 @@ function InnerFootballApp({
 	                    </div>
                       <div style={{display: 'flex',flexDirection: 'column'}}>
                         <small>{`订单税后收入 ¥${currency(isCloudMode ? incomeOrdersTotal : currentOrderLedgerTotals.income)}`}</small>
-                        <small>{`累计纠错 ${incomeCorrection >= 0 ? "+" : "−"}¥${currency(Math.abs(incomeCorrection))}`}</small>
-                        <small>税前奖金 ¥{currency(displayedOrderGrossIncome)}</small>
+                        <small>订单税前收入 ¥{currency(displayedOrderGrossIncome)}</small>
+                        <small>{`收入纠错（税前）${incomeGrossCorrection >= 0 ? "+" : "−"}¥${currency(Math.abs(incomeGrossCorrection))}`}</small>
                         <small>订单税额 ¥{currency(displayedOrderTax)}</small>
+                        <small>{`纠错税额 ${incomeTaxCorrection >= 0 ? "+" : "−"}¥${currency(Math.abs(incomeTaxCorrection))}`}</small>
+                        <small>{`收入纠错（税后）${incomeCorrection >= 0 ? "+" : "−"}¥${currency(Math.abs(incomeCorrection))}`}</small>
                       </div>
 	                  </div>
                   <div className={`order-stat-item order-profit-card ${netProfit >= 0 ? "positive" : "negative"}`}>
@@ -5413,6 +5443,7 @@ function InnerFootballApp({
                 <b>文件账本汇总</b>
                 <span>支出纠错 {(backupImportDialog.preview.finance.expenseCorrectionCents / 100).toLocaleString("zh-CN", { style: "currency", currency: "CNY" })}</span>
                 <small>收入纠错 {(backupImportDialog.preview.finance.incomeCorrectionCents / 100).toLocaleString("zh-CN", { style: "currency", currency: "CNY" })}</small>
+                <small>纠错税额 {(backupImportDialog.preview.finance.incomeTaxCorrectionCents / 100).toLocaleString("zh-CN", { style: "currency", currency: "CNY" })}</small>
               </section>
               <section>
                 <b>设置与比赛</b>
@@ -5487,8 +5518,18 @@ function InnerFootballApp({
           initialView={financeCorrectionsModal.view}
           initialKind={financeCorrectionsModal.kind}
           revision={isCloudMode ? cloudPersonal?.finance.revision ?? 0 : guestFinanceLedger?.revision ?? 0}
-          totals={{ expense: expenseTotal, income: incomeTotal }}
-          corrections={{ expense: expenseCorrection, income: incomeCorrection }}
+          totals={{
+            expense: expenseTotal,
+            grossIncome: displayedOrderGrossIncome + incomeGrossCorrection,
+            tax: displayedOrderTax + incomeTaxCorrection,
+            income: incomeTotal,
+          }}
+          corrections={{
+            expense: expenseCorrection,
+            grossIncome: incomeGrossCorrection,
+            tax: incomeTaxCorrection,
+            income: incomeCorrection,
+          }}
           onClose={() => setFinanceCorrectionsModal(null)}
           onCreate={addFinanceCorrection}
           onLoad={loadFinanceCorrections}
@@ -6042,7 +6083,7 @@ const ignoreCloudFinanceCorrectionCreate = async () => { throw new Error("游客
 const ignoreCloudFinanceCorrectionsLoad = async (): Promise<FinanceCorrectionPage> => ({
   entries: [], nextCursor: null, activeLedgerId: "", ledgers: [],
 });
-const ignoreCloudFullBackupExport = async (): Promise<FullDataBackupV6> => { throw new Error("游客模式使用本地完整备份"); };
+const ignoreCloudFullBackupExport = async (): Promise<FullDataBackupV7> => { throw new Error("游客模式使用本地完整备份"); };
 const ignoreCloudFullBackupPreview = async (): Promise<BackupImportPreview> => { throw new Error("游客模式使用本地完整备份"); };
 const ignoreCloudFullBackupImport = async (): Promise<FullBackupImportResult> => { throw new Error("游客模式使用本地完整备份"); };
 const ignoreCloudOrderMutation = async () => ({
@@ -6118,7 +6159,7 @@ export default function FootballApp({
   onTeamTagImport?: (code: string, requestId: string) => Promise<TeamTag>;
   onCloudFinanceCorrectionCreate?: (input: CreateFinanceCorrectionInput) => Promise<CloudPersonalData["finance"]>;
   onCloudFinanceCorrectionsLoad?: (query: { kind?: FinanceCorrectionKind; ledgerId?: string; cursor?: string; limit?: number }) => Promise<FinanceCorrectionPage>;
-  onCloudFullBackupExport?: () => Promise<FullDataBackupV6>;
+  onCloudFullBackupExport?: () => Promise<FullDataBackupV7>;
   onCloudFullBackupPreview?: (backup: unknown, strategy: BackupImportStrategy) => Promise<BackupImportPreview>;
   onCloudFullBackupImport?: (input: {
     backup: unknown;

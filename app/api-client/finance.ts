@@ -19,7 +19,11 @@ export type FinanceResponse = {
     grossOrders: number;
     tax: number;
     orders: number;
+    grossCorrection: number;
+    taxCorrection: number;
     correction: number;
+    grossTotal: number;
+    taxTotal: number;
     total: number;
   };
   revision: number;

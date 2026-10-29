@@ -5,9 +5,9 @@ import {
   type BackupImportPreview,
   type BackupImportStrategy,
   type BackupInitialBalanceStrategy,
-  type FullDataBackupV6,
+  type FullDataBackupV7,
 } from "../data-backup";
-import { orderLedgerTotals, unionSavedOrders } from "../imports";
+import { orderLedgerBreakdown, unionSavedOrders } from "../imports";
 import { compactOrderSummary, normalizeCompactOrder, savedSlipToCompactOrder } from "../order-model";
 import { normalizeAppSettings, unionAppSettings } from "../settings";
 import type { MatchItem, SavedSlip } from "../types";
@@ -24,6 +24,7 @@ type StoredEntryRow = {
   origin_entry_id: string;
   kind: "expense" | "income";
   delta_cents: number;
+  tax_delta_cents: number;
   effective_date: string | null;
   note: string;
   source: string;
@@ -36,6 +37,7 @@ type StoredCorrectionSummary = {
   active_ledger_id: string;
   expense_correction_cents: number;
   income_correction_cents: number;
+  income_tax_correction_cents: number;
   revision: number;
 };
 
@@ -60,6 +62,7 @@ function backupEntryContent(entry: BackupFinanceCorrectionEntry) {
   return JSON.stringify({
     kind: entry.kind,
     deltaCents: entry.deltaCents,
+    taxDeltaCents: entry.taxDeltaCents,
     effectiveDate: entry.effectiveDate,
     note: entry.note,
     source: entry.source === "imported" ? "manual" : entry.source,
@@ -84,7 +87,7 @@ async function allSavedOrders(d1: D1Database, userId: string) {
 
 async function activeStoredEntries(d1: D1Database, userId: string) {
   const rows = await d1.prepare(`
-    SELECT e.id, e.origin_id, e.origin_entry_id, e.kind, e.delta_cents, e.effective_date,
+    SELECT e.id, e.origin_id, e.origin_entry_id, e.kind, e.delta_cents, e.tax_delta_cents, e.effective_date,
            e.note, e.source, e.created_at, e.source_created_at, e.adjusts_entry_id
     FROM user_finance_correction_entries e
     JOIN user_finance_corrections c ON c.user_id = e.user_id AND c.active_ledger_id = e.ledger_id
@@ -103,6 +106,7 @@ function entriesForBackup(rows: StoredEntryRow[]) {
       originEntryId: row.origin_entry_id,
       kind: row.kind,
       deltaCents: Math.round(Number(row.delta_cents)),
+      taxDeltaCents: Math.round(Number(row.tax_delta_cents)),
       effectiveDate: row.effective_date,
       note: row.note,
       source: row.source,
@@ -120,7 +124,7 @@ async function sharedMatches(d1: D1Database) {
   });
 }
 
-export async function exportFullDataBackup(d1: D1Database, userId: string): Promise<FullDataBackupV6> {
+export async function exportFullDataBackup(d1: D1Database, userId: string): Promise<FullDataBackupV7> {
   await ensureFinanceCorrections(d1, userId);
   await ensureUserSettings(d1, userId);
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -137,12 +141,14 @@ export async function exportFullDataBackup(d1: D1Database, userId: string): Prom
     const backupEntries = entriesForBackup(entries);
     const expenseCorrectionCents = backupEntries.filter((entry) => entry.kind === "expense").reduce((total, entry) => total + entry.deltaCents, 0);
     const incomeCorrectionCents = backupEntries.filter((entry) => entry.kind === "income").reduce((total, entry) => total + entry.deltaCents, 0);
+    const incomeTaxCorrectionCents = backupEntries.filter((entry) => entry.kind === "income").reduce((total, entry) => total + entry.taxDeltaCents, 0);
     if (expenseCorrectionCents !== toCents(finance.expense.correction)
-      || incomeCorrectionCents !== toCents(finance.income.correction)) {
+      || incomeCorrectionCents !== toCents(finance.income.correction)
+      || incomeTaxCorrectionCents !== toCents(finance.income.taxCorrection)) {
       throw httpError("财务纠错汇总与当前账本流水不一致，请先检查数据", 409);
     }
     return {
-      version: 6,
+      version: 7,
       kind: "full",
       exportedAt: new Date().toISOString(),
       originId: before.originId,
@@ -155,6 +161,7 @@ export async function exportFullDataBackup(d1: D1Database, userId: string): Prom
           entries: backupEntries,
           expenseCorrectionCents,
           incomeCorrectionCents,
+          incomeTaxCorrectionCents,
         },
         matches,
       },
@@ -200,7 +207,9 @@ export async function previewFullDataImport(
   const legacyInitialDifferenceCount = (["expense", "income"] as const).filter((kind) => {
     const currentValue = currentEntries.filter((entry) => entry.kind === kind && isLegacyInitialEntry(entry)).reduce((total, entry) => total + entry.deltaCents, 0);
     const backupValue = backup.data.finance.entries.filter((entry) => entry.kind === kind && isLegacyInitialEntry(entry)).reduce((total, entry) => total + entry.deltaCents, 0);
-    return currentValue !== backupValue;
+    const currentTax = currentEntries.filter((entry) => entry.kind === kind && isLegacyInitialEntry(entry)).reduce((total, entry) => total + entry.taxDeltaCents, 0);
+    const backupTax = backup.data.finance.entries.filter((entry) => entry.kind === kind && isLegacyInitialEntry(entry)).reduce((total, entry) => total + entry.taxDeltaCents, 0);
+    return currentValue !== backupValue || currentTax !== backupTax;
   }).length;
   let add = 0;
   let skip = 0;
@@ -237,10 +246,12 @@ export async function previewFullDataImport(
       initialBalanceAdjustments: strategy === "merge" ? legacyInitialDifferenceCount : 0,
       expenseCorrectionCents: backup.data.finance.expenseCorrectionCents,
       incomeCorrectionCents: backup.data.finance.incomeCorrectionCents,
+      incomeTaxCorrectionCents: backup.data.finance.incomeTaxCorrectionCents,
     },
     matches: { count: backup.data.matches.length, separateScope: true },
     warnings: [
       ...(Number((raw as { version?: unknown })?.version) === 5 ? ["旧版备份没有纠错明细；合并不会叠加旧账本初值，覆盖会恢复为无日期初值。"] : []),
+      ...(Number((raw as { version?: unknown })?.version) === 6 ? ["v6 备份没有收入纠错税额字段，导入时按税额差值 0 处理。"] : []),
       ...(backup.data.matches.length > 0 ? ["公共比赛使用独立恢复范围，将单独报告结果。"] : []),
     ],
   };
@@ -252,6 +263,7 @@ type PreparedStagedEntry = {
   originEntryId: string;
   kind: "expense" | "income";
   deltaCents: number;
+  taxDeltaCents: number;
   effectiveDate: string | null;
   note: string;
   source: string;
@@ -259,6 +271,8 @@ type PreparedStagedEntry = {
   sourceCreatedAt: string;
   correctionBeforeCents: number;
   correctionAfterCents: number;
+  taxCorrectionBeforeCents: number;
+  taxCorrectionAfterCents: number;
   revisionAfter: number;
   adjustsEntryId: string | null;
 };
@@ -322,15 +336,18 @@ export async function commitFullDataImport(
     getUserSettings(d1, userId),
     activeStoredEntries(d1, userId),
     d1.prepare(`
-      SELECT active_ledger_id, expense_correction_cents, income_correction_cents, revision
+      SELECT active_ledger_id, expense_correction_cents, income_correction_cents,
+             income_tax_correction_cents, revision
       FROM user_finance_corrections WHERE user_id = ?1
     `).bind(userId).first<StoredCorrectionSummary>(),
   ]);
   if (!currentSummary) throw new Error("财务汇总不存在");
   const currentExpenseSum = currentRows.filter((row) => row.kind === "expense").reduce((total, row) => total + Math.round(Number(row.delta_cents)), 0);
   const currentIncomeSum = currentRows.filter((row) => row.kind === "income").reduce((total, row) => total + Math.round(Number(row.delta_cents)), 0);
+  const currentIncomeTaxSum = currentRows.filter((row) => row.kind === "income").reduce((total, row) => total + Math.round(Number(row.tax_delta_cents)), 0);
   if (currentExpenseSum !== Math.round(Number(currentSummary.expense_correction_cents))
-    || currentIncomeSum !== Math.round(Number(currentSummary.income_correction_cents))) {
+    || currentIncomeSum !== Math.round(Number(currentSummary.income_correction_cents))
+    || currentIncomeTaxSum !== Math.round(Number(currentSummary.income_tax_correction_cents))) {
     throw httpError("当前财务纠错汇总与账本流水不一致，不能导入", 409);
   }
   const now = new Date().toISOString();
@@ -347,6 +364,7 @@ export async function commitFullDataImport(
   const currentRowBySource = new Map(currentRows.map((row) => [`${row.origin_id}\u0000${row.origin_entry_id}`, row]));
   let expenseBefore = input.strategy === "replace" ? 0 : Math.round(Number(currentSummary.expense_correction_cents));
   let incomeBefore = input.strategy === "replace" ? 0 : Math.round(Number(currentSummary.income_correction_cents));
+  let incomeTaxBefore = input.strategy === "replace" ? 0 : Math.round(Number(currentSummary.income_tax_correction_cents));
   const stagedEntries: PreparedStagedEntry[] = [];
   const targetIdBySource = new Map<string, string>();
   currentRows.forEach((row) => targetIdBySource.set(`${row.origin_id}\u0000${row.origin_entry_id}`, row.id));
@@ -363,14 +381,22 @@ export async function commitFullDataImport(
       const backupInitial = backup.data.finance.entries
         .filter((entry) => entry.kind === kind && isLegacyInitialEntry(entry))
         .reduce((total, entry) => total + entry.deltaCents, 0);
+      const currentInitialTax = currentBackupEntries
+        .filter((entry) => entry.kind === kind && isLegacyInitialEntry(entry))
+        .reduce((total, entry) => total + entry.taxDeltaCents, 0);
+      const backupInitialTax = backup.data.finance.entries
+        .filter((entry) => entry.kind === kind && isLegacyInitialEntry(entry))
+        .reduce((total, entry) => total + entry.taxDeltaCents, 0);
       const deltaCents = backupInitial - currentInitial;
-      if (deltaCents === 0) continue;
+      const taxDeltaCents = backupInitialTax - currentInitialTax;
+      if (deltaCents === 0 && taxDeltaCents === 0) continue;
       const backupInitialSource = backup.data.finance.entries.find((entry) => entry.kind === kind && isLegacyInitialEntry(entry));
       const initialEntry: BackupFinanceCorrectionEntry = {
         originId: backupInitialSource?.originId ?? backup.originId,
         originEntryId: backupInitialSource?.originEntryId ?? `imported-initial-balance:${kind}:${digest}`,
         kind,
         deltaCents,
+        taxDeltaCents,
         effectiveDate: null,
         note: "合并备份时补齐历史初值",
         source: "imported-initial-balance",
@@ -404,14 +430,20 @@ export async function commitFullDataImport(
   for (const [index, entry] of importCandidates.entries()) {
     const before = entry.kind === "expense" ? expenseBefore : incomeBefore;
     const after = before + entry.deltaCents;
+    const taxBefore = entry.kind === "income" ? incomeTaxBefore : 0;
+    const taxAfter = taxBefore + entry.taxDeltaCents;
     if (entry.kind === "expense") expenseBefore = after;
-    else incomeBefore = after;
+    else {
+      incomeBefore = after;
+      incomeTaxBefore = taxAfter;
+    }
     stagedEntries.push({
       id: targetIdBySource.get(sourceKey(entry))!,
       originId: entry.originId,
       originEntryId: entry.originEntryId,
       kind: entry.kind,
       deltaCents: entry.deltaCents,
+      taxDeltaCents: entry.taxDeltaCents,
       effectiveDate: entry.effectiveDate,
       note: entry.note,
       source: entry.source === "manual" ? "imported" : entry.source,
@@ -419,16 +451,21 @@ export async function commitFullDataImport(
       sourceCreatedAt: entry.createdAt,
       correctionBeforeCents: before,
       correctionAfterCents: after,
+      taxCorrectionBeforeCents: taxBefore,
+      taxCorrectionAfterCents: taxAfter,
       revisionAfter: currentSummary.revision + 1,
       adjustsEntryId: entry.adjusts ? targetIdBySource.get(sourceKey(entry.adjusts)) ?? currentRowBySource.get(sourceKey(entry.adjusts))?.id ?? null : null,
     });
   }
   const finalExpenseCorrectionCents = input.strategy === "replace" ? backup.data.finance.expenseCorrectionCents : expenseBefore;
   const finalIncomeCorrectionCents = input.strategy === "replace" ? backup.data.finance.incomeCorrectionCents : incomeBefore;
-  const targetOrderTotals = orderLedgerTotals(targetOrders);
+  const finalIncomeTaxCorrectionCents = input.strategy === "replace" ? backup.data.finance.incomeTaxCorrectionCents : incomeTaxBefore;
+  const targetOrderTotals = orderLedgerBreakdown(targetOrders);
   if (toCents(targetOrderTotals.expense) + finalExpenseCorrectionCents < 0
+    || toCents(targetOrderTotals.grossIncome) + finalIncomeCorrectionCents + finalIncomeTaxCorrectionCents < 0
+    || toCents(targetOrderTotals.tax) + finalIncomeTaxCorrectionCents < 0
     || toCents(targetOrderTotals.income) + finalIncomeCorrectionCents < 0) {
-    throw httpError("恢复后的最终收入或支出不能小于 0", 400);
+    throw httpError("恢复后的最终支出、税前收入、税额或税后收入不能小于 0", 400);
   }
   const operationStatements = completed ? [
     d1.prepare(`DELETE FROM user_data_import_staging WHERE operation_id = ?1`).bind(operationId),
@@ -509,17 +546,20 @@ export async function commitFullDataImport(
   if (stagedEntries.length > 0) {
     finalStatements.push(d1.prepare(`
       INSERT INTO user_finance_correction_entries (
-        id, user_id, ledger_id, origin_id, origin_entry_id, kind, delta_cents, effective_date,
+        id, user_id, ledger_id, origin_id, origin_entry_id, kind, delta_cents, tax_delta_cents, effective_date,
         note, source, request_id, created_at, source_created_at, correction_before_cents,
-        correction_after_cents, revision_after, adjusts_entry_id
+        correction_after_cents, tax_correction_before_cents, tax_correction_after_cents,
+        revision_after, adjusts_entry_id
       )
       SELECT record_key, ?1, ?2,
         json_extract(payload_json, '$.originId'), json_extract(payload_json, '$.originEntryId'),
         json_extract(payload_json, '$.kind'), json_extract(payload_json, '$.deltaCents'),
-        json_extract(payload_json, '$.effectiveDate'), json_extract(payload_json, '$.note'),
+        json_extract(payload_json, '$.taxDeltaCents'), json_extract(payload_json, '$.effectiveDate'),
+        json_extract(payload_json, '$.note'),
         json_extract(payload_json, '$.source'), NULL, json_extract(payload_json, '$.createdAt'),
         json_extract(payload_json, '$.sourceCreatedAt'), json_extract(payload_json, '$.correctionBeforeCents'),
-        json_extract(payload_json, '$.correctionAfterCents'), json_extract(payload_json, '$.revisionAfter'),
+        json_extract(payload_json, '$.correctionAfterCents'), json_extract(payload_json, '$.taxCorrectionBeforeCents'),
+        json_extract(payload_json, '$.taxCorrectionAfterCents'), json_extract(payload_json, '$.revisionAfter'),
         json_extract(payload_json, '$.adjustsEntryId')
       FROM user_data_import_staging WHERE operation_id = ?3 AND record_kind = 'finance-entry'
     `).bind(userId, targetLedgerId, operationId));
@@ -528,9 +568,10 @@ export async function commitFullDataImport(
     d1.prepare(`
       UPDATE user_finance_corrections
       SET active_ledger_id = ?1, expense_correction_cents = ?2, income_correction_cents = ?3,
-          revision = revision + 1, updated_at = ?4
-      WHERE user_id = ?5
-    `).bind(targetLedgerId, finalExpenseCorrectionCents, finalIncomeCorrectionCents, now, userId),
+          income_tax_correction_cents = ?4, revision = revision + 1, updated_at = ?5
+      WHERE user_id = ?6
+    `).bind(targetLedgerId, finalExpenseCorrectionCents, finalIncomeCorrectionCents,
+      finalIncomeTaxCorrectionCents, now, userId),
     d1.prepare(`
       UPDATE user_personal_data_revisions
       SET revision = revision + 1, updated_at = ?1

@@ -85,9 +85,13 @@ function chartOption(points: FinanceTrendPoint[]): EChartsOption {
           ? [
             `订单支出<b>¥${currency(point.orderExpense ?? point.expense)}</b>`,
             `支出纠错<b>${(point.expenseCorrection ?? 0) >= 0 ? "+" : "−"}¥${currency(Math.abs(point.expenseCorrection ?? 0))}</b>`,
-            `订单税后收入<b>¥${currency(point.orderIncome ?? point.income)}</b>`,
-            `收入纠错<b>${(point.incomeCorrection ?? 0) >= 0 ? "+" : "−"}¥${currency(Math.abs(point.incomeCorrection ?? 0))}</b>`,
-            `当日税额<b>¥${currency(point.tax)}</b>`,
+            `订单税前收入<b>¥${currency(point.orderGrossIncome ?? ((point.orderIncome ?? point.income) + (point.orderTax ?? point.tax)))}</b>`,
+            `收入纠错（税前）<b>${(point.grossIncomeCorrection ?? 0) >= 0 ? "+" : "−"}¥${currency(Math.abs(point.grossIncomeCorrection ?? 0))}</b>`,
+            `订单税额<b>¥${currency(point.orderTax ?? point.tax)}</b>`,
+            `纠错税额<b>${(point.taxCorrection ?? 0) >= 0 ? "+" : "−"}¥${currency(Math.abs(point.taxCorrection ?? 0))}</b>`,
+            `税后收入合计<b>¥${currency(point.income)}</b>`,
+            `收入纠错（税后）<b>${(point.incomeCorrection ?? 0) >= 0 ? "+" : "−"}¥${currency(Math.abs(point.incomeCorrection ?? 0))}</b>`,
+            `当日税额合计<b>¥${currency(point.tax)}</b>`,
             `累计税额<b>¥${currency(point.cumulativeTax)}</b>`,
           ]
           : [];
@@ -229,7 +233,7 @@ export function FinanceTrendModal({ open, onClose, loadTrend }: FinanceTrendModa
       className="finance-trend-modal"
       destroyOnHidden
     >
-      <p className="finance-trend-note">无归属日期的纠错计入累计初值；有日期的纠错计入对应日支出或税后收入。tooltip 会拆分订单金额、纠错、税额与累计值。</p>
+      <p className="finance-trend-note">无归属日期的纠错计入累计初值；有日期的纠错计入对应日支出、税前收入、税额和税后收入。tooltip 会拆分订单金额、纠错与累计值。</p>
       {loading ? (
         <div className="finance-trend-loading"><Spin size="large" description="正在加载趋势数据…" /></div>
       ) : error ? (
