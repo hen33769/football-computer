@@ -10,5 +10,6 @@ export function formatMatchCopyLine(match: MatchItem): string {
         ? `（客让 ${Math.abs(handicap)}）`
         : "（平手）";
   }
-  return `${match.home} VS ${match.away}${handicapLabel}`;
+  const matchNumber = [match.weekday.trim(), match.code.trim()].filter(Boolean).join(" ");
+  return `${matchNumber ? `${matchNumber} ｜ ` : ""}${match.home} vs ${match.away}${handicapLabel ? ` ${handicapLabel}` : ""}`;
 }

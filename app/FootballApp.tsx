@@ -64,6 +64,7 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import {
   calculateBetSummary,
   calculateCurrentPrize,
+  calculateOrderReferencePrizeRange,
   calculatePassMultipliers,
   calculatePrizeRange,
   calculatePrizeRangeMetrics,
@@ -82,6 +83,7 @@ import {
   sortPassMultiplierDetails,
   winningOptionId,
   type PrizeRangeMetrics,
+  type OrderReferencePrizeRange,
 } from "./calculator";
 import { appendOrderPassValue, formatOrderPassValue, inferOrderPasses } from "./order-passes";
 import { matchPassesLeagueFilter, matchPassesTeamFilter, orderContainsTeam, orderPassesLeagueFilter, orderPassesMatchCountFilter, retainAvailableLeagueNames, splitTeamNameByQuery } from "./order-filters";
@@ -499,20 +501,34 @@ const winningMultiplierRange = (range: PrizeRangeMetrics["multiplier"]) => {
   return `${format(range.min)} – ${format(range.max)} 倍`;
 };
 
-function DetailPrizeRange({ range, metrics, live = false }: { range: PrizeRange; metrics: PrizeRangeMetrics; live?: boolean }) {
+const formatPrizeRange = (range: PrizeRange) => range.min === range.max
+  ? `¥${currency(range.max)}`
+  : `¥${currency(range.min)} – ¥${currency(range.max)}`;
+
+const formatOrderReferencePrizeRange = (range: OrderReferencePrizeRange) => (
+  range.max > 0 || (range.remainingMatchCount === 0 && range.excludedMatchCount > 0)
+    ? formatPrizeRange(range)
+    : "—"
+);
+
+function DetailPrizeRange({ range, metrics, reference }: { range: PrizeRange; metrics: PrizeRangeMetrics; reference?: OrderReferencePrizeRange | null }) {
   return (
     <div className="detail-range-card">
       <div className="detail-range-prize">
-        <span>{live ? "实时中奖奖金范围" : "中奖奖金范围"}</span>
-        <strong>{metrics.available ? `¥${currency(metrics.prize.min)} – ¥${currency(metrics.prize.max)}` : "—"}</strong>
-        <small>{live ? "已有成功投注项的比赛仅按成功项计算；最低值排除未中奖的 0 元结果" : "最低值排除未中奖的 0 元结果"}</small>
+        <span>{reference ? "实时参考奖金范围" : "中奖奖金范围"}</span>
+        <strong>{reference ? formatOrderReferencePrizeRange(reference) : metrics.available ? formatPrizeRange(range) : "—"}</strong>
+        <small>{reference
+          ? reference.remainingMatchCount > 0
+            ? `已排除 ${reference.excludedMatchCount} 场 · 参考 ${passLabel(reference.passes)}；最低值排除未中奖的 0 元结果`
+            : reference.excludedMatchCount > 0 ? "全部比赛已失败" : "没有剩余可参考的比赛"
+          : "最低值排除未中奖的 0 元结果"}</small>
         <div className="detail-range-metrics">
           <div>
-            <span>中奖时利润范围</span>
+            <span>{reference ? "参考奖金减原投入" : "中奖时利润范围"}</span>
             <b>{metrics.available ? `¥${currency(metrics.profit.min)} – ¥${currency(metrics.profit.max)}` : "—"}</b>
           </div>
           <div>
-            <span>中奖倍率范围</span>
+            <span>{reference ? "参考倍率范围" : "中奖倍率范围"}</span>
             <b>{winningMultiplierRange(metrics.multiplier)}</b>
           </div>
         </div>
@@ -2158,8 +2174,8 @@ function InnerFootballApp({
     : 0;
   const orderDetailAfterTaxPrize = afterTaxPrize(orderDetailTaxBase, orderDetail?.settledAt ? orderDetailTax : 0);
   const orderDetailProfit = orderDetailAfterTaxPrize - orderDetailStake;
-  const orderDetailRange = orderDetail ? calculatePrizeRange(orderDetail.matches, orderDetail.passes, orderDetail.multiple, orderHits) : { min: 0, max: 0, uncappedMax: 0 };
-  const orderDetailRangeMetrics = calculatePrizeRangeMetrics(orderDetailRange, orderDetailStake, orderDetail?.multiple ?? 0);
+  const orderDetailRange = orderDetail ? calculateOrderReferencePrizeRange({ ...orderDetail, hits: orderHits, failedMatches: orderFailedMatches }) : null;
+  const orderDetailRangeMetrics = calculatePrizeRangeMetrics(orderDetailRange ?? { min: 0, max: 0, uncappedMax: 0 }, orderDetailStake, orderDetail?.multiple ?? 0);
   const orderDetailMatches = orderDetail ? sortMatchesForDisplay(selectedMatches(orderDetail.matches)) : [];
   const orderDetailPickedCount = orderDetailMatches.reduce((total, match) => total + selectedOptions(match).length, 0);
   const availableOrderLeagueNames = useMemo(() => {
@@ -2965,6 +2981,7 @@ function InnerFootballApp({
   };
 
   const toggleOrderHit = (matchId: string, type: MarketType, optionId: string) => {
+    clearOrderMatchResult(matchId);
     setOrderFailedMatches((current) => current.filter((id) => id !== matchId));
     setOrderHits((current) => {
       const previous = current[matchId]?.[type];
@@ -2976,6 +2993,7 @@ function InnerFootballApp({
   };
 
   const toggleOrderMatchFailure = (matchId: string, failed: boolean) => {
+    clearOrderMatchResult(matchId);
     setOrderFailedMatches((current) => failed ? [...new Set([...current, matchId])] : current.filter((id) => id !== matchId));
     if (failed) {
       setOrderHits((current) => {
@@ -2984,6 +3002,16 @@ function InnerFootballApp({
         return next;
       });
     }
+  };
+
+  // A manual result edit replaces this match's old official-result snapshot in both draft and save.
+  const clearOrderMatchResult = (matchId: string) => {
+    setOrderDetail((current) => current ? {
+      ...current,
+      resultValues: Object.fromEntries(Object.entries(current.resultValues ?? {}).filter(([id]) => id !== matchId)),
+      resultScores: Object.fromEntries(Object.entries(current.resultScores ?? {}).filter(([id]) => id !== matchId)),
+      resultOdds: Object.fromEntries(Object.entries(current.resultOdds ?? {}).filter(([id]) => id !== matchId)),
+    } : current);
   };
 
   const saveOrderHits = async () => {
@@ -5036,10 +5064,17 @@ function InnerFootballApp({
                   const orderMatches = sortMatchesForDisplay(selectedMatches(slip.matches));
                   const orderBets = countBets(slip.matches, slip.passes);
                   const orderStake = calculateStake(slip.matches, slip.passes, slip.multiple);
-                  const orderPrizeRange = calculatePrizeRange(slip.matches, slip.passes, slip.multiple, slip.hits ?? {});
-                  const orderPrizeRangeText = orderPrizeRange.max > 0
-                    ? `¥${currency(orderPrizeRange.min)} – ¥${currency(orderPrizeRange.max)}`
-                    : "—";
+                  const orderPrizeRange = calculateOrderReferencePrizeRange(slip);
+                  const orderPrizeRangeText = formatOrderReferencePrizeRange(orderPrizeRange);
+                  const hasDeterminedResult = orderMatches.some((match) => (
+                    (slip.failedMatches ?? []).includes(match.id)
+                    || matchHasSelectedHit(match, slip.hits ?? {})
+                    || Object.values(slip.resultValues?.[match.id] ?? {}).some(Boolean)
+                    || Boolean(slip.resultScores?.[match.id])
+                  ));
+                  const orderFullPrizeRangeText = hasDeterminedResult
+                    ? formatPrizeRange(calculatePrizeRange(slip.matches, slip.passes, slip.multiple))
+                    : "";
                   const orderKey = slip.id || `legacy-${slip.savedAt}-${slipIndex}`;
                   const expanded = expandedOrderIds.includes(orderKey);
                   const savedHitCount = Object.values(slip.hits ?? {}).reduce((total, values) => total + Object.values(values).filter(Boolean).length, 0);
@@ -5081,7 +5116,10 @@ function InnerFootballApp({
                         </div>
                         <div className="order-card-title-line">
                           <h3>{slip.name}</h3>
-                          <span className="order-card-prize-range"> {orderPrizeRangeText}</span>
+                          <div className="order-card-prize-ranges">
+                            <span className="order-card-prize-range" title={`参考奖金范围 · 已排除 ${orderPrizeRange.excludedMatchCount} 场 · 参考 ${passLabel(orderPrizeRange.passes)}`}>{orderPrizeRangeText}</span>
+                            {hasDeterminedResult && <small className="order-card-full-prize-range" title="完整奖金范围（不考虑当前赛果）">完整 {orderFullPrizeRangeText}</small>}
+                          </div>
                         </div>
                       </div>
                       <div className="order-metrics">
@@ -5780,7 +5818,7 @@ function InnerFootballApp({
               <small>{orderDetail.settledAt ? "订单税额" : "预计税额"} ¥{currency(orderDetailTax)} · {orderDetail.settledAt ? "税后收入" : "结账后预计收入"} ¥{currency(afterTaxPrize(orderDetailTaxBase, orderDetailTax))}</small>
               <small className={orderDetailProfit >= 0 ? "profit-positive" : "profit-negative"}>当前利润 {orderDetailProfit >= 0 ? "+" : ""}¥{currency(orderDetailProfit)}</small>
             </div>
-            <DetailPrizeRange range={orderDetailRange} metrics={orderDetailRangeMetrics} live />
+            {orderDetailRange && <DetailPrizeRange range={orderDetailRange} metrics={orderDetailRangeMetrics} reference={orderDetailRange} />}
             <div className="detail-pass-summary">
               <span>订单串关</span>
               <div>{orderDetail.passes.length ? orderDetail.passes.map((value) => <Tag color="cyan" key={value}>{value === 1 ? "单场" : `${value} 串 1`}</Tag>) : <Tag>未选择</Tag>}</div>

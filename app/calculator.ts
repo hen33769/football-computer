@@ -340,9 +340,17 @@ function selectedHitOdds(match: MatchItem, hits: CurrentHits): number[] {
   });
 }
 
-function scenarioWinningOdds(match: MatchItem, hits: CurrentHits): number[][] {
-  const confirmedWinningOdds = selectedHitOdds(match, hits);
-  if (confirmedWinningOdds.length > 0) return [confirmedWinningOdds];
+type PrizeRangeContext = Pick<SavedSlip, "failedMatches" | "resultValues" | "resultScores">;
+
+function scenarioWinningOdds(match: MatchItem, hits: CurrentHits, context: PrizeRangeContext): number[][] {
+  if (context.failedMatches?.includes(match.id)) return [[]];
+  const knownResults = { ...context.resultValues?.[match.id] };
+  match.markets.forEach((market) => {
+    const hitId = hits[match.id]?.[market.type];
+    if (market.options.some((option) => option.selected && option.id === hitId && option.odds > 0)) {
+      knownResults[market.type] = hitId;
+    }
+  });
 
   const selectedByKey = new Map<string, OddsOption>();
   match.markets.forEach((market) => market.options.forEach((item) => {
@@ -350,25 +358,37 @@ function scenarioWinningOdds(match: MatchItem, hits: CurrentHits): number[][] {
   }));
   if (selectedByKey.size === 0) return [[]];
 
+  const handicap = match.markets.find((market) => market.type === "rqspf")?.handicap;
+  const knownScore = context.resultScores?.[match.id];
+  // 7+ covers total goals and other scores; include the handicap boundary and its neighbours.
+  const scoreLimit = Math.max(7, Math.ceil(Math.abs(handicap ?? 0)) + 1);
+  const homeScores = knownScore ? [knownScore.home] : Array.from({ length: scoreLimit + 1 }, (_, index) => index);
+  const awayScores = knownScore ? [knownScore.away] : Array.from({ length: scoreLimit + 1 }, (_, index) => index);
   const unique = new Map<string, number[]>();
-  for (let fullHome = 0; fullHome <= 12; fullHome += 1) {
-    for (let fullAway = 0; fullAway <= 12; fullAway += 1) {
-      for (let halfHome = 0; halfHome <= fullHome; halfHome += 1) {
-        for (let halfAway = 0; halfAway <= fullAway; halfAway += 1) {
-          const hits: Array<{ key: string; odds: number }> = [];
-          match.markets.forEach((market) => {
-            const id = winningOptionId(market.type, fullHome, fullAway, halfHome, halfAway, market.handicap);
-            const key = `${market.type}:${id}`;
-            const selected = selectedByKey.get(key);
-            if (selected) hits.push({ key, odds: selected.odds });
-          });
-          hits.sort((left, right) => left.key.localeCompare(right.key));
-          unique.set(hits.map((hit) => hit.key).join("|"), hits.map((hit) => hit.odds));
-        }
+  for (const fullHome of homeScores) {
+    for (const fullAway of awayScores) {
+      // These representatives cover all feasible half-time W/D/L outcomes for this full score.
+      const halfScores = [[0, 0], ...(fullHome > 0 ? [[1, 0]] : []), ...(fullAway > 0 ? [[0, 1]] : [])];
+      for (const [halfHome, halfAway] of halfScores) {
+        const compatible = Object.entries(knownResults).every(([type, id]) => (
+          !id || (type === "rqspf" && handicap === undefined)
+          || winningOptionId(type as MarketType, fullHome, fullAway, halfHome, halfAway, handicap) === id
+        ));
+        if (!compatible) continue;
+        const winning: Array<{ key: string; odds: number }> = [];
+        match.markets.forEach((market) => {
+          const id = winningOptionId(market.type, fullHome, fullAway, halfHome, halfAway, market.handicap);
+          const key = `${market.type}:${id}`;
+          const selected = selectedByKey.get(key);
+          if (selected) winning.push({ key, odds: selected.odds });
+        });
+        winning.sort((left, right) => left.key.localeCompare(right.key));
+        unique.set(winning.map((hit) => hit.key).join("|"), winning.map((hit) => hit.odds));
       }
     }
   }
-  return Array.from(unique.values());
+  // Legacy/manual results can contradict one another: preserve confirmed hits without inventing others.
+  return unique.size > 0 ? Array.from(unique.values()) : [selectedHitOdds(match, hits)];
 }
 
 export function calculateCurrentPrize(matches: MatchItem[], passes: number[], multiple: number, hits: CurrentHits): number {
@@ -386,26 +406,131 @@ export function calculateCurrentPrize(matches: MatchItem[], passes: number[], mu
   return payoutForWinningOdds(winning, marketCounts, passes, multiple, true);
 }
 
-export function calculatePrizeRange(matches: MatchItem[], passes: number[], multiple: number, hits: CurrentHits = {}): PrizeRange {
+function pruneScenarios(items: number[][], maximize: boolean, pruneMinimum: boolean): number[][] {
+  const unique = [...new Map(items.map((item) => {
+    const sorted = [...item].sort((left, right) => right - left);
+    return [sorted.join(","), sorted] as const;
+  })).values()];
+  const dominates = (left: number[], right: number[]) => left.length >= right.length
+    && right.every((odds, index) => left[index] >= odds);
+  return unique.filter((item, index) => !unique.some((other, otherIndex) => (
+    index !== otherIndex
+    // Keep losing scenarios separately when finding the minimum *positive* payout.
+    && (maximize || (pruneMinimum && item.length > 0 && other.length > 0))
+    && (maximize ? dominates(other, item) : dominates(item, other))
+  ))).sort((left, right) => maximize ? sum(right) - sum(left) : sum(left) - sum(right));
+}
+
+type PayoutBounds = { min: number; max: number; uncappedMax: number; children: PayoutBounds[] };
+
+export function calculatePrizeRange(
+  matches: MatchItem[],
+  passes: number[],
+  multiple: number,
+  hits: CurrentHits = {},
+  context: PrizeRangeContext = {},
+): PrizeRange {
   const chosen = selectedPricedMatches(matches);
   if (chosen.length === 0 || passes.length === 0) return { min: 0, max: 0, uncappedMax: 0 };
   const marketCounts = chosen.map(selectedPricedMarketCount);
-  const scenarios = chosen.map((match) => scenarioWinningOdds(match, hits));
-  const maxWinning = scenarios.map((items) => [...items].sort((left, right) => sum(right) - sum(left))[0] ?? []);
-  const max = payoutForWinningOdds(maxWinning, marketCounts, passes, multiple, true);
-  const uncappedMax = payoutForWinningOdds(maxWinning, marketCounts, passes, multiple, false);
-
-  const minimumPositive = scenarios.map((items) => [...items].filter((item) => item.length > 0).sort((left, right) => sum(left) - sum(right))[0] ?? []);
-  const canLose = scenarios.map((items) => items.some((item) => item.length === 0));
-  const optionalIndexes = canLose.map((value, index) => value ? index : -1).filter((index) => index >= 0);
+  const scenarios = chosen.map((match) => scenarioWinningOdds(match, hits, context));
+  const smallestOdds = chosen.map((match) => Math.min(...selectedPricedOptions(match).map((option) => option.odds)))
+    .sort((left, right) => left - right);
+  // If a low-odds ticket rounds to zero, a dominated higher-odds scenario may still
+  // be the smallest positive payout and must remain in the minimum search.
+  const pruneMinimum = passes.every((pass) => pass < 1 || pass > chosen.length
+    || bankersRound(2 * smallestOdds.slice(0, pass).reduce((product, odds) => product * odds, 1)) > 0);
+  let max = 0;
+  let uncappedMax = 0;
   let minimum = Number.POSITIVE_INFINITY;
-  for (let mask = 0; mask < 2 ** optionalIndexes.length; mask += 1) {
-    const winning = minimumPositive.map((item, index) => canLose[index] ? [] : item);
-    optionalIndexes.forEach((matchIndex, optionalIndex) => {
-      if ((mask & (1 << optionalIndex)) !== 0) winning[matchIndex] = minimumPositive[matchIndex];
-    });
-    const prize = payoutForWinningOdds(winning, marketCounts, passes, multiple, true);
-    if (prize > 0 && prize < minimum) minimum = prize;
+  for (const maximize of [true, false]) {
+    const candidates = scenarios.map((items) => pruneScenarios(items, maximize, pruneMinimum));
+    // Cache each pass group's payout and conditional bounds once. Searching all matches then
+    // only adds cached integer cents, instead of expanding the same tickets at every branch.
+    const groups = passes.flatMap((pass) => combinations(chosen.map((_, index) => index), pass).map((indexes) => {
+      const betCount = groupBetCount(marketCounts, indexes);
+      const winning: number[][] = [];
+      const build = (depth: number): PayoutBounds => {
+        if (depth === indexes.length) {
+          let capped = 0;
+          let uncapped = 0;
+          for (const odds of cartesianProduct(winning)) {
+            const cents = Math.round(bankersRound(2 * odds.reduce((product, value) => product * value, 1)) * 100);
+            capped += Math.min(cents, singlePrizeCap(pass) * 100) * betCount;
+            uncapped += cents * betCount;
+          }
+          return { min: capped, max: capped, uncappedMax: uncapped, children: [] };
+        }
+        const children = candidates[indexes[depth]].map((item) => {
+          winning.push(item);
+          const result = build(depth + 1);
+          winning.pop();
+          return result;
+        });
+        return {
+          min: Math.min(...children.map((child) => child.min)),
+          max: Math.max(...children.map((child) => child.max)),
+          uncappedMax: Math.max(...children.map((child) => child.uncappedMax)),
+          children,
+        };
+      };
+      return { indexes, root: build(0) };
+    }));
+    const visit = (index: number, bounds: PayoutBounds[]) => {
+      const ceiling = bankersRound(sum(bounds.map((bound) => bound.max)) * multiple / 100);
+      const uncappedCeiling = bankersRound(sum(bounds.map((bound) => bound.uncappedMax)) * multiple / 100);
+      const floor = bankersRound(sum(bounds.map((bound) => bound.min)) * multiple / 100);
+      if (maximize) {
+        if (ceiling <= max && uncappedCeiling <= uncappedMax) return;
+      } else {
+        if (ceiling <= 0) return;
+        if (floor > 0 && floor >= minimum) return;
+      }
+      if (index === candidates.length) {
+        if (maximize) {
+          max = Math.max(max, ceiling);
+          uncappedMax = Math.max(uncappedMax, uncappedCeiling);
+        } else if (floor > 0) minimum = Math.min(minimum, floor);
+        return;
+      }
+      candidates[index].forEach((_, candidateIndex) => visit(index + 1, bounds.map((bound, groupIndex) => (
+        groups[groupIndex].indexes.includes(index) ? bound.children[candidateIndex] : bound
+      ))));
+    };
+    visit(0, groups.map((group) => group.root));
   }
   return { min: Number.isFinite(minimum) ? minimum : 0, max, uncappedMax };
+}
+
+export function calculateOrderPrizeRange(slip: SavedSlip): PrizeRange {
+  if (slip.settledAt) {
+    const prize = slip.settledPrize ?? calculateCurrentPrize(slip.matches, slip.passes, slip.multiple, slip.hits ?? {});
+    return { min: prize, max: prize, uncappedMax: prize };
+  }
+  return calculatePrizeRange(slip.matches, slip.passes, slip.multiple, slip.hits ?? {}, slip);
+}
+
+export type OrderReferencePrizeRange = PrizeRange & {
+  passes: number[];
+  remainingMatchCount: number;
+  excludedMatchCount: number;
+};
+
+/** Display-only value of the remaining selections; never use it to settle an order. */
+export function calculateOrderReferencePrizeRange(slip: SavedSlip): OrderReferencePrizeRange {
+  const chosen = selectedPricedMatches(slip.matches);
+  const hits = slip.hits ?? {};
+  const remaining = chosen.filter((match) => scenarioWinningOdds(match, hits, slip).some((odds) => odds.length > 0));
+  const excludedMatchCount = chosen.length - remaining.length;
+  const passes = [...new Set(slip.passes
+    .filter((pass) => Number.isInteger(pass) && pass >= 1 && pass <= chosen.length)
+    .map((pass) => Math.min(pass, remaining.length)))]
+    .filter((pass) => pass >= 1)
+    .sort((left, right) => left - right);
+  return {
+    ...calculatePrizeRange(remaining, passes, slip.multiple, hits, slip),
+    passes,
+    remainingMatchCount: remaining.length,
+    excludedMatchCount,
+  };
 }

@@ -3,6 +3,8 @@ import test from "node:test";
 import {
   calculateBetSummary,
   calculateCurrentPrize,
+  calculateOrderPrizeRange,
+  calculateOrderReferencePrizeRange,
   calculatePassMultipliers,
   calculatePrizeRange,
   calculatePrizeRangeMetrics,
@@ -17,6 +19,7 @@ import {
   isOrderSettleable,
   MAX_SELECTED_MATCHES,
   sortPassMultiplierDetails,
+  winningOptionId,
 } from "../app/calculator";
 import { cloneMatches, initialMatches } from "../app/data";
 import { orderFilterIncomeBreakdown, orderFilterIncomeTotal, orderLedgerBreakdown, orderLedgerTotals, orderStakeTotal, sortSavedOrders, unionSavedOrders } from "../app/imports";
@@ -479,16 +482,16 @@ test("复制日期比赛时按让球方向格式化队伍行", () => {
   const rqspf = match.markets.find((market) => market.type === "rqspf")!;
 
   rqspf.handicap = -2;
-  assert.equal(formatMatchCopyLine(match), "富川FC VS 安养FC（主让 2）");
+  assert.equal(formatMatchCopyLine(match), "周三 201 ｜ 富川FC vs 安养FC （主让 2）");
 
   rqspf.handicap = 1;
-  assert.equal(formatMatchCopyLine(match), "富川FC VS 安养FC（客让 1）");
+  assert.equal(formatMatchCopyLine(match), "周三 201 ｜ 富川FC vs 安养FC （客让 1）");
 
   rqspf.handicap = 0;
-  assert.equal(formatMatchCopyLine(match), "富川FC VS 安养FC（平手）");
+  assert.equal(formatMatchCopyLine(match), "周三 201 ｜ 富川FC vs 安养FC （平手）");
 
   rqspf.handicap = undefined;
-  assert.equal(formatMatchCopyLine(match), "富川FC VS 安养FC");
+  assert.equal(formatMatchCopyLine(match), "周三 201 ｜ 富川FC vs 安养FC");
 });
 
 test("4 串 1 明细分别计算当前命中与完整赔率积", () => {
@@ -515,7 +518,7 @@ test("理论奖金范围排除 0 并保持有序", () => {
   assert.ok(range.max >= range.min);
 });
 
-test("实时奖金范围在某场已有成功项后忽略该场其它投注项", () => {
+test("实时奖金范围排除已确认玩法中的其他互斥选项", () => {
   const matches = select();
   matches[0].markets[0].options[1].selected = true;
   matches[0].markets[0].options[1].odds = 5;
@@ -534,6 +537,276 @@ test("实时奖金范围在某场已有成功项后忽略该场其它投注项",
     max: 28,
     uncappedMax: 28,
   });
+});
+
+const rangeOrder = (matches: MatchItem[], extra: Partial<SavedSlip> = {}): SavedSlip => ({
+  name: "范围回归",
+  savedAt: "2026-11-13T00:00:00.000Z",
+  matches,
+  passes: [2],
+  multiple: 1,
+  ...extra,
+});
+
+const referenceOrder = (): SavedSlip => {
+  const matches = cloneMatches(initialMatches.slice(0, 5));
+  matches.forEach((match, index) => {
+    match.markets[0].options[0].selected = true;
+    match.markets[0].options[0].odds = index + 2;
+  });
+  return rangeOrder(matches, {
+    passes: [5],
+    failedMatches: [matches[3].id, matches[4].id],
+    hits: Object.fromEntries(matches.slice(0, 3).map((match) => [match.id, { spf: "win" }])),
+  });
+};
+
+test("参考奖金把五场五串一的两场失败排除，按剩余三串一估算且不改变实际订单", () => {
+  const order = referenceOrder();
+  const before = JSON.stringify(order);
+  assert.deepEqual(calculateOrderReferencePrizeRange(order), {
+    min: 48, max: 48, uncappedMax: 48,
+    passes: [3], remainingMatchCount: 3, excludedMatchCount: 2,
+  });
+  assert.equal(getOrderStatus(order), "failed");
+  assert.equal(calculateCurrentPrize(order.matches, order.passes, order.multiple, order.hits ?? {}), 0);
+  assert.equal(calculateStake(order.matches, order.passes, order.multiple), 2);
+  assert.deepEqual(calculatePrizeRange(order.matches, order.passes, order.multiple), { min: 1440, max: 1440, uncappedMax: 1440 });
+  assert.equal(JSON.stringify(order), before);
+});
+
+test("参考串关保留可组成的原关数，仅缩减超过剩余场数的串关并去重", () => {
+  const order = referenceOrder();
+  assert.deepEqual(calculateOrderReferencePrizeRange({ ...order, passes: [4, 5] }), {
+    min: 48, max: 48, uncappedMax: 48,
+    passes: [3], remainingMatchCount: 3, excludedMatchCount: 2,
+  });
+  assert.deepEqual(calculateOrderReferencePrizeRange({ ...order, passes: [1, 2, 3] }), {
+    min: 118, max: 118, uncappedMax: 118,
+    passes: [1, 2, 3], remainingMatchCount: 3, excludedMatchCount: 2,
+  });
+  assert.deepEqual(calculateOrderReferencePrizeRange({ ...order, passes: [2] }), {
+    min: 52, max: 52, uncappedMax: 52,
+    passes: [2], remainingMatchCount: 3, excludedMatchCount: 2,
+  });
+  assert.deepEqual(calculateOrderReferencePrizeRange({ ...order, passes: [1, 3, 5] }), {
+    min: 66, max: 66, uncappedMax: 66,
+    passes: [1, 3], remainingMatchCount: 3, excludedMatchCount: 2,
+  });
+});
+
+test("截图六串加八串失败两场后只保留一次六串，参考奖金为1764.48", () => {
+  const odds = [2.90, 2.51, 3.30, 4.05, 2.70, 3.26, 3.40, 3.60];
+  const matches = odds.map((value, index) => {
+    const match = cloneMatches(initialMatches.slice(0, 1))[0];
+    match.id = `screenshot-${index}`;
+    match.markets[0].options[0].selected = true;
+    match.markets[0].options[0].odds = value;
+    return match;
+  });
+  const failedIndexes = new Set([2, 7]);
+  const order = rangeOrder(matches, {
+    passes: [6, 8],
+    failedMatches: matches.filter((_, index) => failedIndexes.has(index)).map((match) => match.id),
+    hits: Object.fromEntries(matches.filter((_, index) => !failedIndexes.has(index)).map((match) => [match.id, { spf: "win" }])),
+  });
+  const before = JSON.stringify(order);
+  assert.deepEqual(calculateOrderReferencePrizeRange(order), {
+    min: 1764.48, max: 1764.48, uncappedMax: 1764.48,
+    passes: [6], remainingMatchCount: 6, excludedMatchCount: 2,
+  });
+  assert.equal(calculateCurrentPrize(order.matches, order.passes, order.multiple, order.hits ?? {}), 1764.48);
+  assert.equal(countBets(order.matches, order.passes), 29);
+  assert.equal(getOrderStatus(order), "success");
+  assert.equal(JSON.stringify(order), before);
+});
+
+test("全部失败没有参考区间，重复及无关的失败 ID 不改变排除场数", () => {
+  const order = referenceOrder();
+  assert.deepEqual(calculateOrderReferencePrizeRange({ ...order, failedMatches: order.matches.map((match) => match.id) }), {
+    min: 0, max: 0, uncappedMax: 0,
+    passes: [], remainingMatchCount: 0, excludedMatchCount: 5,
+  });
+  assert.deepEqual(calculateOrderReferencePrizeRange({ ...order, failedMatches: [...order.failedMatches!, ...order.failedMatches!, "unrelated"] }), calculateOrderReferencePrizeRange(order));
+});
+
+test("已知整场投注未中也排除，部分玩法未中但其他玩法仍有机会则保留", () => {
+  const matches = select();
+  assert.deepEqual(calculateOrderReferencePrizeRange(rangeOrder(matches, {
+    resultValues: { [matches[0].id]: { spf: "lose" } },
+  })), { min: 6, max: 6, uncappedMax: 6, passes: [1], remainingMatchCount: 1, excludedMatchCount: 1 });
+  const goals = matches[0].markets.find((market) => market.type === "goals")!;
+  goals.options.find((option) => option.id === "1")!.selected = true;
+  goals.options.find((option) => option.id === "1")!.odds = 5;
+  assert.deepEqual(calculateOrderReferencePrizeRange(rangeOrder(matches, {
+    resultValues: { [matches[0].id]: { spf: "lose" } },
+  })), { min: 30, max: 30, uncappedMax: 30, passes: [2], remainingMatchCount: 2, excludedMatchCount: 0 });
+});
+
+test("参考区间不受结账快照覆盖，实际区间仍读取结账奖金", () => {
+  const order = { ...referenceOrder(), settledAt: "2026-11-13T03:00:00.000Z", settledPrize: 0, multiple: 3 };
+  assert.deepEqual(calculateOrderReferencePrizeRange(order), {
+    min: 144, max: 144, uncappedMax: 144,
+    passes: [3], remainingMatchCount: 3, excludedMatchCount: 2,
+  });
+  assert.deepEqual(calculateOrderPrizeRange(order), { min: 0, max: 0, uncappedMax: 0 });
+});
+
+test("失败比赛的跨玩法出票份数不计入剩余比赛参考值", () => {
+  const order = referenceOrder();
+  order.matches[4].markets[1].options[0].selected = true;
+  assert.equal(calculateOrderReferencePrizeRange(order).max, 48);
+});
+
+test("无失败场次时参考区间沿用原串关及已知命中约束", () => {
+  const matches = select();
+  matches[0].markets[0].options[1].selected = true;
+  matches[0].markets[0].options[1].odds = 5;
+  const order = rangeOrder(matches, { hits: { [matches[0].id]: { spf: "win" } } });
+  assert.deepEqual(calculateOrderReferencePrizeRange(order), {
+    min: 12, max: 12, uncappedMax: 12,
+    passes: [2], remainingMatchCount: 2, excludedMatchCount: 0,
+  });
+});
+
+test("失败场次阻断对应串关，部分失败仍保留其他中奖组合和原出票份数", () => {
+  const matches = select(cloneMatches(initialMatches.slice(0, 3)));
+  matches[2].markets[0].options[0].selected = true;
+  matches[2].markets[0].options[0].odds = 4;
+  matches[2].markets[1].options[0].selected = true;
+  const partial = rangeOrder(matches, { failedMatches: [matches[2].id] });
+  assert.deepEqual(calculateOrderPrizeRange(partial), { min: 24, max: 24, uncappedMax: 24 });
+  assert.deepEqual(calculateOrderPrizeRange({ ...partial, passes: [3] }), { min: 0, max: 0, uncappedMax: 0 });
+  assert.deepEqual(calculateOrderPrizeRange({ ...partial, passes: [2, 3] }), { min: 24, max: 24, uncappedMax: 24 });
+});
+
+test("已失败场次即使留有旧命中也不参与奖金范围", () => {
+  const matches = select();
+  assert.deepEqual(calculateOrderPrizeRange(rangeOrder(matches, {
+    failedMatches: [matches[0].id],
+    hits: { [matches[0].id]: { spf: "win" } },
+  })), { min: 0, max: 0, uncappedMax: 0 });
+});
+
+test("部分玩法已命中时，其余未知玩法继续在一致赛果下推算", () => {
+  const matches = select();
+  const goals = matches[0].markets.find((market) => market.type === "goals")!;
+  goals.options.find((option) => option.id === "1")!.selected = true;
+  goals.options.find((option) => option.id === "1")!.odds = 5;
+  assert.deepEqual(calculateOrderPrizeRange(rangeOrder(matches, {
+    hits: { [matches[0].id]: { spf: "win" } },
+  })), { min: 12, max: 42, uncappedMax: 42 });
+  assert.deepEqual(calculateOrderPrizeRange(rangeOrder(matches, {
+    hits: { [matches[0].id]: { spf: "win" } },
+    resultValues: { [matches[0].id]: { spf: "win", goals: "2" } },
+  })), { min: 12, max: 12, uncappedMax: 12 });
+});
+
+test("已知未命中的玩法不恢复为未知，比分也约束其他玩法", () => {
+  const matches = select();
+  assert.deepEqual(calculateOrderPrizeRange(rangeOrder(matches, {
+    resultValues: { [matches[0].id]: { spf: "lose" } },
+  })), { min: 0, max: 0, uncappedMax: 0 });
+  assert.deepEqual(calculateOrderPrizeRange(rangeOrder(matches, {
+    resultScores: { [matches[0].id]: { home: 0, away: 0 } },
+  })), { min: 0, max: 0, uncappedMax: 0 });
+});
+
+test("完整赛果使范围收敛为实际税前奖金", () => {
+  const matches = select();
+  const order = judgeSlipWithResults(rangeOrder(matches, { multiple: 3 }), Object.fromEntries(matches.map((match) => [match.id, {
+    matchId: match.id, source: "api" as const, updatedAt: "2026-11-13T00:00:00.000Z", values: { spf: "win" },
+  }])));
+  const actual = calculateCurrentPrize(order.matches, order.passes, order.multiple, order.hits ?? {});
+  assert.equal(actual, 36);
+  assert.deepEqual(calculateOrderPrizeRange(order), { min: actual, max: actual, uncappedMax: actual });
+});
+
+test("结账优先保存的税前奖金，含零金额与旧订单缺失奖金的兼容", () => {
+  const matches = select();
+  const settled = rangeOrder(matches, { settledAt: "2026-11-13T00:00:00.000Z", settledPrize: 12000, taxAmount: 2400 });
+  assert.deepEqual(calculateOrderPrizeRange(settled), { min: 12000, max: 12000, uncappedMax: 12000 });
+  assert.deepEqual(calculateOrderPrizeRange({ ...settled, settledPrize: 0 }), { min: 0, max: 0, uncappedMax: 0 });
+  assert.deepEqual(calculateOrderPrizeRange({
+    ...settled, settledPrize: undefined,
+    hits: Object.fromEntries(matches.map((match) => [match.id, { spf: "win" }])),
+  }), { min: 12, max: 12, uncappedMax: 12 });
+});
+
+test("封顶后按实际奖金取极值，不能按单场赔率和排序", () => {
+  const match = cloneMatches(initialMatches.slice(0, 1))[0];
+  match.markets = [
+    { type: "spf", options: [
+      { id: "win", label: "胜", odds: 120000, selected: true },
+      { id: "draw", label: "平", odds: 120000, selected: true },
+      { id: "lose", label: "负", odds: 60000, selected: true },
+    ] },
+    { type: "rqspf", handicap: 0, options: [{ id: "lose", label: "负", odds: 50000, selected: true }] },
+  ];
+  assert.deepEqual(calculatePrizeRange([match], [1], 2), { min: 200000, max: 400000, uncappedMax: 480000 });
+});
+
+test("低赔率舍入为零时仍保留其他非零中奖情景", () => {
+  const match = cloneMatches(initialMatches.slice(0, 1))[0];
+  match.markets = [{ type: "spf", options: [
+    { id: "win", label: "胜", odds: 0.001, selected: true },
+    { id: "draw", label: "平", odds: 2, selected: true },
+  ] }];
+  assert.deepEqual(calculatePrizeRange([match], [1], 1), { min: 4, max: 4, uncappedMax: 4 });
+});
+
+test("混合玩法范围与独立赛果穷举一致（含舍入和多串关）", () => {
+  const matches = cloneMatches(initialMatches.slice(0, 2));
+  matches.forEach((match, index) => {
+    match.markets.forEach((market) => {
+      market.options.forEach((option, optionIndex) => {
+        option.selected = (optionIndex + index) % 3 === 0;
+        option.odds = (optionIndex + 1) * 1.235 + index * 0.51;
+      });
+    });
+  });
+  // The oracle enumerates actual scores/half scores, then uses confirmed-prize calculation;
+  // it does not reuse range scenarios, dominance pruning or range bounds.
+  const outcomes = matches.map((match) => {
+    const unique = new Map<string, Record<string, string>>();
+    for (let home = 0; home <= 7; home += 1) for (let away = 0; away <= 7; away += 1) {
+      for (let halfHome = 0; halfHome <= home; halfHome += 1) for (let halfAway = 0; halfAway <= away; halfAway += 1) {
+        const values = Object.fromEntries(match.markets.map((market) => [market.type,
+          winningOptionId(market.type, home, away, halfHome, halfAway, market.handicap)]));
+        unique.set(JSON.stringify(values), values);
+      }
+    }
+    return [...unique.values()];
+  });
+  let min = Infinity;
+  let max = 0;
+  for (const first of outcomes[0]) for (const second of outcomes[1]) {
+    const prize = calculateCurrentPrize(matches, [1, 2], 3, { [matches[0].id]: first, [matches[1].id]: second });
+    if (prize > 0) min = Math.min(min, prize);
+    max = Math.max(max, prize);
+  }
+  assert.deepEqual(calculatePrizeRange(matches, [1, 2], 3), { min, max, uncappedMax: max });
+});
+
+test("大让球数仍枚举让球边界", () => {
+  const match = cloneMatches(initialMatches.slice(0, 1))[0];
+  match.markets = [{ type: "rqspf", handicap: -13, options: [{ id: "draw", label: "让平", odds: 9, selected: true }] }];
+  assert.deepEqual(calculatePrizeRange([match], [1], 1), { min: 18, max: 18, uncappedMax: 18 });
+});
+
+test("八场混合玩法范围保持有序且在交互时间内完成", () => {
+  const matches = Array.from({ length: 8 }, (_, index) => {
+    const match = cloneMatches(initialMatches.slice(0, 1))[0];
+    match.id = `range-performance-${index}`;
+    match.markets.forEach((market) => market.options.forEach((option, optionIndex) => {
+      option.selected = optionIndex % 3 === 0;
+    }));
+    return match;
+  });
+  const started = performance.now();
+  const range = calculatePrizeRange(matches, [2, 3, 4], 2);
+  assert.ok(range.min > 0 && range.max >= range.min && range.uncappedMax >= range.max);
+  assert.ok(performance.now() - started < 2000);
 });
 
 test("中奖倍率范围按单注价格乘以倍数计算，不使用订单总投入", () => {

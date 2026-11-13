@@ -416,10 +416,10 @@ button, input, textarea { font: inherit; }
 .match-team-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; }
 .team-name-with-icon { min-width: 0; max-width: 100%; display: inline-flex; align-items: center; gap: 6px; vertical-align: middle; }
 .team-name-with-icon-label { min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; }
-.team-name-alias-layout { min-width: 0; max-width: 100%; display: inline-flex; align-items: center; vertical-align: middle; }
+.team-name-alias-layout { min-width: 0; max-width: 100%; display: inline-flex; align-items: center; }
 .team-name-normal { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .team-name-icon { width: 22px; height: 22px; flex: 0 0 22px; object-fit: contain; border-radius: 5px; background: #f1f5f4; }
-.team-name-alias { min-width: 0; display: inline-block; margin: 0 3px; overflow: hidden; text-overflow: ellipsis; color: #8a999d; font-size: 11px; font-weight: 500; }
+.team-name-alias { min-width: 0; display: inline-block; margin: 0 3px; overflow: hidden; text-overflow: ellipsis; color: #8a999d; font-size: 11px; font-weight: 500; line-height: 12px; }
 .team-tag-badges { display: inline-flex; align-items: center; flex: 0 0 auto; gap: 3px; margin: 0 4px; vertical-align: middle; }
 .team-tag-badge, .team-tag-more { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border: 0; border-radius: 5px; font: inherit; font-size: 10px; font-weight: 800; line-height: 1; cursor: pointer; box-shadow: inset 0 0 0 1px rgba(0,0,0,.08); }
 .team-tag-badge:hover, .team-tag-badge:focus-visible, .team-tag-more:hover, .team-tag-more:focus-visible { outline: 2px solid rgba(22,119,255,.28); outline-offset: 1px; transform: translateY(-1px); }
@@ -941,7 +941,9 @@ button, input, textarea { font: inherit; }
 .order-card-tags .ant-tag { margin: 0; }
 .order-card-title-line { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-top: 10px; }
 .order-card-head h3 { min-width: 0; margin: 0; font-size: 18px; overflow-wrap: anywhere; }
+.order-card-prize-ranges { flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
 .order-card-prize-range { flex: 0 0 auto; color: #faad14; font-size: 13px; font-weight: 700; white-space: nowrap; }
+.order-card-full-prize-range { color: var(--muted); font-size: 11px; font-weight: 400; line-height: 1.4; white-space: nowrap; }
 .order-card-head time { flex: 0 0 auto; color: var(--muted); font-size: 13px; white-space: nowrap; }
 .order-metrics { display: grid; grid-template-columns: repeat(4, 1fr); margin: 18px 0 14px; border: 1px solid var(--line); border-radius: 13px; background: #f8fbfa; }
 .order-metrics div { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 12px 6px; border-right: 1px solid var(--line); }

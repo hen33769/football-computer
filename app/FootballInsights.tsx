@@ -90,6 +90,23 @@ function EmptyBlock({ description = "暂无数据" }: { description?: string }) 
   return <div className="insight-empty"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={description} /></div>;
 }
 
+export function MatchPreviewTitle({
+  match,
+  teamNameIndex,
+}: {
+  match: MatchItem;
+  teamNameIndex: TeamNameIndex;
+}) {
+  const matchMeta = [`${match.weekday}${match.code}`, match.league.trim()].filter(Boolean).join(" · ");
+  return <div>
+    <span style={{marginRight: '10px'}}>{matchMeta} ·</span>
+    <TeamNameWithIcon name={match.home} index={teamNameIndex} teamPosition="home" />
+    <span style={{margin: '0 10px'}}>VS</span>
+    <TeamNameWithIcon name={match.away} index={teamNameIndex} teamPosition="away" />
+    <span style={{marginLeft: '10px'}}>· 赛事前瞻</span>
+  </div>;
+}
+
 function TrendValue({ row, columnKey }: { row: InsightRecord; columnKey: string }) {
   const trend = amount(row[`${columnKey}f`]);
   return (
@@ -678,7 +695,7 @@ export function MatchPreviewModal({
       onCancel={onClose}
       width={1400}
       className="insight-modal"
-      title={match ? <><span>{match.weekday}{match.code} · </span><TeamNameWithIcon name={match.home} index={teamNameIndex} teamPosition="home" /> <span>VS </span><TeamNameWithIcon name={match.away} index={teamNameIndex} teamPosition="away" /><span> · 赛事前瞻</span></> : "赛事前瞻"}
+      title={match ? <MatchPreviewTitle match={match} teamNameIndex={teamNameIndex} /> : "赛事前瞻"}
       footer={<Button type="primary" onClick={onClose}>关闭</Button>}
     >
       <div className="insight-content">
