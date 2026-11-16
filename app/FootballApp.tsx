@@ -146,7 +146,7 @@ import {
 import { collectCancelledOrderPaymentRisk } from "./order-payment";
 import { afterTaxPrize, calculatePrizeTax, resolvePrizeTax } from "./order-tax";
 import { CLOUD_APP_URL, UPDATE_LOG_URL } from "./links";
-import { formatManualMatchText, formatManualOrderText, formatOrderOptionLabel } from "./manual-order-format";
+import { formatManualMatchText, formatManualOrderText, formatOrderOptionLabel, restoreManualPickerMatch } from "./manual-order-format";
 import { formatMatchCopyLine } from "./match-format";
 import {
   collectCurrentMatchStartItems,
@@ -170,6 +170,7 @@ import {
   fetchSportteryMatchResultsWithFallback,
   fetchSportteryMatchCalculator,
   fetchSportteryMatchById,
+  fetchSportteryMatchHandicap,
   fetchSportteryMatchScore,
   fetchSportteryMatchSnapshot,
   getMatchSaleState,
@@ -180,6 +181,7 @@ import {
   getSportteryMatchPhaseTc,
   isSportteryRegularTimeFinished,
   isMatchSelectable,
+  isValidSportteryHandicap,
   isAutoResultEligible,
   mergeSportteryMatchCache,
   normalizeSportteryMatchId,
@@ -1557,6 +1559,7 @@ function InnerFootballApp({
   const pendingManualOrderScrollEntryKeyRef = useRef<string | null>(null);
   const [manualPickerEntryKey, setManualPickerEntryKey] = useState<string | null>(null);
   const [manualPickerMatch, setManualPickerMatch] = useState<MatchItem | null>(null);
+  const manualPickerLookupGenerationRef = useRef(0);
   const [sportteryLoaded, setSportteryLoaded] = useState(false);
   const [sportteryLoading, setSportteryLoading] = useState(false);
   const [sportteryRefreshing, setSportteryRefreshing] = useState(false);
@@ -2496,6 +2499,7 @@ function InnerFootballApp({
   };
 
   const closeManualOrder = () => {
+    manualPickerLookupGenerationRef.current += 1;
     setManualOrderOpen(false);
     setManualOrderPassDropdownOpen(false);
     setManualPickerEntryKey(null);
@@ -2614,22 +2618,24 @@ function InnerFootballApp({
       message.info("请先从已保存比赛中选择一场；找不到时可直接手动填写文本");
       return;
     }
-    const draft = matchWithClearedSelections(source);
     const parsed = parseRecognizedText(entry.text, { selectOptions: true, emptyOdds: true })[0];
-    if (parsed) {
-      draft.markets = draft.markets.map((market) => {
-        const parsedMarket = parsed.markets.find((item) => item.type === market.type);
-        return {
-          ...market,
-          options: market.options.map((option) => {
-            const parsedOption = parsedMarket?.options.find((item) => item.id === option.id && item.selected);
-            return parsedOption ? { ...option, odds: parsedOption.odds > 0 ? parsedOption.odds : option.odds, selected: true } : option;
-          }),
-        };
-      });
-    }
+    const draft = restoreManualPickerMatch(matchWithClearedSelections(source), parsed);
+    const generation = ++manualPickerLookupGenerationRef.current;
     setManualPickerEntryKey(entry.key);
     setManualPickerMatch(draft);
+    const handicap = draft.markets.find((market) => market.type === "rqspf")?.handicap;
+    if (!isValidSportteryHandicap(handicap) && /^\d{6,}$/.test(normalizedMatchId)) {
+      void fetchSportteryMatchHandicap(normalizedMatchId).then((fetched) => {
+        if (manualPickerLookupGenerationRef.current !== generation || !isValidSportteryHandicap(fetched)) return;
+        setManualPickerMatch((current) => current && normalizeSportteryMatchId(current.id) === normalizedMatchId ? {
+          ...current,
+          markets: current.markets.map((market) => market.type === "rqspf" && !isValidSportteryHandicap(market.handicap)
+            ? { ...market, handicap: fetched } : market),
+        } : current);
+      }).catch((error: unknown) => {
+        console.warn("[手动订单] 让球数查询失败", error);
+      });
+    }
   };
 
   const toggleManualPickerOption = (type: MarketType, optionId: string) => {
@@ -2652,6 +2658,7 @@ function InnerFootballApp({
       matchId: normalizeSportteryMatchId(manualPickerMatch.id),
       text: formatManualMatchText(manualPickerMatch),
     });
+    manualPickerLookupGenerationRef.current += 1;
     setManualPickerEntryKey(null);
     setManualPickerMatch(null);
   };
@@ -2677,7 +2684,7 @@ function InnerFootballApp({
     const normalizedMatches = parsed.map((match) => ({ ...match, id: normalizeSportteryMatchId(match.id) }));
     const missingHandicapIndex = normalizedMatches.findIndex((match) => {
       const rqspf = match.markets.find((market) => market.type === "rqspf");
-      return rqspf?.options.some((option) => option.selected) && typeof rqspf.handicap !== "number";
+      return rqspf?.options.some((option) => option.selected) && !isValidSportteryHandicap(rqspf.handicap);
     });
     if (missingHandicapIndex >= 0) {
       message.warning(`第 ${missingHandicapIndex + 1} 场选择了让球胜平负，请填写让球数，例如“让球胜平负（-1）”`);
@@ -6041,7 +6048,7 @@ function InnerFootballApp({
 
       <Modal
         open={Boolean(manualPickerMatch)}
-        onCancel={() => { setManualPickerEntryKey(null); setManualPickerMatch(null); }}
+        onCancel={() => { manualPickerLookupGenerationRef.current += 1; setManualPickerEntryKey(null); setManualPickerMatch(null); }}
         onOk={applyManualPickerSelection}
         width={980}
         title={manualPickerMatch ? `${manualPickerMatch.weekday}${manualPickerMatch.code} · ${manualPickerMatch.home} VS ${manualPickerMatch.away}` : "选择投注项"}
@@ -6051,7 +6058,7 @@ function InnerFootballApp({
       >
         {manualPickerMatch?.markets.map((market) => (
           <section className={`modal-market ${market.type}-market`} key={market.type}>
-            <div className="modal-market-title"><span>{MARKET_LABELS[market.type]}{market.type === "rqspf" ? `（${(market.handicap ?? 0) > 0 ? "+" : ""}${market.handicap ?? 0}）` : ""}</span><MarketSupportTags market={market} /></div>
+            <div className="modal-market-title"><span>{MARKET_LABELS[market.type]}{market.type === "rqspf" ? `（${isValidSportteryHandicap(market.handicap) ? formatHandicap(market.handicap) : "待获取盘口"}）` : ""}</span><MarketSupportTags market={market} /></div>
             <div className="more-options-groups">
               {marketEditorGroups(market).map((group) => (
                 <div className={`more-options-row ${group.key}-group`} key={group.key}>

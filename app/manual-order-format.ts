@@ -1,5 +1,5 @@
 import { MARKET_LABELS } from "./data";
-import { normalizeSportteryMatchId } from "./sporttery";
+import { isValidSportteryHandicap, normalizeSportteryMatchId } from "./sporttery";
 import type { Market, MatchItem, OddsOption } from "./types";
 
 const formatHandicap = (handicap: number) => `${handicap > 0 ? "+" : ""}${handicap}`;
@@ -9,6 +9,23 @@ export const formatOrderOptionLabel = (market: Market, option: OddsOption) => (
     ? `(${formatHandicap(market.handicap)})${option.label}`
     : option.label
 );
+
+/** 恢复手动文本中的选择和盘口，避免重新打开选择器时覆盖手填内容。 */
+export const restoreManualPickerMatch = (draft: MatchItem, parsed?: MatchItem): MatchItem => ({
+  ...draft,
+  markets: draft.markets.map((market) => {
+    const parsedMarket = parsed?.markets.find((item) => item.type === market.type);
+    const handicap = isValidSportteryHandicap(parsedMarket?.handicap) ? parsedMarket.handicap : market.handicap;
+    return {
+      ...market,
+      ...(market.type === "rqspf" ? { handicap: isValidSportteryHandicap(handicap) ? handicap : undefined } : {}),
+      options: market.options.map((option) => {
+        const parsedOption = parsedMarket?.options.find((item) => item.id === option.id && item.selected);
+        return parsedOption ? { ...option, odds: parsedOption.odds > 0 ? parsedOption.odds : option.odds, selected: true } : option;
+      }),
+    };
+  }),
+});
 
 export const formatManualMatchText = (match: MatchItem) => {
   const selectionLines = match.markets.flatMap((market) => {

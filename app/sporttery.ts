@@ -608,6 +608,10 @@ export const hydrateSportteryMatchOdds = (match: MatchItem): MatchItem => ({
   })),
 });
 
+export const isValidSportteryHandicap = (value: unknown): value is number => (
+  typeof value === "number" && Number.isFinite(value) && value !== 0
+);
+
 export const mergeSportteryMatchOdds = (incoming: MatchItem, previous?: MatchItem): MatchItem => ({
   ...incoming,
   id: normalizeSportteryMatchId(incoming.id),
@@ -616,6 +620,11 @@ export const mergeSportteryMatchOdds = (incoming: MatchItem, previous?: MatchIte
     const previousMarket = previous?.markets.find((item) => item.type === market.type);
     return {
       ...market,
+      ...(market.type === "rqspf" ? {
+        handicap: isValidSportteryHandicap(market.handicap) ? market.handicap
+          : normalizeSportteryMatchId(incoming.id) === normalizeSportteryMatchId(previous?.id ?? "")
+            && isValidSportteryHandicap(previousMarket?.handicap) ? previousMarket.handicap : undefined,
+      } : {}),
       options: market.options.map((option) => {
         const previousOption = previousMarket?.options.find((item) => item.id === option.id);
         return resolveSportteryOptionOdds(option, previousOption);
@@ -686,7 +695,8 @@ export function mergeSportteryMatchCache(
   const retained = current.filter((match) => match.date >= cutoff);
   const mergedIncoming = incoming.filter((match) => match.date >= cutoff).map((match) => {
     const normalized = { ...match, id: normalizeSportteryMatchId(match.id) };
-    const previous = retained.find((item) => sameMatch(item, normalized));
+    const previous = retained.find((item) => normalizeSportteryMatchId(item.id) === normalized.id)
+      ?? retained.find((item) => sameMatch(item, normalized));
     return preserveSelections(normalized, previous);
   });
   const stale = retained
@@ -907,7 +917,16 @@ const hasPositiveOdds = (match: MatchItem) => (
 const mergeSportteryListWithCalculatorDetails = (listMatches: MatchItem[], calculatorMatches: MatchItem[]) => {
   const mergedList = listMatches.map((match) => {
     const detailed = calculatorMatches.find((item) => sameMatch(item, match));
-    return detailed && hasPositiveOdds(detailed) ? detailed : match;
+    if (!detailed || !hasPositiveOdds(detailed)) return match;
+    return {
+      ...detailed,
+      markets: detailed.markets.map((market) => {
+        if (market.type !== "rqspf" || isValidSportteryHandicap(market.handicap)
+          || normalizeSportteryMatchId(match.id) !== normalizeSportteryMatchId(detailed.id)) return market;
+        const handicap = match.markets.find((item) => item.type === "rqspf")?.handicap;
+        return { ...market, handicap: isValidSportteryHandicap(handicap) ? handicap : undefined };
+      }),
+    };
   });
   const detailOnly = calculatorMatches.filter((match) => !listMatches.some((item) => sameMatch(item, match)));
   return [...mergedList, ...detailOnly].sort((left, right) => (
@@ -1094,10 +1113,13 @@ export function enrichSportteryMatchOddsHistory(
   if (isSportteryFixedBonusCancelled(payload)) {
     return { ...clearSelections(match), saleStatus: "cancelled" };
   }
+  const fixedHandicap = parseSportteryMatchHandicap(payload);
   return {
     ...match,
     markets: match.markets.map((market) => ({
       ...market,
+      ...(market.type === "rqspf" && !isValidSportteryHandicap(market.handicap) && isValidSportteryHandicap(fixedHandicap)
+        ? { handicap: fixedHandicap } : {}),
       options: market.options.map((option) => {
         let oddsHistory = parseSportteryOptionOddsHistory(payload, market.type, option.id);
         const lastHistory = oddsHistory.at(-1);
@@ -1193,7 +1215,7 @@ export function parseSportteryMatchHandicap(payload: unknown): number | undefine
     const poolCode = String(record.code ?? record.poolCode ?? "").toUpperCase();
     if (poolCode !== "HHAD") continue;
     const handicap = Number.parseFloat(String(record.goalLine ?? ""));
-    if (Number.isFinite(handicap)) return handicap;
+    if (isValidSportteryHandicap(handicap)) return handicap;
   }
 
   const history = fixedBonusOddsHistory(root);
@@ -1202,7 +1224,7 @@ export function parseSportteryMatchHandicap(payload: unknown): number | undefine
     const record = hhadList[index];
     if (!record || typeof record !== "object") continue;
     const handicap = Number.parseFloat(String((record as Record<string, unknown>).goalLine ?? ""));
-    if (Number.isFinite(handicap)) return handicap;
+    if (isValidSportteryHandicap(handicap)) return handicap;
   }
   return undefined;
 }
@@ -1229,7 +1251,8 @@ export function convertSportteryMorningMatches(
       return {
         ...match,
         had: latestHistoryRecord(history?.hadList),
-        hhad: latestHistoryRecord(history?.hhadList),
+        hhad: Object.keys(latestHistoryRecord(history?.hhadList)).length > 0
+          ? latestHistoryRecord(history?.hhadList) : match.hhad,
         crs: latestHistoryRecord(history?.crsList),
         ttg: latestHistoryRecord(history?.ttgList),
         hafu: latestHistoryRecord(history?.hafuList),

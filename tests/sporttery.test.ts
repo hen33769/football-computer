@@ -16,6 +16,7 @@ import {
   fetchSportteryUniformMatchResultPage,
   fetchSportteryUniformMatchResults,
   fetchSportteryMatchById,
+  fetchSportteryMatchHandicap,
   fetchSportteryMatchSnapshot,
   isAutoResultEligible,
   isSportteryFixedBonusCancelled,
@@ -859,6 +860,22 @@ test("按 matchId 返回的固定奖金数据提取最新让球数", () => {
   assert.equal(parseSportteryMatchHandicap({ value: { oddsHistory: { hhadList: [] } } }), undefined);
 });
 
+test("手动盘口补查按比赛 ID 获取，接口失败时抛出错误", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (input) => {
+      const url = new URL(String(input));
+      assert.equal(url.searchParams.get("matchId"), "2042757");
+      return Response.json({ value: { matchResultList: [{ code: "HHAD", goalLine: "-2" }] } });
+    };
+    assert.equal(await fetchSportteryMatchHandicap("2042757"), -2);
+    globalThis.fetch = async () => new Response("", { status: 567 });
+    await assert.rejects(fetchSportteryMatchHandicap("2042757"), /HTTP 567/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("比分存在但没有取得让球数时不生成让球胜平负赛果", () => {
   const [match] = convertSportteryMatches(payload, beforeKickoff);
   const rqspf = match.markets.find((market) => market.type === "rqspf");
@@ -1138,6 +1155,42 @@ test("比赛缓存同步不会用空倍率覆盖旧有效倍率", () => {
   assert.deepEqual(cached.result, previous.result);
 });
 
+test("比赛缓存仅同 ID 用有效旧盘口填补缺失或零，新盘口优先", () => {
+  const [previous] = cloneMatches(convertSportteryMatches(payload, beforeKickoff));
+  market(previous, "rqspf").handicap = -2;
+  for (const value of [undefined, 0, Number.NaN]) {
+    const incoming = cloneMatches([previous])[0];
+    market(incoming, "rqspf").handicap = value;
+    const [merged] = mergeSportteryMatchCache([previous], [incoming], beforeKickoff);
+    assert.equal(market(merged, "rqspf").handicap, -2);
+  }
+  const incoming = cloneMatches([previous])[0];
+  market(incoming, "rqspf").handicap = 1;
+  assert.equal(market(mergeSportteryMatchCache([previous], [incoming], beforeKickoff)[0], "rqspf").handicap, 1);
+  market(incoming, "rqspf").handicap = 0;
+  assert.equal(market(mergeSportteryMatchCache([], [incoming], beforeKickoff)[0], "rqspf").handicap, undefined);
+  incoming.id = "2040999"; // 相同队名及编号也不可借用其他 ID 的盘口
+  assert.equal(market(mergeSportteryMatchCache([previous], [incoming], beforeKickoff)[0], "rqspf").handicap, undefined);
+});
+
+test("赔率详情补充盘口，零赛果盘口回退到非零历史", () => {
+  const [match] = convertSportteryMatches(payload, beforeKickoff);
+  market(match, "rqspf").handicap = undefined;
+  const detail = { value: { matchResultList: [{ code: "HHAD", goalLine: "0" }], oddsHistory: {
+    hhadList: [{ goalLine: "-2", h: "2.55" }, { goalLine: "0", h: "2.44" }],
+  } } };
+  assert.equal(parseSportteryMatchHandicap(detail), -2);
+  assert.equal(market(enrichSportteryMatchOddsHistory(match, detail), "rqspf").handicap, -2);
+  assert.equal(market(enrichSportteryMatchOddsHistory(match, { value: {} }), "rqspf").handicap, undefined);
+  market(match, "rqspf").handicap = 1;
+  assert.equal(market(enrichSportteryMatchOddsHistory(match, detail), "rqspf").handicap, 1);
+});
+
+test("早间 fixed-bonus 缺失时保留列表让球数", () => {
+  const [match] = convertSportteryMorningMatches(structuredClone(payload), new Map(), beforeKickoff);
+  assert.equal(market(match, "rqspf").handicap, 1);
+});
+
 test("常规模式以完整列表为主并用 calculator 覆盖同场详细赔率", async () => {
   const now = new Date("2026-07-24T12:00:00");
   const standardPayload = structuredClone(payload);
@@ -1227,6 +1280,26 @@ test("常规模式以完整列表为主并用 calculator 覆盖同场详细赔�
     assert.equal(supplemented.saleStatus, "pending");
     assert.equal(market(supplemented, "spf").options.find((option) => option.id === "win")?.odds, 2.25);
     assert.equal(market(supplemented, "rqspf").handicap, -1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("常规模式 calculator 缺盘口时保留同场列表盘口", async () => {
+  const list = structuredClone(payload);
+  const calculator = structuredClone(payload);
+  calculator.value!.matchInfoList![0].subMatchList[0].hhad!.goalLine = "0";
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/getMatchListV1.qry")) return Response.json(list);
+    if (url.pathname.endsWith("/getMatchCalculatorV1.qry")) return Response.json(calculator);
+    if (url.pathname.endsWith("/getFixedBonusV1.qry")) return Response.json({ success: true, value: { oddsHistory: {} } });
+    throw new Error(`未处理的测试请求：${url}`);
+  };
+  try {
+    const snapshot = await fetchSportteryMatchSnapshot("standard", new Date("2026-07-22T04:00:00Z"));
+    assert.equal(market(snapshot.matches[0], "rqspf").handicap, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }

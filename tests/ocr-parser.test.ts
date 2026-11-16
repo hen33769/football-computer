@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { formatManualOrderText, formatOrderOptionLabel } from "../app/manual-order-format";
+import { formatManualOrderText, formatOrderOptionLabel, restoreManualPickerMatch } from "../app/manual-order-format";
 import { parseRecognizedText } from "../app/ocr";
 import type { Market, MatchItem, OddsOption } from "../app/types";
 
@@ -60,6 +60,23 @@ test("手动订单文本保留已选的零赔率和有效赔率", () => {
   const parsed = parseRecognizedText(text, { selectOptions: true, emptyOdds: true });
   assert.deepEqual(parsed[0].markets.find((market) => market.type === "spf")?.options
     .filter((option) => option.selected).map((option) => [option.label, option.odds]), [["主胜", 0], ["平", 3.4]]);
+});
+
+test("重新打开手动选择器时恢复文本盘口并保留选择", () => {
+  const text = `比赛 ID：2040459
+周六099 挪威 VS 威尔士
+让球胜平负（-2） 平 @3.95`;
+  const [parsed] = parseRecognizedText(text, { selectOptions: true, emptyOdds: true });
+  const draft = structuredClone(parsed);
+  const rqspf = draft.markets.find((market) => market.type === "rqspf")!;
+  rqspf.handicap = 0;
+  rqspf.options.forEach((option) => { option.selected = false; });
+  const restored = restoreManualPickerMatch(draft, parsed);
+  const restoredMarket = restored.markets.find((market) => market.type === "rqspf")!;
+  assert.equal(restoredMarket.handicap, -2);
+  assert.equal(restoredMarket.options.find((option) => option.id === "draw")?.selected, true);
+  assert.match(formatManualOrderText([restored]), /让球胜平负（-2） \(-2\)平 @3\.95/);
+  assert.equal(restoreManualPickerMatch(draft).markets.find((market) => market.type === "rqspf")?.handicap, undefined);
 });
 
 test("解析常见体彩已选项截图文本", () => {
