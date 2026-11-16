@@ -59,6 +59,7 @@ import {
   UndoOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
+import type { RefSelectProps } from "antd/es/select";
 import dayjs from "dayjs";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import {
@@ -147,6 +148,7 @@ import { collectCancelledOrderPaymentRisk } from "./order-payment";
 import { afterTaxPrize, calculatePrizeTax, resolvePrizeTax } from "./order-tax";
 import { CLOUD_APP_URL, UPDATE_LOG_URL } from "./links";
 import { formatManualMatchText, formatManualOrderText, formatOrderOptionLabel, restoreManualPickerMatch } from "./manual-order-format";
+import { firstEmptyManualOrderEntry, readManualOrderSavedAt, writeManualOrderSavedAt } from "./manual-order-state";
 import { formatMatchCopyLine } from "./match-format";
 import {
   collectCurrentMatchStartItems,
@@ -1547,12 +1549,14 @@ function InnerFootballApp({
   const [manualOrderPassDropdownOpen, setManualOrderPassDropdownOpen] = useState(false);
   const manualOrderPassInputClickRef = useRef(false);
   const [manualOrderMultiple, setManualOrderMultiple] = useState(1);
-  const [manualOrderSavedAt, setManualOrderSavedAt] = useState("");
+  const manualOrderAccountId = cloudAccount?.id ?? "public";
+  const [manualOrderSavedAt, setManualOrderSavedAt] = useState(() => readManualOrderSavedAt(sessionCache, manualOrderAccountId));
   const [manualOrderEntries, setManualOrderEntries] = useState<ManualOrderEntry[]>(() => [createManualOrderEntry()]);
   const [manualTemporaryMatches, setManualTemporaryMatches] = useState<Record<string, MatchItem>>({});
   const [manualMatchLookupIds, setManualMatchLookupIds] = useState<Record<string, string>>({});
   const manualOrderEntryListRef = useRef<HTMLDivElement>(null);
   const manualOrderMatchPickerRowRefs = useRef(new Map<string, HTMLDivElement>());
+  const manualOrderMatchSelectRefs = useRef(new Map<string, RefSelectProps>());
   const manualMatchLookupTimersRef = useRef(new Map<string, number>());
   const manualMatchLookupQueriesRef = useRef(new Map<string, string>());
   const manualMatchLookupGenerationRef = useRef(0);
@@ -2036,6 +2040,7 @@ function InnerFootballApp({
         top: Math.max(0, centeredTop),
         behavior: "smooth",
       });
+      manualOrderMatchSelectRefs.current.get(entryKey)?.focus({ preventScroll: true });
     });
     return () => window.cancelAnimationFrame(frame);
   }, []);
@@ -2572,7 +2577,7 @@ function InnerFootballApp({
   };
 
   const addManualOrderEntry = () => {
-    const firstEmptyEntry = manualOrderEntries.find((entry) => entry.text.trim().length === 0);
+    const firstEmptyEntry = firstEmptyManualOrderEntry(manualOrderEntries);
     if (firstEmptyEntry) {
       scrollManualOrderPickerIntoView(firstEmptyEntry.key);
       return;
@@ -5951,7 +5956,11 @@ function InnerFootballApp({
               value={manualOrderSavedAt && dayjs(manualOrderSavedAt).isValid() ? dayjs(manualOrderSavedAt) : null}
               disabled={manualOrderSaving}
               placeholder="留空则使用当前时间"
-              onChange={(value) => setManualOrderSavedAt(value?.toISOString() ?? "")}
+              onChange={(value) => {
+                const savedAt = value?.toISOString() ?? "";
+                setManualOrderSavedAt(savedAt);
+                writeManualOrderSavedAt(sessionCache, manualOrderAccountId, savedAt);
+              }}
             />
           </label>
           <label>串关方式
@@ -6013,6 +6022,10 @@ function InnerFootballApp({
                 }}
               >
                 <Select
+                  ref={(select) => {
+                    if (select) manualOrderMatchSelectRefs.current.set(entry.key, select);
+                    else manualOrderMatchSelectRefs.current.delete(entry.key);
+                  }}
                   allowClear
                   showSearch
                   optionFilterProp="searchText"

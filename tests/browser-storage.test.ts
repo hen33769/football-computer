@@ -51,3 +51,25 @@ test("falls back to memory when access to browser storage is denied", () => {
   storage.setItem("orders", "[]");
   assert.equal(storage.getItem("orders"), "[]");
 });
+
+test("手动订单创建时间在会话内按账号恢复，清空或无效值不保留", async () => {
+  const { readManualOrderSavedAt, writeManualOrderSavedAt } = await import("../app/manual-order-state");
+  const persistent = createMemoryStorage();
+  const storage = createResilientStorage(() => persistent);
+  const reopenedStorage = createResilientStorage(() => persistent);
+  const at = "2026-11-14T10:30:00.000Z";
+  writeManualOrderSavedAt(storage, "account-a", at);
+  assert.equal(readManualOrderSavedAt(reopenedStorage, "account-a"), at);
+  assert.equal(readManualOrderSavedAt(reopenedStorage, "account-b"), "");
+  writeManualOrderSavedAt(storage, "account-a", "");
+  assert.equal(readManualOrderSavedAt(storage, "account-a"), "");
+  writeManualOrderSavedAt(storage, "account-a", "not-a-date");
+  assert.equal(readManualOrderSavedAt(storage, "account-a"), "");
+});
+
+test("添加比赛优先定位首个文本为空的条目", async () => {
+  const { firstEmptyManualOrderEntry } = await import("../app/manual-order-state");
+  const entries = [{ key: "a", text: "已填" }, { key: "b", text: "  " }, { key: "c", text: "" }];
+  assert.equal(firstEmptyManualOrderEntry(entries)?.key, "b");
+  assert.equal(firstEmptyManualOrderEntry([entries[0]]), undefined);
+});
