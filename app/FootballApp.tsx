@@ -2637,7 +2637,7 @@ function InnerFootballApp({
       ...current,
       markets: current.markets.map((market) => market.type !== type ? market : {
         ...market,
-        options: market.options.map((option) => option.id === optionId && option.odds > 0 ? { ...option, selected: !option.selected } : option),
+        options: market.options.map((option) => option.id === optionId ? { ...option, selected: !option.selected } : option),
       }),
     } : current);
   };
@@ -6056,7 +6056,7 @@ function InnerFootballApp({
               {marketEditorGroups(market).map((group) => (
                 <div className={`more-options-row ${group.key}-group`} key={group.key}>
                   {group.options.map((item) => (
-                    <button type="button" disabled={item.odds <= 0} className={`more-odds-option ${item.id === "winOther" || item.id === "loseOther" ? "score-other" : ""} ${item.odds > 0 && item.selected ? "selected" : ""}`} key={item.id} onClick={() => toggleManualPickerOption(market.type, item.id)} aria-pressed={item.odds > 0 && item.selected}>
+                    <button type="button" className={`more-odds-option ${item.id === "winOther" || item.id === "loseOther" ? "score-other" : ""} ${item.selected ? "selected" : ""}`} key={item.id} onClick={() => toggleManualPickerOption(market.type, item.id)} aria-pressed={item.selected}>
                       <span>{item.label}</span><strong>{item.odds > 0 ? <><i className="more-odds-at">@</i>{item.odds.toFixed(2)}</> : "--"}</strong>
                     </button>
                   ))}

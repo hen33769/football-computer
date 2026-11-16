@@ -46,6 +46,22 @@ test("订单导出为手动添加格式并保留让球选项标签", () => {
   assert.deepEqual(rqspf?.options.filter((option) => option.selected).map((option) => option.odds), [1.85, 3.4]);
 });
 
+test("手动订单文本保留已选的零赔率和有效赔率", () => {
+  const match: MatchItem = {
+    id: "2040459", date: "2026-07-11", league: "世界杯", time: "2026-07-12 05:00",
+    weekday: "周六", code: "099", home: "挪威", away: "英格兰",
+    markets: [{ type: "spf", options: [
+      { id: "win", label: "主胜", odds: 0, selected: true },
+      { id: "draw", label: "平", odds: 3.4, selected: true },
+    ] }],
+  };
+  const text = formatManualOrderText([match]);
+  assert.match(text, /主胜 @0\.00 \| 平 @3\.40/);
+  const parsed = parseRecognizedText(text, { selectOptions: true, emptyOdds: true });
+  assert.deepEqual(parsed[0].markets.find((market) => market.type === "spf")?.options
+    .filter((option) => option.selected).map((option) => [option.label, option.odds]), [["主胜", 0], ["平", 3.4]]);
+});
+
 test("解析常见体彩已选项截图文本", () => {
   const parsed = parseRecognizedText(`
     周五201 瓦萨 VS 塞伊奈
